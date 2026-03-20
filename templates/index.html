@@ -1,0 +1,1063 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Release Readiness Dashboard</title>
+    <meta name="description" content="AI-Powered Release Coordination Board for Operations Teams">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box
+        }
+
+        :root {
+            --bg: #0a0e1a;
+            --surface: #131829;
+            --surface2: #1a2035;
+            --border: #252d45;
+            --text: #e2e8f0;
+            --text2: #8892b0;
+            --accent: #6366f1;
+            --accent2: #818cf8;
+            --green: #10b981;
+            --yellow: #f59e0b;
+            --red: #ef4444;
+            --blue: #3b82f6;
+            --radius: 12px;
+            --glow: 0 0 30px rgba(99, 102, 241, .15)
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh
+        }
+
+        .header {
+            background: linear-gradient(135deg, #131829 0%, #1e1b4b 100%);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 28px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(20px)
+        }
+
+        .header h1 {
+            font-size: 22px;
+            font-weight: 800;
+            background: linear-gradient(135deg, #818cf8, #6366f1, #a78bfa);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -.5px
+        }
+
+        .header-meta {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            font-size: 13px;
+            color: var(--text2)
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .5px
+        }
+
+        .badge-open {
+            background: rgba(16, 185, 129, .15);
+            color: #10b981;
+            border: 1px solid rgba(16, 185, 129, .3)
+        }
+
+        .badge-locked {
+            background: rgba(245, 158, 11, .15);
+            color: #f59e0b;
+            border: 1px solid rgba(245, 158, 11, .3)
+        }
+
+        .badge-released {
+            background: rgba(99, 102, 241, .15);
+            color: #818cf8;
+            border: 1px solid rgba(99, 102, 241, .3)
+        }
+
+        .main {
+            display: grid;
+            grid-template-columns: 1fr 360px;
+            gap: 0;
+            min-height: calc(100vh - 64px)
+        }
+
+        .board-area {
+            padding: 24px;
+            overflow-y: auto
+        }
+
+        .sidebar {
+            background: var(--surface);
+            border-left: 1px solid var(--border);
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 16px
+        }
+
+        .section-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text2);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 16px;
+            transition: all .2s;
+            position: relative;
+            overflow: hidden
+        }
+
+        .card:hover {
+            border-color: var(--accent);
+            box-shadow: var(--glow);
+            transform: translateY(-1px)
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px
+        }
+
+        .card.green::before {
+            background: var(--green)
+        }
+
+        .card.yellow::before {
+            background: var(--yellow)
+        }
+
+        .card.red::before {
+            background: var(--red)
+        }
+
+        .card.unknown::before {
+            background: var(--border)
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 10px
+        }
+
+        .card-name {
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--text)
+        }
+
+        .card-tag {
+            font-size: 12px;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+            padding: 3px 8px;
+            border-radius: 6px;
+            background: rgba(99, 102, 241, .15);
+            color: var(--accent2)
+        }
+
+        .card-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            font-size: 11px;
+            color: var(--text2);
+            margin-top: 8px
+        }
+
+        .card-meta span {
+            display: flex;
+            align-items: center;
+            gap: 4px
+        }
+
+        .card-actions {
+            display: flex;
+            gap: 6px;
+            margin-top: 10px
+        }
+
+        .cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 14px
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            transition: all .2s;
+            font-family: inherit
+        }
+
+        .btn:hover {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent)
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent)
+        }
+
+        .btn-primary:hover {
+            background: #4f46e5;
+            box-shadow: 0 0 20px rgba(99, 102, 241, .4)
+        }
+
+        .btn-danger {
+            border-color: rgba(239, 68, 68, .3);
+            color: var(--red)
+        }
+
+        .btn-danger:hover {
+            background: var(--red);
+            color: white
+        }
+
+        .btn-sm {
+            padding: 5px 10px;
+            font-size: 11px
+        }
+
+        .btn-icon {
+            width: 30px;
+            height: 30px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px
+        }
+
+        .stats-bar {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            margin-bottom: 20px
+        }
+
+        .stat {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 14px;
+            text-align: center
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 800;
+            line-height: 1
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--text2);
+            margin-top: 4px;
+            text-transform: uppercase;
+            letter-spacing: .5px
+        }
+
+        .nominate-form {
+            display: flex;
+            flex-direction: column;
+            gap: 10px
+        }
+
+        select,
+        textarea,
+        input[type=text] {
+            width: 100%;
+            padding: 10px 14px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            font-family: inherit;
+            font-size: 13px;
+            outline: none;
+            transition: border .2s
+        }
+
+        select:focus,
+        textarea:focus,
+        input:focus {
+            border-color: var(--accent)
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 60px
+        }
+
+        .countdown {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--yellow);
+            display: flex;
+            align-items: center;
+            gap: 6px
+        }
+
+        .countdown.expired {
+            color: var(--red)
+        }
+
+        .drift-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 12px;
+            border-radius: 8px;
+            background: var(--surface2);
+            margin-bottom: 6px;
+            font-size: 12px
+        }
+
+        .drift-match {
+            border-left: 3px solid var(--green)
+        }
+
+        .drift-drift {
+            border-left: 3px solid var(--yellow)
+        }
+
+        .drift-major {
+            border-left: 3px solid var(--red)
+        }
+
+        .readiness-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 10px
+        }
+
+        .readiness-green {
+            background: rgba(16, 185, 129, .15);
+            color: #10b981
+        }
+
+        .readiness-yellow {
+            background: rgba(245, 158, 11, .15);
+            color: #f59e0b
+        }
+
+        .readiness-red {
+            background: rgba(239, 68, 68, .15);
+            color: #ef4444
+        }
+
+        .audit-item {
+            padding: 8px 12px;
+            border-left: 2px solid var(--border);
+            margin-bottom: 6px;
+            font-size: 11px;
+            color: var(--text2)
+        }
+
+        .audit-item strong {
+            color: var(--text);
+            font-weight: 600
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 10px;
+            font-size: 13px;
+            font-weight: 600;
+            z-index: 9999;
+            animation: slideIn .3s ease;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, .3)
+        }
+
+        .toast-success {
+            background: var(--green);
+            color: white
+        }
+
+        .toast-error {
+            background: var(--red);
+            color: white
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateY(20px);
+                opacity: 0
+            }
+
+            to {
+                transform: translateY(0);
+                opacity: 1
+            }
+        }
+
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, .6);
+            z-index: 1000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(4px)
+        }
+
+        .modal-overlay.active {
+            display: flex
+        }
+
+        .modal {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 24px;
+            width: 90%;
+            max-width: 700px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, .5)
+        }
+
+        .modal h2 {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 16px
+        }
+
+        .modal pre {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px;
+            font-size: 12px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            max-height: 50vh
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text2)
+        }
+
+        .empty-state h3 {
+            font-size: 20px;
+            margin-bottom: 8px;
+            color: var(--text)
+        }
+
+        .tabs {
+            display: flex;
+            gap: 0;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 16px
+        }
+
+        .tab {
+            padding: 10px 18px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text2);
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all .2s
+        }
+
+        .tab:hover {
+            color: var(--text)
+        }
+
+        .tab.active {
+            color: var(--accent2);
+            border-bottom-color: var(--accent)
+        }
+
+        .tab-content {
+            display: none
+        }
+
+        .tab-content.active {
+            display: block
+        }
+
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            color: var(--text2)
+        }
+
+        .spinner {
+            width: 24px;
+            height: 24px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin .8s linear infinite;
+            margin-right: 10px
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg)
+            }
+        }
+
+        @media(max-width:900px) {
+            .main {
+                grid-template-columns: 1fr
+            }
+
+            .sidebar {
+                border-left: none;
+                border-top: 1px solid var(--border)
+            }
+
+            .stats-bar {
+                grid-template-columns: repeat(2, 1fr)
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- Header -->
+    <div class="header">
+        <div style="display:flex;align-items:center;gap:14px">
+            <h1>🚀 Release Readiness</h1>
+            <span id="board-status-badge" class="badge badge-open">● Open</span>
+        </div>
+        <div class="header-meta">
+            <span id="countdown-display" class="countdown">⏱ Loading...</span>
+            <span id="release-date-display">Release: --</span>
+            <button class="btn btn-sm" onclick="refreshAll()" title="Refresh">🔄 Refresh</button>
+        </div>
+    </div>
+
+    <!-- Main Layout -->
+    <div class="main">
+        <!-- Board Area -->
+        <div class="board-area">
+            <!-- Stats -->
+            <div class="stats-bar">
+                <div class="stat">
+                    <div class="stat-value" id="stat-nominated" style="color:var(--accent2)">0</div>
+                    <div class="stat-label">Nominated</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" id="stat-ready" style="color:var(--green)">0</div>
+                    <div class="stat-label">🟢 Ready</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" id="stat-review" style="color:var(--yellow)">0</div>
+                    <div class="stat-label">🟡 Review</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" id="stat-risk" style="color:var(--red)">0</div>
+                    <div class="stat-label">🔴 Risk</div>
+                </div>
+            </div>
+
+            <!-- Board Tabs -->
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('board')">📋 Board</div>
+                <div class="tab" onclick="switchTab('drift')">🔀 Version Drift</div>
+                <div class="tab" onclick="switchTab('readiness')">🤖 AI Readiness</div>
+                <div class="tab" onclick="switchTab('audit')">📜 Audit Trail</div>
+                <div class="tab" onclick="switchTab('export')">📦 Export</div>
+            </div>
+
+            <!-- Board Tab -->
+            <div class="tab-content active" id="tab-board">
+                <div id="board-cards" class="cards-grid">
+                    <div class="empty-state">
+                        <h3>No services nominated yet</h3>
+                        <p>Use the nomination panel on the right to add services →</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Drift Tab -->
+            <div class="tab-content" id="tab-drift">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                    <p style="font-size:13px;color:var(--text2)">Comparing nominated versions vs live cluster</p>
+                    <button class="btn btn-sm" onclick="checkDrift()">🔀 Check Now</button>
+                </div>
+                <div id="drift-list">
+                    <div class="loading">
+                        <div class="spinner"></div>Click "Check Now" to detect version drift
+                    </div>
+                </div>
+            </div>
+
+            <!-- AI Readiness Tab -->
+            <div class="tab-content" id="tab-readiness">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                    <p style="font-size:13px;color:var(--text2)">Gemini-powered per-service health analysis</p>
+                    <button class="btn btn-primary btn-sm" onclick="runReadinessCheck()">🤖 Run AI Check</button>
+                </div>
+                <div id="readiness-results">
+                    <div class="loading">
+                        <div class="spinner"></div>Click "Run AI Check" to analyze readiness
+                    </div>
+                </div>
+            </div>
+
+            <!-- Audit Trail Tab -->
+            <div class="tab-content" id="tab-audit">
+                <div id="audit-list">
+                    <div class="empty-state">
+                        <p>No actions recorded yet</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Export Tab -->
+            <div class="tab-content" id="tab-export">
+                <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+                    <button class="btn btn-primary" onclick="exportManifest('json')">📋 Export JSON</button>
+                    <button class="btn btn-primary" onclick="exportManifest('yaml')">📄 Export YAML</button>
+                    <button class="btn btn-primary" onclick="generateReleaseNotes()">🤖 AI Release Notes</button>
+                    <button class="btn" onclick="finalizeBoard()">🔒 Lock Board (Cutoff)</button>
+                    <button class="btn btn-danger" onclick="completeRelease()">✅ Mark Released</button>
+                </div>
+                <div id="export-output"></div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div>
+                <div class="section-title">➕ Nominate Service</div>
+                <div class="nominate-form">
+                    <select id="service-select">
+                        <option value="">Loading services...</option>
+                    </select>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                        <div><label style="font-size:11px;color:var(--text2)">Image Tag</label><input type="text"
+                                id="nom-tag" readonly style="background:var(--bg);cursor:not-allowed"></div>
+                        <div><label style="font-size:11px;color:var(--text2)">Helm Chart</label><input type="text"
+                                id="nom-helm" readonly style="background:var(--bg);cursor:not-allowed"></div>
+                    </div>
+                    <div><label style="font-size:11px;color:var(--text2)">Your Name</label><input type="text"
+                            id="nom-by" placeholder="e.g. rajesh" value=""></div>
+                    <textarea id="nom-notes" placeholder="Release notes (optional)..."></textarea>
+                    <button class="btn btn-primary" onclick="nominateService()" style="width:100%">🚀 Nominate</button>
+                </div>
+            </div>
+            <hr style="border:none;border-top:1px solid var(--border)">
+            <div>
+                <div class="section-title">📊 Quick Info</div>
+                <div style="font-size:12px;color:var(--text2);line-height:1.8" id="sidebar-info">
+                    <div>📅 Release: <strong id="info-release-date">--</strong></div>
+                    <div>⏰ Cutoff: <strong id="info-cutoff">--</strong></div>
+                    <div>📦 Services: <strong id="info-svc-count">0</strong></div>
+                    <div>🏷️ Namespace: <strong id="info-namespace">--</strong></div>
+                </div>
+            </div>
+            <hr style="border:none;border-top:1px solid var(--border)">
+            <div>
+                <div class="section-title">📜 Recent Activity</div>
+                <div id="sidebar-audit" style="max-height:250px;overflow-y:auto"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal -->
+    <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
+        <div class="modal">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <h2 id="modal-title">Details</h2>
+                <button class="btn btn-icon btn-sm" onclick="closeModal()">✕</button>
+            </div>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+
+    <script>
+        // ═══ State ═══════════════════════════════════════════════════════════════════
+        let _board = null;
+        let _services = [];
+        let _serviceMap = {};
+
+        // ═══ Helpers ═════════════════════════════════════════════════════════════════
+        function showToast(msg, type = 'success') {
+            const t = document.createElement('div');
+            t.className = 'toast toast-' + type;
+            t.textContent = msg;
+            document.body.appendChild(t);
+            setTimeout(() => t.remove(), 3000);
+        }
+        function closeModal() { document.getElementById('modal-overlay').classList.remove('active'); }
+        function openModal(title, html) {
+            document.getElementById('modal-title').textContent = title;
+            document.getElementById('modal-body').innerHTML = html;
+            document.getElementById('modal-overlay').classList.add('active');
+        }
+        function switchTab(name) {
+            document.querySelectorAll('.tab').forEach((t, i) => {
+                const tabs = ['board', 'drift', 'readiness', 'audit', 'export'];
+                t.classList.toggle('active', tabs[i] === name);
+            });
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + name));
+        }
+
+        // ═══ Data Fetching ═══════════════════════════════════════════════════════════
+        async function fetchBoard() {
+            try {
+                const r = await fetch('/api/release/current');
+                _board = await r.json();
+                renderBoard();
+                renderAudit();
+                updateSidebar();
+            } catch (e) { console.error('fetchBoard:', e); }
+        }
+
+        async function fetchServices() {
+            try {
+                const r = await fetch('/api/services');
+                const data = await r.json();
+                _services = data.services || [];
+                _serviceMap = {};
+                _services.forEach(s => _serviceMap[s.name] = s);
+                renderServiceDropdown();
+            } catch (e) { console.error('fetchServices:', e); }
+        }
+
+        // ═══ Render Board ════════════════════════════════════════════════════════════
+        function renderBoard() {
+            if (!_board) return;
+            const svcs = _board.services || {};
+            const keys = Object.keys(svcs);
+
+            // Status badge
+            const statusBadge = document.getElementById('board-status-badge');
+            statusBadge.className = 'badge badge-' + (_board.status || 'open');
+            statusBadge.textContent = '● ' + (_board.status || 'open').charAt(0).toUpperCase() + (_board.status || 'open').slice(1);
+
+            // Release date
+            document.getElementById('release-date-display').textContent = 'Release: ' + (_board.release_date || '--');
+
+            // Stats
+            let ready = 0, review = 0, risk = 0;
+            keys.forEach(k => {
+                const r = svcs[k].readiness;
+                if (r === 'green') ready++;
+                else if (r === 'yellow') review++;
+                else if (r === 'red') risk++;
+            });
+            document.getElementById('stat-nominated').textContent = keys.length;
+            document.getElementById('stat-ready').textContent = ready;
+            document.getElementById('stat-review').textContent = review;
+            document.getElementById('stat-risk').textContent = risk;
+
+            // Countdown
+            updateCountdown();
+
+            // Cards
+            const container = document.getElementById('board-cards');
+            if (keys.length === 0) {
+                container.innerHTML = '<div class="empty-state"><h3>No services nominated yet</h3><p>Use the nomination panel on the right to add services →</p></div>';
+                return;
+            }
+            container.innerHTML = keys.map(k => {
+                const s = svcs[k];
+                const rClass = s.readiness || 'unknown';
+                const rBadge = s.readiness ? `<span class="readiness-badge readiness-${s.readiness}">${s.readiness === 'green' ? '🟢 Ready' : s.readiness === 'yellow' ? '🟡 Review' : '🔴 Risk'}</span>` : '<span class="readiness-badge" style="background:var(--surface2);color:var(--text2)">⏳ Not checked</span>';
+                return `<div class="card ${rClass}">
+            <div class="card-header">
+                <div><div class="card-name">${s.name}</div><div style="font-size:11px;color:var(--text2)">${s.kind || 'Deployment'}</div></div>
+                <span class="card-tag">${s.image_tag || '?'}</span>
+            </div>
+            ${rBadge}
+            <div class="card-meta">
+                <span>👤 ${s.nominated_by || '?'}</span>
+                <span>📅 ${(s.nominated_at || '').substring(0, 10)}</span>
+                ${s.helm_version ? `<span>⎈ ${s.helm_version}</span>` : ''}
+            </div>
+            ${s.notes ? `<div style="margin-top:8px;font-size:12px;color:var(--text2);font-style:italic">"${s.notes}"</div>` : ''}
+            <div class="card-actions">
+                <button class="btn btn-sm" onclick="viewServiceDetail('${k}')">👁 Details</button>
+                <button class="btn btn-sm btn-danger" onclick="removeNomination('${k}')">✕ Remove</button>
+            </div>
+        </div>`;
+            }).join('');
+        }
+
+        function updateCountdown() {
+            if (!_board || !_board.cutoff) return;
+            const el = document.getElementById('countdown-display');
+            const cutoff = new Date(_board.cutoff);
+            const now = new Date();
+            const diff = cutoff - now;
+            if (diff <= 0) {
+                el.textContent = '⏱ Cutoff passed';
+                el.classList.add('expired');
+            } else {
+                const h = Math.floor(diff / 3600000);
+                const m = Math.floor((diff % 3600000) / 60000);
+                el.textContent = `⏱ ${h}h ${m}m to cutoff`;
+                el.classList.remove('expired');
+            }
+        }
+
+        // ═══ Render Sidebar ══════════════════════════════════════════════════════════
+        function updateSidebar() {
+            if (!_board) return;
+            document.getElementById('info-release-date').textContent = _board.release_date || '--';
+            document.getElementById('info-cutoff').textContent = (_board.cutoff || '').replace('T', ' ');
+            document.getElementById('info-svc-count').textContent = Object.keys(_board.services || {}).length;
+            document.getElementById('info-namespace').textContent = _board.namespace || 'default';
+            // Recent audit
+            const trail = (_board.audit_trail || []).slice(-5).reverse();
+            document.getElementById('sidebar-audit').innerHTML = trail.length ? trail.map(a =>
+                `<div class="audit-item"><strong>${a.action}</strong> ${a.service || ''} by ${a.by || '?'}<br><span style="font-size:10px">${(a.at || '').replace('T', ' ').substring(0, 19)}</span></div>`
+            ).join('') : '<div style="font-size:12px;color:var(--text2)">No activity yet</div>';
+        }
+
+        function renderServiceDropdown() {
+            const sel = document.getElementById('service-select');
+            const nominated = _board ? Object.keys(_board.services || {}) : [];
+            sel.innerHTML = '<option value="">Select a service...</option>' +
+                _services.map(s => {
+                    const already = nominated.includes(s.name);
+                    return `<option value="${s.name}" ${already ? 'style="color:#f59e0b"' : ''}>${s.name} (${s.image_tag})${already ? ' ★ nominated' : ''}</option>`;
+                }).join('');
+            sel.onchange = function () {
+                const s = _serviceMap[this.value];
+                document.getElementById('nom-tag').value = s ? s.image_tag : '';
+                document.getElementById('nom-helm').value = s ? (s.helm_version || 'N/A') : '';
+            };
+        }
+
+        // ═══ Actions ═════════════════════════════════════════════════════════════════
+        async function nominateService() {
+            const name = document.getElementById('service-select').value;
+            const notes = document.getElementById('nom-notes').value;
+            const by = document.getElementById('nom-by').value || 'anonymous';
+            if (!name) { showToast('Select a service first', 'error'); return; }
+            try {
+                const r = await fetch('/api/release/nominate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ service_name: name, notes, nominated_by: by }) });
+                const d = await r.json();
+                if (r.ok) { showToast(`Nominated ${name} (${d.image_tag})`); document.getElementById('nom-notes').value = ''; refreshAll(); }
+                else showToast(d.error || 'Failed', 'error');
+            } catch (e) { showToast('Network error', 'error'); }
+        }
+
+        async function removeNomination(name) {
+            if (!confirm(`Remove ${name} from this release?`)) return;
+            const by = document.getElementById('nom-by').value || 'anonymous';
+            try {
+                const r = await fetch('/api/release/remove', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ service_name: name, removed_by: by }) });
+                if (r.ok) { showToast(`Removed ${name}`); refreshAll(); }
+                else { const d = await r.json(); showToast(d.error || 'Failed', 'error'); }
+            } catch (e) { showToast('Network error', 'error'); }
+        }
+
+        async function checkDrift() {
+            const container = document.getElementById('drift-list');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Checking version drift...</div>';
+            try {
+                const r = await fetch('/api/release/drift');
+                const data = await r.json();
+                const items = data.drift_items || [];
+                if (!items.length) { container.innerHTML = '<div class="empty-state"><p>No nominations to check</p></div>'; return; }
+                container.innerHTML = items.map(d => {
+                    const cls = d.drift_status === 'match' ? 'drift-match' : d.drift_status === 'major_drift' ? 'drift-major' : 'drift-drift';
+                    const icon = d.drift_status === 'match' ? '🟢' : d.drift_status === 'major_drift' ? '🔴' : '🟡';
+                    return `<div class="drift-item ${cls}">
+                <div><strong>${d.service}</strong><div style="font-size:10px;color:var(--text2);margin-top:2px">Nominated: ${d.nominated_tag} → Live: ${d.live_tag}</div></div>
+                <span>${icon} ${d.drift_status === 'match' ? 'Match' : d.drift_status === 'major_drift' ? 'Major Drift!' : 'Drift'}</span>
+            </div>`;
+                }).join('');
+            } catch (e) { container.innerHTML = '<div class="empty-state"><p>Error: ' + e.message + '</p></div>'; }
+        }
+
+        async function runReadinessCheck() {
+            const container = document.getElementById('readiness-results');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Running AI readiness analysis... (this may take 30-60s)</div>';
+            try {
+                const r = await fetch('/api/ai/release_readiness', { method: 'POST' });
+                const data = await r.json();
+                if (data.error && !data.services) { container.innerHTML = '<div class="empty-state"><p>' + data.error + '</p></div>'; return; }
+                const overall = data.overall || 'unknown';
+                const overallBadge = `<div style="text-align:center;margin-bottom:16px"><span class="readiness-badge readiness-${overall}" style="font-size:14px;padding:6px 16px">${overall === 'green' ? '🟢 All Ready' : overall === 'yellow' ? '🟡 Needs Review' : '🔴 Risks Found'}</span><div style="font-size:13px;color:var(--text2);margin-top:6px">${data.summary || ''}</div>${data.gemini_powered ? '<div style="font-size:10px;color:var(--accent2);margin-top:4px">Powered by Gemini AI</div>' : ''}</div>`;
+                const svcHtml = Object.entries(data.services || {}).map(([name, s]) => {
+                    const checks = s.checks || {};
+                    const checksHtml = Object.entries(checks).map(([k, v]) => {
+                        const icon = v === 'pass' ? '✅' : v === 'warning' ? '⚠️' : '❌';
+                        return `<span style="margin-right:10px">${icon} ${k}</span>`;
+                    }).join('');
+                    return `<div class="card ${s.readiness || 'unknown'}" style="margin-bottom:10px">
+                <div class="card-header"><span class="card-name">${name}</span><span class="readiness-badge readiness-${s.readiness || 'unknown'}">${s.readiness === 'green' ? '🟢' : s.readiness === 'yellow' ? '🟡' : '🔴'} ${s.score || 0}/100</span></div>
+                <div style="font-size:12px;color:var(--text2);margin:6px 0">${s.summary || ''}</div>
+                <div style="font-size:11px">${checksHtml}</div>
+                ${(s.risks || []).length ? `<div style="margin-top:6px;font-size:11px;color:var(--red)">${s.risks.map(r => '⚠ ' + r).join('<br>')}</div>` : ''}
+            </div>`;
+                }).join('');
+                container.innerHTML = overallBadge + svcHtml;
+                refreshAll();  // refresh board to show updated readiness
+            } catch (e) { container.innerHTML = '<div class="empty-state"><p>Error: ' + e.message + '</p></div>'; }
+        }
+
+        async function exportManifest(fmt) {
+            try {
+                if (fmt === 'yaml') { window.open('/api/release/export?format=yaml', '_blank'); return; }
+                const r = await fetch('/api/release/export?format=json');
+                const data = await r.json();
+                document.getElementById('export-output').innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+            } catch (e) { showToast('Export failed', 'error'); }
+        }
+
+        async function generateReleaseNotes() {
+            const container = document.getElementById('export-output');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Generating AI release notes...</div>';
+            try {
+                const r = await fetch('/api/ai/release_notes', { method: 'POST' });
+                const data = await r.json();
+                container.innerHTML = `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:16px;white-space:pre-wrap;font-size:13px;line-height:1.7">${data.notes || 'No notes generated'}</div>
+        <button class="btn btn-sm" style="margin-top:8px" onclick="navigator.clipboard.writeText(document.querySelector('#export-output pre,#export-output div').textContent);showToast('Copied!')">📋 Copy to Clipboard</button>`;
+            } catch (e) { container.innerHTML = '<div class="empty-state"><p>Error: ' + e.message + '</p></div>'; }
+        }
+
+        async function finalizeBoard() {
+            if (!confirm('Lock the release board? Only Release Manager can modify after this.')) return;
+            const by = document.getElementById('nom-by').value || 'release-manager';
+            try {
+                const r = await fetch('/api/release/finalize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ finalized_by: by }) });
+                if (r.ok) { showToast('Board locked'); refreshAll(); }
+                else { const d = await r.json(); showToast(d.error || 'Failed', 'error'); }
+            } catch (e) { showToast('Error', 'error'); }
+        }
+
+        async function completeRelease() {
+            if (!confirm('Mark this release as COMPLETED? The board will become read-only.')) return;
+            const by = document.getElementById('nom-by').value || 'release-manager';
+            try {
+                const r = await fetch('/api/release/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ completed_by: by }) });
+                if (r.ok) { showToast('Release completed! 🎉'); refreshAll(); }
+                else { const d = await r.json(); showToast(d.error || 'Failed', 'error'); }
+            } catch (e) { showToast('Error', 'error'); }
+        }
+
+        function viewServiceDetail(name) {
+            const s = (_board && _board.services) ? _board.services[name] : null;
+            if (!s) return;
+            const hist = (s.version_history || []).map(h =>
+                `<div class="audit-item"><strong>${h.from_tag || 'new'} → ${h.to_tag}</strong> by ${h.changed_by}<br>${h.reason}<br><span style="font-size:10px">${(h.changed_at || '').replace('T', ' ').substring(0, 19)}</span></div>`
+            ).join('');
+            const rd = s.readiness_details;
+            const rdHtml = rd ? `<div style="margin-top:12px"><strong>AI Readiness:</strong> <span class="readiness-badge readiness-${rd.readiness || 'unknown'}">${rd.readiness} ${rd.score || 0}/100</span><p style="font-size:12px;margin-top:6px">${rd.summary || ''}</p></div>` : '';
+            openModal(name, `
+        <div style="font-size:13px;line-height:1.8">
+            <div>📦 Image: <code>${s.image || '?'}</code></div>
+            <div>🏷️ Tag: <strong>${s.image_tag || '?'}</strong></div>
+            <div>⎈ Helm: ${s.helm_version || 'N/A'}</div>
+            <div>👤 Nominated by: ${s.nominated_by || '?'}</div>
+            <div>📅 Nominated at: ${(s.nominated_at || '').replace('T', ' ').substring(0, 19)}</div>
+            ${s.notes ? `<div>📝 Notes: <em>${s.notes}</em></div>` : ''}
+            ${rdHtml}
+            <hr style="border:none;border-top:1px solid var(--border);margin:12px 0">
+            <div class="section-title">Version History</div>
+            ${hist || '<div style="color:var(--text2)">No changes</div>'}
+        </div>
+    `);
+        }
+
+        function renderAudit() {
+            const trail = (_board && _board.audit_trail) ? _board.audit_trail.slice().reverse() : [];
+            const container = document.getElementById('audit-list');
+            if (!trail.length) { container.innerHTML = '<div class="empty-state"><p>No actions recorded yet</p></div>'; return; }
+            container.innerHTML = trail.map(a => {
+                const icon = a.action === 'nominate' ? '➕' : a.action === 're-nominate' ? '🔄' : a.action === 'remove' ? '❌' : a.action === 'finalize' ? '🔒' : a.action === 'release' ? '🚀' : '📋';
+                return `<div class="audit-item" style="border-left-color:var(--accent)">
+            <strong>${icon} ${a.action}</strong> ${a.service ? `<code>${a.service}</code>` : ''} ${a.version ? `→ ${a.version}` : ''} ${a.from_version ? `${a.from_version} → ${a.to_version}` : ''}
+            <br>by <strong>${a.by || '?'}</strong> at ${(a.at || '').replace('T', ' ').substring(0, 19)}
+        </div>`;
+            }).join('');
+        }
+
+        // ═══ Init ════════════════════════════════════════════════════════════════════
+        async function refreshAll() { await fetchBoard(); await fetchServices(); }
+        refreshAll();
+        setInterval(updateCountdown, 60000);
+
+        // CIDP keepalive
+        let _lastActivity = Date.now();
+        ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'].forEach(e => {
+            document.addEventListener(e, () => { _lastActivity = Date.now(); }, { passive: true });
+        });
+        setInterval(async () => {
+            if (Date.now() - _lastActivity < 15 * 60 * 1000) {
+                try { await fetch('/api/ping'); } catch (e) { }
+            }
+        }, 3 * 60 * 1000);
+    </script>
+</body>
+
+</html>
