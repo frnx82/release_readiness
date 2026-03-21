@@ -26,7 +26,7 @@
 
 ### Architecture Overview
 
-![Release Board Architecture](diagrams/release_board_architecture.png)
+![Release Board Architecture](release_board_architecture.png)
 
 ---
 
@@ -36,7 +36,7 @@
 
 A new **"Release"** tab in the dashboard with a board for the current release cycle:
 
-![Release Board UI](diagrams/release_board_ui.png)
+![Release Board UI](release_board_ui.png)
 
 ### Nomination Flow
 
@@ -78,7 +78,7 @@ The dashboard continuously compares nominated versions against the live UAT clus
 ### Nomination History (Audit Trail)
 Every nomination change is logged:
 
-![Nomination Version History](diagrams/release_nomination_history.png)
+![Nomination Version History](release_nomination_history.png)
 
 ### Access Control
 
@@ -117,7 +117,7 @@ When nominations are submitted or updated, Gemini runs an automated readiness ch
 
 ### AI Summary (Gemini generates this)
 
-![AI Readiness Summary](diagrams/release_ai_readiness.png)
+![AI Readiness Summary](release_ai_readiness.png)
 
 ---
 
@@ -174,7 +174,7 @@ If Jira API is available, automatically update the release ticket with the manif
 
 Over time, the dashboard builds a release history:
 
-![Release History](diagrams/release_history.png)
+![Release History](release_history.png)
 
 **AI can analyze patterns:**
 - "billing-service has had issues in 3 of the last 5 releases — recommend additional testing"
