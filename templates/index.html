@@ -630,6 +630,7 @@
                 <div class="tab" onclick="switchTab('readiness')">🤖 AI Readiness</div>
                 <div class="tab" onclick="switchTab('audit')">📜 Audit Trail</div>
                 <div class="tab" onclick="switchTab('export')">📦 Export</div>
+                <div class="tab" onclick="switchTab('help')">❓ Help</div>
             </div>
 
             <!-- Board Tab -->
@@ -687,6 +688,161 @@
                     <button class="btn btn-danger" onclick="completeRelease()">✅ Mark Released</button>
                 </div>
                 <div id="export-output"></div>
+            </div>
+
+            <!-- Help Tab -->
+            <div class="tab-content" id="tab-help">
+                <div style="max-width:800px">
+                    <h2 style="margin-bottom:16px;font-size:20px;color:var(--accent2)">📖 How Release Readiness Works</h2>
+                    <p style="color:var(--text2);font-size:13px;line-height:1.7;margin-bottom:24px">
+                        Release Readiness is an AI-powered release coordination board. Instead of posting versions
+                        in Teams and compiling spreadsheets, developers nominate services here and AI validates
+                        everything before release.
+                    </p>
+
+                    <!-- Board -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:16px;margin-bottom:8px">📋 Board</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            The Board is the central hub of the release cycle. It shows all services nominated for
+                            the upcoming release.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">How it works:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>A developer selects a service from the dropdown — the <strong>image tag</strong> and
+                                    <strong>Helm version</strong> are auto-filled from the live UAT cluster</li>
+                                <li>The version is <strong>locked at nomination time</strong> — it becomes a snapshot.
+                                    If someone deploys a newer version to UAT later, the board still shows the original
+                                    nominated version</li>
+                                <li>To update the version, the developer must <strong>re-nominate</strong> (which logs the
+                                    change in audit trail)</li>
+                                <li>Each service card shows: name, image tag, Helm version, who nominated it, and when</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--accent)">
+                            💡 <strong>Tip:</strong> The board has 3 states — <strong>Open</strong> (accepting nominations),
+                            <strong>Locked</strong> (past cutoff, no changes), and <strong>Released</strong> (read-only archive).
+                        </div>
+                    </div>
+
+                    <!-- Version Drift -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:16px;margin-bottom:8px">🔀 Version Drift</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Version Drift compares the <strong>nominated version</strong> on the board against what's
+                            <strong>actually running in the UAT cluster right now</strong>.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Why it matters:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><span style="color:var(--green)">🟢 No Drift</span> — Nominated version matches UAT. Everything is in sync.</li>
+                                <li><span style="color:var(--yellow)">🟡 Minor Drift</span> — UAT has a newer patch/minor version.
+                                    Someone deployed an update after nomination. Developer should re-nominate.</li>
+                                <li><span style="color:var(--red)">🔴 Major Drift</span> — UAT has a different major version.
+                                    This needs investigation — it could mean a breaking change was deployed.</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Example:</strong>
+                            <div style="margin-top:6px;padding:10px 14px;background:var(--bg);border-radius:8px;font-family:monospace;font-size:12px;color:var(--text2)">
+                                10:00 AM — Dev A deploys billing-service v2.3.3 to UAT<br>
+                                10:05 AM — Dev A nominates billing-service → board locks v2.3.3 ✅<br>
+                                &nbsp;2:00 PM — Dev B deploys billing-service v2.3.5 to UAT (bug fix)<br>
+                                &nbsp;3:00 PM — Drift check → ⚠️ board has v2.3.3, UAT has v2.3.5<br>
+                                &nbsp;3:01 PM — Dev B re-nominates → board updates to v2.3.5 ✅
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- AI Readiness -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:16px;margin-bottom:8px">🤖 AI Readiness</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            AI Readiness uses <strong>Google Gemini</strong> to perform an automated health check on every
+                            nominated service. It analyzes live Kubernetes data to determine if each service is safe to release.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">What AI checks:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>Pod health</strong> — are all replicas running? Any crash loops or restarts?</li>
+                                <li><strong>Recent events</strong> — K8s warnings, errors, or scheduling issues</li>
+                                <li><strong>Resource usage</strong> — is the service running within CPU/memory limits?</li>
+                                <li><strong>Container status</strong> — any OOMKills, image pull errors, or probe failures?</li>
+                                <li><strong>Version risk</strong> — major version bumps flagged for extra review</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Readiness scores:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><span style="color:var(--green)">🟢 Ready (70-100)</span> — all checks pass, safe to release</li>
+                                <li><span style="color:var(--yellow)">🟡 Review (40-69)</span> — concerns found, release manager should review</li>
+                                <li><span style="color:var(--red)">🔴 Risk (0-39)</span> — blocking issues found, should not release until resolved</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--green)">
+                            💡 <strong>Tip:</strong> AI Readiness runs once when you click "Run AI Check". If a service
+                            is re-nominated with a new version, you should run the check again to re-evaluate.
+                        </div>
+                    </div>
+
+                    <!-- Audit Trail -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:16px;margin-bottom:8px">📜 Audit Trail</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            The Audit Trail records <strong>every action</strong> taken on the release board with timestamps,
+                            who performed it, and what changed. This provides full traceability for compliance and post-release review.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">What gets logged:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>Nominations</strong> — who nominated which service and when</li>
+                                <li><strong>Re-nominations</strong> — version changes with from → to versions</li>
+                                <li><strong>Removals</strong> — who removed a service and why</li>
+                                <li><strong>Board Lock</strong> — when the cutoff was enforced</li>
+                                <li><strong>Release Complete</strong> — when the release was marked as done</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--yellow)">
+                            💡 <strong>Tip:</strong> The audit trail is also visible in the sidebar under "Recent Activity"
+                            for quick reference.
+                        </div>
+                    </div>
+
+                    <!-- Export -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:16px;margin-bottom:8px">📦 Export</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            The Export tab lets you generate release artifacts and control the board lifecycle.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Available actions:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>Export JSON</strong> — download the full release manifest as a structured JSON file</li>
+                                <li><strong>Export YAML</strong> — download the release manifest in YAML format (for Helm/ArgoCD workflows)</li>
+                                <li><strong>AI Release Notes</strong> — Gemini generates human-readable release notes summarizing
+                                    all changes, version bumps, and risk flags — ready to paste into Jira or Teams</li>
+                                <li><strong>Lock Board (Cutoff)</strong> — freezes the board so no more nominations can be made.
+                                    Use this at your Wednesday 5 PM cutoff</li>
+                                <li><strong>Mark Released</strong> — marks the release as complete and archives the board.
+                                    A new board will be created for the next release cycle</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Workflow -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:16px;margin-bottom:8px">🔄 Typical Release Workflow</h3>
+                        <div style="font-size:13px;line-height:2;color:var(--text2)">
+                            <div>1️⃣ <strong>Monday–Wednesday:</strong> Developers nominate services as they confirm readiness</div>
+                            <div>2️⃣ <strong>Wednesday before cutoff:</strong> QA/Release Manager runs Version Drift + AI Readiness checks</div>
+                            <div>3️⃣ <strong>Wednesday 5 PM:</strong> Board is locked (cutoff). No more nominations.</div>
+                            <div>4️⃣ <strong>Thursday:</strong> Export manifests, generate AI release notes, update Jira</div>
+                            <div>5️⃣ <strong>Friday:</strong> Deploy to production. Mark Released. New cycle begins.</div>
+                        </div>
+                    </div>
+
+                </div>
             </div>
         </div>
 
@@ -761,7 +917,7 @@
         }
         function switchTab(name) {
             document.querySelectorAll('.tab').forEach((t, i) => {
-                const tabs = ['board', 'drift', 'readiness', 'audit', 'export'];
+                const tabs = ['board', 'drift', 'readiness', 'audit', 'export', 'help'];
                 t.classList.toggle('active', tabs[i] === name);
             });
             document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + name));

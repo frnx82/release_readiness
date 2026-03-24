@@ -40,16 +40,48 @@ def get_model():
             return _model_client
         try:
             from google import genai
-            project = os.environ.get('GOOGLE_CLOUD_PROJECT') or os.environ.get('GEMINI_PROJECT_ID')
-            location = os.environ.get('GOOGLE_CLOUD_LOCATION', 'us-central1')
-            if project:
-                _model_client = genai.Client(project=project, location=location)
+            from google.oauth2 import service_account
+
+            sa_key_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS', '')
+            project = (os.environ.get('GCP_PROJECT_ID')
+                       or os.environ.get('GOOGLE_CLOUD_PROJECT')
+                       or os.environ.get('GEMINI_PROJECT_ID'))
+            location = os.environ.get('GCP_REGION',
+                       os.environ.get('GOOGLE_CLOUD_LOCATION', 'us-central1'))
+
+            if sa_key_path and project:
+                # Explicit service-account JSON file (on-prem GDC)
+                creds = service_account.Credentials.from_service_account_file(
+                    sa_key_path,
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                )
+                sa_email = json.load(open(sa_key_path)).get("client_email", "?")
+                _model_client = genai.Client(
+                    vertexai=True,
+                    project=project,
+                    location=location,
+                    credentials=creds,
+                )
+                print(f"[gemini] Model client initialised via SA key "
+                      f"(project={project}, model={GEMINI_MODEL}, sa={sa_email})")
+            elif project:
+                # Fallback: Application Default Credentials (GKE Workload Identity etc.)
+                _model_client = genai.Client(
+                    vertexai=True,
+                    project=project,
+                    location=location,
+                )
+                print(f"[gemini] Model client initialised via ADC "
+                      f"(project={project}, model={GEMINI_MODEL})")
             else:
+                # Last resort: API key (non-Vertex)
                 api_key = os.environ.get('GEMINI_API_KEY', '')
                 if api_key:
                     _model_client = genai.Client(api_key=api_key)
-            if _model_client:
-                print(f"[gemini] Model client initialised (project={project}, model={GEMINI_MODEL})")
+                    print(f"[gemini] Model client initialised via API key "
+                          f"(model={GEMINI_MODEL})")
+                else:
+                    print("[gemini] No credentials configured. Set GOOGLE_APPLICATION_CREDENTIALS + GCP_PROJECT_ID")
         except Exception as e:
             print(f"[gemini] Init failed: {e}")
     return _model_client

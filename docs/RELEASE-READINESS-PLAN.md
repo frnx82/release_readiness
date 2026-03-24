@@ -53,6 +53,24 @@ The version comes directly from the Kubernetes API:
 
 This eliminates version typos entirely.
 
+### Version Locking at Nomination Time
+
+When a developer nominates a service, the dashboard **takes a snapshot** of the current UAT version and stores it in the release board. This version is **locked to the board** — it does not auto-update if someone deploys a new version to UAT later.
+
+| Timeline | What Happens | Board Shows |
+|---|---|---|
+| 10:00 AM | Dev A deploys billing-service `v2.3.3` to UAT | — |
+| 10:05 AM | Dev A nominates billing-service | `v2.3.3` ✅ (locked) |
+| 2:00 PM | Dev B deploys billing-service `v2.3.5` to UAT (bug fix) | `v2.3.3` ⚠️ (drift detected) |
+| 2:05 PM | Auto-drift alert sent to Teams/email | — |
+| 3:00 PM | Dev B re-nominates → board updates | `v2.3.5` ✅ (locked) |
+
+**Why lock instead of auto-update?**
+- The nomination is a **commitment** — "this is the version we intend to release"
+- Auto-updating could silently include untested changes
+- The developer who deployed the new version should **consciously** re-nominate
+- Drift detection + notification is the safety net that catches unintentional gaps
+
 ---
 
 ## Feature 2: Re-Nomination (Version Update)
@@ -69,11 +87,51 @@ The dashboard continuously compares nominated versions against the live UAT clus
 | **🟡 Drift** | Nominated v2.3.2, UAT now has v2.3.4 | "2 newer versions exist — update nomination?" |
 | **🔴 Major Drift** | Nominated v2.3.2, UAT has v3.0.0 | "Major version change detected — re-review required" |
 
+### Automatic Drift Check (Background)
+
+Instead of relying on someone to manually click "Check Drift", the dashboard runs a **background drift check every 30 minutes** while the board is open. If drift is detected, it automatically notifies the team:
+
+**How it works:**
+```python
+# Background scheduler — runs every 30 minutes
+@scheduler.task('interval', id='auto_drift_check', minutes=30)
+def auto_drift_check():
+    board = read_board()
+    if board['status'] != 'open':
+        return  # skip if board is locked/released
+    
+    drift_results = check_all_services_drift(board)
+    drifted = [s for s in drift_results if s['has_drift']]
+    
+    if drifted:
+        send_drift_alert(drifted)  # Teams + email notification
+```
+
+**Teams/Email notification example:**
+```
+⚠️ Version Drift Detected on Release Board (March 21, 2026)
+
+2 services have drifted since nomination:
+
+│ Service           │ Nominated │ UAT Now  │ Deployed By │ When     │
+│ billing-service   │ v2.3.3    │ v2.3.5   │ Dev B       │ 2:00 PM  │
+│ auth-service      │ v3.1.0    │ v3.1.1   │ Dev C       │ 3:15 PM  │
+
+👉 Please re-nominate or confirm the intended version in the Release Board.
+   Dashboard: https://release-readiness.internal/
+```
+
+**Drift check also runs:**
+- When any nomination is added or updated
+- When QA clicks "Prepare UAT"
+- 1 hour before cutoff (final alert)
+
 ### Update Flow
 1. Dev pushes code fix → CI builds v2.3.3 → ArgoCD deploys to UAT
-2. Release Board detects drift: `⚠️ billing-service: UAT has v2.3.3 but nomination is for v2.3.2`
-3. Dev clicks **"🔄 Update to v2.3.3"** → adds a note → nomination updates
-4. AI re-runs readiness check on the new version automatically
+2. Background drift check detects: `⚠️ billing-service: UAT has v2.3.3 but nomination is for v2.3.2`
+3. **Automatic notification** sent to Teams channel + email
+4. Dev clicks **"🔄 Update to v2.3.3"** → adds a note → nomination updates
+5. AI re-runs readiness check on the new version automatically
 
 ### Nomination History (Audit Trail)
 Every nomination change is logged:
@@ -213,7 +271,10 @@ data:
 - New "Release" tab in the UI
 - Service nomination from live cluster dropdown
 - Auto-fill image tag and Helm version from K8s API
+- Version locking at nomination time (snapshot stored in board)
 - Version drift detection (compare nomination vs. live UAT)
+- **Automatic drift check** every 30 minutes with Teams/email alerts
+- Pre-cutoff drift alert (1 hour before cutoff)
 - Re-nomination with audit trail
 - Basic cutoff enforcement (open/closed)
 - ConfigMap-based storage
@@ -246,6 +307,8 @@ data:
 | `/api/release/nominate` | `POST` | Nominate a service |
 | `/api/release/update` | `PUT` | Update a nomination version |
 | `/api/release/remove` | `DELETE` | Remove a nomination |
+| `/api/release/drift` | `GET` | Check drift for all nominated services |
+| `/api/release/drift/auto` | `POST` | Trigger manual drift check + notify |
 | `/api/release/finalize` | `POST` | Lock the board at cutoff |
 | `/api/release/export` | `GET` | Export release manifest |
 | `/api/ai/release_readiness` | `POST` | AI readiness check for all nominated services |
