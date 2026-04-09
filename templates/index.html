@@ -225,6 +225,40 @@
             gap: 14px
         }
 
+        /* List view */
+        .list-view-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+        .list-view-table th { text-align: left; padding: 10px 12px; color: var(--text2); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; border-bottom: 1px solid var(--border); background: var(--surface2); position: sticky; top: 0; }
+        .list-view-table th:first-child { border-radius: 8px 0 0 0; }
+        .list-view-table th:last-child { border-radius: 0 8px 0 0; }
+        .list-view-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+        .list-view-table tr:hover td { background: var(--surface2); }
+        .list-view-table .type-badge { font-size: 10px; padding: 2px 8px; border-radius: 4px; background: var(--surface2); color: var(--text2); white-space: nowrap; }
+        .list-view-table .type-badge.custom { background: rgba(168,85,247,.15); color: #a855f7; }
+
+        .view-toggle { display: inline-flex; gap: 2px; background: var(--bg); border-radius: 6px; padding: 2px; }
+        .view-toggle button { background: none; border: none; padding: 4px 10px; border-radius: 5px; cursor: pointer; font-size: 14px; color: var(--text2); transition: all .15s; }
+        .view-toggle button.active { background: var(--accent); color: #fff; }
+
+        /* Deploy modal */
+        .deploy-modal-overlay { position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1001;display:none;align-items:center;justify-content:center;backdrop-filter:blur(4px); }
+        .deploy-modal-overlay.open { display:flex; }
+        .deploy-modal { background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;width:480px;max-width:90vw;box-shadow:0 20px 60px rgba(0,0,0,.5); }
+        .deploy-env-picker { display:flex;gap:6px;margin:12px 0; }
+        .deploy-env-picker button { flex:1;padding:10px;border:2px solid var(--border);border-radius:8px;background:var(--surface2);color:var(--text);font-size:13px;font-weight:600;cursor:pointer;transition:all .2s; }
+        .deploy-env-picker button:hover { border-color:var(--accent); }
+        .deploy-env-picker button.selected { border-color:var(--accent);background:rgba(99,102,241,.15);color:var(--accent); }
+        .deploy-status-box { margin-top:16px;padding:14px;background:var(--bg);border-radius:10px;border:1px solid var(--border); }
+        .deploy-step { display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px; }
+        .deploy-step .step-icon { width:18px;text-align:center; }
+        .btn-deploy { background:linear-gradient(135deg,#10b981,#059669);color:#fff;border:none;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;width:100%;transition:all .2s; }
+        .btn-deploy:hover { transform:translateY(-1px);box-shadow:0 4px 12px rgba(16,185,129,.3); }
+        .btn-deploy:disabled { opacity:.5;cursor:not-allowed;transform:none; }
+        .gh-login-box { padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;margin-bottom:4px; }
+        .gh-login-box .btn-github { display:flex;align-items:center;gap:8px;width:100%;padding:8px 12px;border-radius:8px;background:#24292e;color:#fff;border:none;font-size:12px;font-weight:600;cursor:pointer;transition:all .2s; }
+        .gh-login-box .btn-github:hover { background:#333; }
+        .gh-user-info { display:flex;align-items:center;gap:8px;font-size:12px; }
+        .gh-user-info .avatar { width:24px;height:24px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;font-weight:700; }
+
         .btn {
             display: inline-flex;
             align-items: center;
@@ -581,6 +615,40 @@
                 grid-template-columns: repeat(2, 1fr)
             }
         }
+
+        /* ── Chat Panel ───────────────────────────── */
+        .chat-container { display:flex; flex-direction:column; height:calc(100vh - 260px); min-height:400px }
+        .chat-messages { flex:1; overflow-y:auto; padding:4px 0; display:flex; flex-direction:column; gap:12px }
+        .chat-msg { display:flex; gap:10px; max-width:90%; animation:fadeUp .3s ease }
+        .chat-msg.user { align-self:flex-end; flex-direction:row-reverse }
+        .chat-msg .avatar { width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:14px; flex-shrink:0 }
+        .chat-msg.user .avatar { background:linear-gradient(135deg,var(--accent),#818cf8) }
+        .chat-msg.bot .avatar { background:linear-gradient(135deg,#10b981,#059669) }
+        .chat-msg .bubble { padding:12px 16px; border-radius:16px; font-size:13px; line-height:1.7; word-break:break-word }
+        .chat-msg.user .bubble { background:var(--accent); color:#fff; border-bottom-right-radius:4px }
+        .chat-msg.bot .bubble { background:var(--surface2); border:1px solid var(--border); border-bottom-left-radius:4px; color:var(--text) }
+        .chat-msg.bot .bubble table { width:100%; border-collapse:collapse; margin:8px 0; font-size:12px }
+        .chat-msg.bot .bubble th, .chat-msg.bot .bubble td { border:1px solid var(--border); padding:5px 8px; text-align:left }
+        .chat-msg.bot .bubble th { background:var(--surface); font-weight:600; color:var(--accent2) }
+        .chat-msg.bot .bubble code { background:rgba(99,102,241,.15); padding:1px 5px; border-radius:4px; font-size:12px; color:var(--accent2) }
+        .chat-msg.bot .bubble strong { color:var(--accent2) }
+        .chat-msg.bot .bubble ul, .chat-msg.bot .bubble ol { margin:6px 0 6px 18px }
+        .chat-msg.bot .bubble li { margin:3px 0 }
+        .chat-input-bar { display:flex; gap:8px; margin-top:12px; align-items:flex-end }
+        .chat-input-bar textarea { flex:1; background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:10px 14px; color:var(--text); font-family:inherit; font-size:13px; resize:none; outline:none; min-height:42px; max-height:120px; line-height:1.5; transition:border-color .2s }
+        .chat-input-bar textarea:focus { border-color:var(--accent) }
+        .chat-input-bar button { background:var(--accent); border:none; color:#fff; padding:10px 18px; border-radius:12px; cursor:pointer; font-weight:600; font-size:13px; transition:all .2s; white-space:nowrap }
+        .chat-input-bar button:hover { background:var(--accent2); transform:translateY(-1px) }
+        .chat-input-bar button:disabled { opacity:.5; cursor:not-allowed; transform:none }
+        .chat-suggestions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px }
+        .chat-pill { background:var(--surface2); border:1px solid var(--border); padding:6px 14px; border-radius:20px; font-size:12px; cursor:pointer; color:var(--text2); transition:all .2s }
+        .chat-pill:hover { background:var(--accent); color:#fff; border-color:var(--accent) }
+        .typing-indicator { display:flex; gap:4px; padding:8px 12px }
+        .typing-indicator span { width:7px; height:7px; background:var(--text2); border-radius:50%; animation:typingBounce 1.4s infinite ease-in-out }
+        .typing-indicator span:nth-child(2) { animation-delay:.2s }
+        .typing-indicator span:nth-child(3) { animation-delay:.4s }
+        @keyframes typingBounce { 0%,80%,100%{transform:scale(0)} 40%{transform:scale(1)} }
+        @keyframes fadeUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
     </style>
 </head>
 
@@ -630,11 +698,20 @@
                 <div class="tab" onclick="switchTab('readiness')">🤖 AI Readiness</div>
                 <div class="tab" onclick="switchTab('audit')">📜 Audit Trail</div>
                 <div class="tab" onclick="switchTab('export')">📦 Export</div>
+                <div class="tab" onclick="switchTab('uat')">🖥️ UAT Env</div>
+                <div class="tab" onclick="switchTab('deploy')">🚀 Deploy</div>
+                <div class="tab" onclick="switchTab('chat')">💬 Chat</div>
                 <div class="tab" onclick="switchTab('help')">❓ Help</div>
             </div>
 
             <!-- Board Tab -->
             <div class="tab-content active" id="tab-board">
+                <div style="display:flex;justify-content:flex-end;margin-bottom:10px">
+                    <div class="view-toggle">
+                        <button id="view-tile-btn" class="active" onclick="toggleBoardView('tile')" title="Tile View">▦</button>
+                        <button id="view-list-btn" onclick="toggleBoardView('list')" title="List View">☰</button>
+                    </div>
+                </div>
                 <div id="board-cards" class="cards-grid">
                     <div class="empty-state">
                         <h3>No services nominated yet</h3>
@@ -690,6 +767,80 @@
                 <div id="export-output"></div>
             </div>
 
+            <!-- UAT Environment Tab -->
+            <div class="tab-content" id="tab-uat">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                    <div>
+                        <h3 style="font-size:16px;margin:0">🖥️ UAT Environment — Live Services</h3>
+                        <p style="font-size:12px;color:var(--text2);margin:4px 0 0">All services currently deployed in the UAT Kubernetes namespace</p>
+                    </div>
+                    <button class="btn btn-sm" onclick="loadUATServices()">🔄 Refresh</button>
+                </div>
+                <div id="uat-services-list">
+                    <div class="empty-state"><p>Loading UAT services...</p></div>
+                </div>
+            </div>
+
+            <!-- Deploy Tab -->
+            <div class="tab-content" id="tab-deploy">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                    <div>
+                        <h3 style="font-size:16px;margin:0">🚀 Deployment Workflows</h3>
+                        <p style="font-size:12px;color:var(--text2);margin:4px 0 0">Trigger GitHub Actions workflows on <strong id="deploy-repo-name">—</strong></p>
+                    </div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <span style="font-size:11px;padding:3px 10px;background:rgba(16,185,129,.12);color:#10b981;border-radius:6px;font-weight:600">🧪 UAT Only</span>
+                        <button class="btn btn-sm" onclick="loadDeployWorkflows()">🔄 Refresh</button>
+                    </div>
+                </div>
+                <div id="deploy-workflows-list">
+                    <div class="loading"><div class="spinner"></div>Loading workflows...</div>
+                </div>
+                <!-- Inline run status -->
+                <div id="deploy-tab-status" style="display:none;margin-top:16px">
+                    <div style="padding:14px;background:var(--bg);border-radius:10px;border:1px solid var(--border)">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                            <span id="deploy-tab-status-icon">⏳</span>
+                            <strong style="font-size:13px" id="deploy-tab-status-text">Queued...</strong>
+                            <span style="font-size:11px;color:var(--text2);margin-left:auto" id="deploy-tab-run-id"></span>
+                            <a id="deploy-tab-run-link" href="#" target="_blank" style="font-size:11px;color:var(--accent);text-decoration:none;display:none">View on GitHub ↗</a>
+                        </div>
+                        <div id="deploy-tab-steps"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chat Tab -->
+            <div class="tab-content" id="tab-chat">
+                <div class="chat-container">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                        <div>
+                            <h3 style="font-size:16px;margin:0">💬 AI Release Chatbot</h3>
+                            <p style="font-size:12px;color:var(--text2);margin:4px 0 0">Ask anything about the release — powered by Gemini</p>
+                        </div>
+                        <button class="btn btn-sm" onclick="clearChat()" title="Clear chat history">🗑️ Clear</button>
+                    </div>
+                    <div class="chat-suggestions" id="chat-suggestions">
+                        <div class="chat-pill" onclick="sendSuggestion(this)">What's in this release?</div>
+                        <div class="chat-pill" onclick="sendSuggestion(this)">Any drift issues?</div>
+                        <div class="chat-pill" onclick="sendSuggestion(this)">Show readiness scores</div>
+                        <div class="chat-pill" onclick="sendSuggestion(this)">Show audit trail</div>
+                        <div class="chat-pill" onclick="sendSuggestion(this)">What's running in UAT?</div>
+                        <div class="chat-pill" onclick="sendSuggestion(this)">Help</div>
+                    </div>
+                    <div class="chat-messages" id="chat-messages">
+                        <div class="chat-msg bot">
+                            <div class="avatar">🤖</div>
+                            <div class="bubble">Hi! I'm your <strong>Release Readiness Assistant</strong>. Ask me anything about the current release — nominated services, version drift, readiness scores, audit trail, or what's running in UAT.<br><br>Try one of the suggestions above, or type your own question!</div>
+                        </div>
+                    </div>
+                    <div class="chat-input-bar">
+                        <textarea id="chat-input" placeholder="Ask about the release..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea>
+                        <button id="chat-send-btn" onclick="sendChat()">Send ➤</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- Help Tab -->
             <div class="tab-content" id="tab-help">
                 <div style="max-width:800px">
@@ -697,27 +848,43 @@
                     <p style="color:var(--text2);font-size:13px;line-height:1.7;margin-bottom:24px">
                         Release Readiness is an AI-powered release coordination board. Instead of posting versions
                         in Teams and compiling spreadsheets, developers nominate services here and AI validates
-                        everything before release.
+                        everything before release. Deployments to UAT are triggered via GitHub Actions workflows
+                        from the Deploy tab.
                     </p>
+
+                    <!-- GitHub Login -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:16px;margin-bottom:8px">🔐 GitHub Login</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Release Readiness uses <strong>GitHub OAuth</strong> for authentication. Click <strong>"Login with GitHub"</strong>
+                            in the sidebar to connect your account. This is required for triggering deployments from the Deploy tab.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Details:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>Secure OAuth 2.0 flow — no passwords stored in the app</li>
+                                <li>Your GitHub identity is used for audit trail (who triggered which deploy)</li>
+                                <li>Requires <strong>read access</strong> to the deployment repo and <strong>Actions write access</strong> to trigger workflows</li>
+                                <li>Also supports PAT (Personal Access Token) mode — set <code>GITHUB_TOKEN</code> env var for service accounts</li>
+                            </ul>
+                        </div>
+                    </div>
 
                     <!-- Board -->
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
                         <h3 style="font-size:16px;margin-bottom:8px">📋 Board</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
                             The Board is the central hub of the release cycle. It shows all services nominated for
-                            the upcoming release.
+                            the upcoming release. Supports both <strong>K8s services</strong> (auto-detected) and <strong>Custom Components</strong> (manual entry).
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">How it works:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li>A developer selects a service from the dropdown — the <strong>image tag</strong> and
+                                <li>Select a service from the dropdown — the <strong>image tag</strong> and
                                     <strong>Helm version</strong> are auto-filled from the live UAT cluster</li>
-                                <li>The version is <strong>locked at nomination time</strong> — it becomes a snapshot.
-                                    If someone deploys a newer version to UAT later, the board still shows the original
-                                    nominated version</li>
-                                <li>To update the version, the developer must <strong>re-nominate</strong> (which logs the
-                                    change in audit trail)</li>
-                                <li>Each service card shows: name, image tag, Helm version, who nominated it, and when</li>
+                                <li>The version is <strong>locked at nomination time</strong> — if someone deploys a newer version to UAT later, the board still shows the original nominated version</li>
+                                <li>To update, <strong>re-nominate</strong> the service (logged in audit trail) or use <strong>📜 Version History</strong> to rollback</li>
+                                <li>Toggle between <strong>Tile view (▦)</strong> and <strong>List view (☰)</strong></li>
                             </ul>
                         </div>
                         <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--accent)">
@@ -726,32 +893,41 @@
                         </div>
                     </div>
 
+                    <!-- Version History -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:16px;margin-bottom:8px">📜 Version History</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Every time a service is nominated or re-nominated, the previous version is saved.
+                            Click the <strong>📜 button</strong> on any service card to view all past nominations.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">What you can do:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>View a timeline of all nominated versions with who/when</li>
+                                <li>Click <strong>"↩ Rollback to this version"</strong> to revert to any previously nominated version</li>
+                                <li>Rollbacks are logged in the audit trail for traceability</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--yellow)">
+                            💡 <strong>Use case:</strong> You nominated v2.3.5, but QA found a bug. Rollback to the
+                            previously nominated v2.3.3 without needing to redeploy.
+                        </div>
+                    </div>
+
                     <!-- Version Drift -->
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
                         <h3 style="font-size:16px;margin-bottom:8px">🔀 Version Drift</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            Version Drift compares the <strong>nominated version</strong> on the board against what's
-                            <strong>actually running in the UAT cluster right now</strong>.
+                            Compares the <strong>nominated version</strong> on the board against what's
+                            <strong>actually running in UAT right now</strong>.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
-                            <strong style="color:var(--accent2)">Why it matters:</strong>
+                            <strong style="color:var(--accent2)">Drift levels:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li><span style="color:var(--green)">🟢 No Drift</span> — Nominated version matches UAT. Everything is in sync.</li>
-                                <li><span style="color:var(--yellow)">🟡 Minor Drift</span> — UAT has a newer patch/minor version.
-                                    Someone deployed an update after nomination. Developer should re-nominate.</li>
-                                <li><span style="color:var(--red)">🔴 Major Drift</span> — UAT has a different major version.
-                                    This needs investigation — it could mean a breaking change was deployed.</li>
+                                <li><span style="color:var(--green)">🟢 No Drift</span> — Nominated version matches UAT</li>
+                                <li><span style="color:var(--yellow)">🟡 Minor Drift</span> — UAT has a newer patch/minor version. Developer should re-nominate.</li>
+                                <li><span style="color:var(--red)">🔴 Major Drift</span> — Different major version. Needs investigation.</li>
                             </ul>
-                        </div>
-                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
-                            <strong style="color:var(--accent2)">Example:</strong>
-                            <div style="margin-top:6px;padding:10px 14px;background:var(--bg);border-radius:8px;font-family:monospace;font-size:12px;color:var(--text2)">
-                                10:00 AM — Dev A deploys billing-service v2.3.3 to UAT<br>
-                                10:05 AM — Dev A nominates billing-service → board locks v2.3.3 ✅<br>
-                                &nbsp;2:00 PM — Dev B deploys billing-service v2.3.5 to UAT (bug fix)<br>
-                                &nbsp;3:00 PM — Drift check → ⚠️ board has v2.3.3, UAT has v2.3.5<br>
-                                &nbsp;3:01 PM — Dev B re-nominates → board updates to v2.3.5 ✅
-                            </div>
                         </div>
                     </div>
 
@@ -759,30 +935,26 @@
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
                         <h3 style="font-size:16px;margin-bottom:8px">🤖 AI Readiness</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            AI Readiness uses <strong>Google Gemini</strong> to perform an automated health check on every
-                            nominated service. It analyzes live Kubernetes data to determine if each service is safe to release.
+                            Uses <strong>Google Gemini</strong> to perform automated health checks on every
+                            nominated service. Analyzes live Kubernetes data to determine release safety.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">What AI checks:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li><strong>Pod health</strong> — are all replicas running? Any crash loops or restarts?</li>
-                                <li><strong>Recent events</strong> — K8s warnings, errors, or scheduling issues</li>
-                                <li><strong>Resource usage</strong> — is the service running within CPU/memory limits?</li>
-                                <li><strong>Container status</strong> — any OOMKills, image pull errors, or probe failures?</li>
-                                <li><strong>Version risk</strong> — major version bumps flagged for extra review</li>
+                                <li><strong>Pod health</strong> — replicas, crash loops, restarts</li>
+                                <li><strong>K8s events</strong> — warnings, errors, scheduling issues</li>
+                                <li><strong>Resources</strong> — CPU/memory usage within limits</li>
+                                <li><strong>Container status</strong> — OOMKills, image pull errors, probe failures</li>
+                                <li><strong>Version risk</strong> — major version bumps flagged for review</li>
                             </ul>
                         </div>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">Readiness scores:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li><span style="color:var(--green)">🟢 Ready (70-100)</span> — all checks pass, safe to release</li>
-                                <li><span style="color:var(--yellow)">🟡 Review (40-69)</span> — concerns found, release manager should review</li>
-                                <li><span style="color:var(--red)">🔴 Risk (0-39)</span> — blocking issues found, should not release until resolved</li>
+                                <li><span style="color:var(--green)">🟢 Ready (70-100)</span> — safe to release</li>
+                                <li><span style="color:var(--yellow)">🟡 Review (40-69)</span> — release manager should review</li>
+                                <li><span style="color:var(--red)">🔴 Risk (0-39)</span> — should not release until resolved</li>
                             </ul>
-                        </div>
-                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--green)">
-                            💡 <strong>Tip:</strong> AI Readiness runs once when you click "Run AI Check". If a service
-                            is re-nominated with a new version, you should run the check again to re-evaluate.
                         </div>
                     </div>
 
@@ -790,22 +962,19 @@
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
                         <h3 style="font-size:16px;margin-bottom:8px">📜 Audit Trail</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            The Audit Trail records <strong>every action</strong> taken on the release board with timestamps,
-                            who performed it, and what changed. This provides full traceability for compliance and post-release review.
+                            Records <strong>every action</strong> on the release board with timestamps,
+                            who performed it, and what changed.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">What gets logged:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
                                 <li><strong>Nominations</strong> — who nominated which service and when</li>
                                 <li><strong>Re-nominations</strong> — version changes with from → to versions</li>
-                                <li><strong>Removals</strong> — who removed a service and why</li>
-                                <li><strong>Board Lock</strong> — when the cutoff was enforced</li>
-                                <li><strong>Release Complete</strong> — when the release was marked as done</li>
+                                <li><strong>Rollbacks</strong> — when a previous version is restored via Version History</li>
+                                <li><strong>Removals</strong> — who removed a service</li>
+                                <li><strong>Deployments</strong> — who triggered which workflow + GitHub run ID</li>
+                                <li><strong>Board Lock / Release Complete</strong> — lifecycle events</li>
                             </ul>
-                        </div>
-                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--yellow)">
-                            💡 <strong>Tip:</strong> The audit trail is also visible in the sidebar under "Recent Activity"
-                            for quick reference.
                         </div>
                     </div>
 
@@ -813,20 +982,100 @@
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
                         <h3 style="font-size:16px;margin-bottom:8px">📦 Export</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            The Export tab lets you generate release artifacts and control the board lifecycle.
+                            Generate release artifacts and control the board lifecycle.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">Available actions:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li><strong>Export JSON</strong> — download the full release manifest as a structured JSON file</li>
-                                <li><strong>Export YAML</strong> — download the release manifest in YAML format (for Helm/ArgoCD workflows)</li>
-                                <li><strong>AI Release Notes</strong> — Gemini generates human-readable release notes summarizing
-                                    all changes, version bumps, and risk flags — ready to paste into Jira or Teams</li>
-                                <li><strong>Lock Board (Cutoff)</strong> — freezes the board so no more nominations can be made.
-                                    Use this at your Wednesday 5 PM cutoff</li>
-                                <li><strong>Mark Released</strong> — marks the release as complete and archives the board.
-                                    A new board will be created for the next release cycle</li>
+                                <li><strong>Export JSON / YAML</strong> — download the release manifest for Helm/ArgoCD workflows</li>
+                                <li><strong>AI Release Notes</strong> — Gemini generates human-readable release notes with change summaries and risk flags</li>
+                                <li><strong>Lock Board (Cutoff)</strong> — freezes the board. No more nominations.</li>
+                                <li><strong>Mark Released</strong> — archives the board. A new cycle begins.</li>
                             </ul>
+                        </div>
+                    </div>
+
+                    <!-- UAT Environment -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:16px;margin-bottom:8px">🖥️ UAT Env</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Shows <strong>all services currently deployed</strong> in the UAT Kubernetes namespace —
+                            a live view of what's running, independent of the nomination board.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">What it shows:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>Service name, kind (Deployment/StatefulSet), replicas status</li>
+                                <li>Current image tag and Helm chart version</li>
+                                <li>Use this to verify what's running vs what's nominated on the board</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Deploy Tab -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:16px;margin-bottom:8px">🚀 Deploy</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Connects to your <strong>GitHub deployment repository</strong> (set by <code>DEPLOY_REPO</code> env var,
+                            e.g., <code>your-org/app-deployments</code>) and lists all active GitHub Actions workflows.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">How it works:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>Workflows are <strong>auto-discovered</strong> — no manual config needed. Add a new <code>.yml</code> workflow to your repo and it appears here.</li>
+                                <li>Each card shows: workflow name, file, last run status (✅/❌), duration, and who ran it</li>
+                                <li>Click a card to expand it — dispatch inputs are <strong>parsed from the YAML</strong> and rendered as form fields</li>
+                                <li>Fill in inputs (service, image version) and click <strong>▶️ Run Workflow</strong></li>
+                                <li><code>environment</code> input is <strong>🔒 locked to UAT</strong> — staging/production cannot be selected from this tool</li>
+                                <li><strong>Real-time status polling</strong> shows step-by-step progress after triggering</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Configuration:</strong>
+                            <div style="margin-top:6px;padding:10px 14px;background:var(--bg);border-radius:8px;font-family:monospace;font-size:12px;color:var(--text2)">
+                                DEPLOY_REPO=your-org/app-deployments<br>
+                                GITHUB_CLIENT_ID=&lt;oauth-client-id&gt;<br>
+                                GITHUB_CLIENT_SECRET=&lt;oauth-secret&gt;<br>
+                                BASE_URL=https://release-readiness.your-domain.com
+                            </div>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--green)">
+                            💡 <strong>Tip:</strong> Your workflows must have a <code>workflow_dispatch</code> trigger with inputs defined.
+                            The Deploy tab renders dropdowns for <code>choice</code> inputs and text fields for <code>string</code> inputs.
+                        </div>
+                    </div>
+
+                    <!-- AI Chatbot -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:16px;margin-bottom:8px">💬 AI Chatbot</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            A conversational AI assistant powered by <strong>Google Gemini</strong>. Ask natural language questions
+                            about the release and get instant, data-backed answers with formatted tables and status reports.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">What you can ask:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>"What's in this release?"</strong> — lists all nominated services with versions</li>
+                                <li><strong>"Check drift"</strong> — compares nominated vs live versions</li>
+                                <li><strong>"Show readiness scores"</strong> — AI health check results for all services</li>
+                                <li><strong>"Show audit trail"</strong> — recent board activity with who/what/when</li>
+                                <li><strong>"What's running in UAT?"</strong> — live cluster services overview</li>
+                                <li><strong>"Is billing-service included?"</strong> — status of a specific service</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Features:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>Multi-turn conversations with session memory</li>
+                                <li>Quick-ask suggestion pills for common queries</li>
+                                <li>Markdown rendering — tables, bold, code, lists</li>
+                                <li>Clear button resets conversation history</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--green)">
+                            💡 <strong>Tip:</strong> The chatbot uses Gemini function-calling to query live board data.
+                            Requires <code>GCP_PROJECT_ID</code> or <code>GEMINI_API_KEY</code> configured.
+                            In mock mode, contextual keyword-matched responses are returned.
                         </div>
                     </div>
 
@@ -834,11 +1083,12 @@
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
                         <h3 style="font-size:16px;margin-bottom:8px">🔄 Typical Release Workflow</h3>
                         <div style="font-size:13px;line-height:2;color:var(--text2)">
-                            <div>1️⃣ <strong>Monday–Wednesday:</strong> Developers nominate services as they confirm readiness</div>
-                            <div>2️⃣ <strong>Wednesday before cutoff:</strong> QA/Release Manager runs Version Drift + AI Readiness checks</div>
-                            <div>3️⃣ <strong>Wednesday 5 PM:</strong> Board is locked (cutoff). No more nominations.</div>
-                            <div>4️⃣ <strong>Thursday:</strong> Export manifests, generate AI release notes, update Jira</div>
-                            <div>5️⃣ <strong>Friday:</strong> Deploy to production. Mark Released. New cycle begins.</div>
+                            <div>1️⃣ <strong>Monday–Wednesday:</strong> Developers deploy to UAT via the <strong>🚀 Deploy</strong> tab, then nominate confirmed versions on the Board</div>
+                            <div>2️⃣ <strong>Before cutoff:</strong> QA/Release Manager runs Version Drift + AI Readiness checks</div>
+                            <div>3️⃣ <strong>Need to change?</strong> Use <strong>📜 Version History</strong> to rollback, or re-nominate with a new version</div>
+                            <div>4️⃣ <strong>Wednesday 5 PM:</strong> Board is locked (cutoff). No more nominations.</div>
+                            <div>5️⃣ <strong>Thursday:</strong> Export manifests, generate AI release notes, update Jira</div>
+                            <div>6️⃣ <strong>Friday:</strong> Deploy to production. Mark Released. New cycle begins.</div>
                         </div>
                     </div>
 
@@ -846,19 +1096,102 @@
             </div>
         </div>
 
+        <!-- Deploy Modal -->
+        <div class="deploy-modal-overlay" id="deploy-modal" onclick="if(event.target===this)closeDeployModal()">
+            <div class="deploy-modal">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                    <h2 style="font-size:18px;margin:0">🚀 Deploy Service</h2>
+                    <button class="btn btn-icon btn-sm" onclick="closeDeployModal()">✕</button>
+                </div>
+                <div style="font-size:13px;margin-bottom:12px">
+                    <div style="display:flex;justify-content:space-between;padding:8px 12px;background:var(--bg);border-radius:8px">
+                        <div>Service: <strong id="deploy-svc-name">—</strong></div>
+                        <div>Version: <span class="card-tag" id="deploy-svc-version" style="font-size:11px">—</span></div>
+                    </div>
+                </div>
+                <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:4px">TARGET ENVIRONMENT</div>
+                <div style="padding:10px 14px;background:rgba(16,185,129,.1);border:2px solid #10b981;border-radius:8px;display:flex;align-items:center;gap:8px">
+                    <span style="font-size:16px">🧪</span>
+                    <span style="font-weight:700;color:#10b981;font-size:14px">UAT</span>
+                    <span style="font-size:11px;color:var(--text2);margin-left:auto">Only UAT deployments are enabled</span>
+                </div>
+                <div id="deploy-status-area" style="display:none">
+                    <div class="deploy-status-box">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                            <span id="deploy-run-status-icon">⏳</span>
+                            <strong style="font-size:13px" id="deploy-run-status-text">Queued...</strong>
+                            <span style="font-size:11px;color:var(--text2);margin-left:auto" id="deploy-run-id"></span>
+                        </div>
+                        <div id="deploy-steps-list"></div>
+                    </div>
+                </div>
+                <button class="btn-deploy" id="deploy-trigger-btn" onclick="triggerDeploy()" style="margin-top:14px">🚀 Trigger Workflow</button>
+            </div>
+        </div>
+
+        <!-- Version History Modal -->
+        <div class="deploy-modal-overlay" id="history-modal" onclick="if(event.target===this)closeHistoryModal()">
+            <div class="deploy-modal" style="width:540px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                    <h3 style="margin:0;font-size:16px">📜 Version History</h3>
+                    <button class="btn btn-sm" onclick="closeHistoryModal()">✕ Close</button>
+                </div>
+                <div style="margin-bottom:12px;padding:10px 14px;background:var(--bg);border-radius:8px;border-left:3px solid var(--accent)">
+                    <div style="font-size:13px"><strong id="history-svc-name">—</strong></div>
+                    <div style="font-size:12px;color:var(--text2)">Current version: <span class="card-tag" style="font-size:11px" id="history-current-tag">—</span></div>
+                </div>
+                <div id="history-timeline" style="max-height:400px;overflow-y:auto;padding-right:8px"></div>
+            </div>
+        </div>
+
         <!-- Sidebar -->
         <div class="sidebar">
             <div>
+                <!-- GitHub Login -->
+                <div class="gh-login-box" id="gh-login-section">
+                    <button class="btn-github" onclick="githubLogin()">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                        Login with GitHub
+                    </button>
+                </div>
+                <div class="gh-login-box" id="gh-user-section" style="display:none">
+                    <div class="gh-user-info">
+                        <div class="avatar" id="gh-avatar">R</div>
+                        <div style="flex:1">
+                            <div style="font-weight:600" id="gh-username">—</div>
+                            <div style="font-size:10px;color:var(--text2)">✅ GitHub Connected</div>
+                        </div>
+                        <button class="btn btn-sm" style="font-size:10px;padding:3px 8px" onclick="githubLogout()">Logout</button>
+                    </div>
+                </div>
+                <hr style="border:none;border-top:1px solid var(--border);margin:8px 0">
                 <div class="section-title">➕ Nominate Service</div>
                 <div class="nominate-form">
-                    <select id="service-select">
-                        <option value="">Loading services...</option>
-                    </select>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-                        <div><label style="font-size:11px;color:var(--text2)">Image Tag</label><input type="text"
-                                id="nom-tag" readonly style="background:var(--bg);cursor:not-allowed"></div>
-                        <div><label style="font-size:11px;color:var(--text2)">Helm Chart</label><input type="text"
-                                id="nom-helm" readonly style="background:var(--bg);cursor:not-allowed"></div>
+                    <!-- K8s / Custom toggle -->
+                    <div style="display:flex;gap:4px;margin-bottom:8px;background:var(--bg);border-radius:8px;padding:3px">
+                        <button id="toggle-k8s" class="btn btn-sm" onclick="toggleNomType('k8s')" style="flex:1;font-size:11px;background:var(--accent);color:#fff">☸ K8s Service</button>
+                        <button id="toggle-custom" class="btn btn-sm" onclick="toggleNomType('custom')" style="flex:1;font-size:11px">⚡ Custom Component</button>
+                    </div>
+                    <!-- K8s service dropdown -->
+                    <div id="nom-k8s-section">
+                        <select id="service-select">
+                            <option value="">Loading services...</option>
+                        </select>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                            <div><label style="font-size:11px;color:var(--text2)">Image Tag</label><input type="text"
+                                    id="nom-tag" readonly style="background:var(--bg);cursor:not-allowed"></div>
+                            <div><label style="font-size:11px;color:var(--text2)">Helm Chart</label><input type="text"
+                                    id="nom-helm" readonly style="background:var(--bg);cursor:not-allowed"></div>
+                        </div>
+                    </div>
+                    <!-- Custom component dropdown -->
+                    <div id="nom-custom-section" style="display:none">
+                        <select id="custom-select">
+                            <option value="">Loading components...</option>
+                        </select>
+                        <div><label style="font-size:11px;color:var(--text2)">Version (manual entry)</label><input type="text"
+                                id="nom-custom-version" placeholder="e.g. v1.2.3 or build-20260326"></div>
+                        <div id="custom-desc" style="font-size:11px;color:var(--text2);margin-top:2px;font-style:italic"></div>
                     </div>
                     <div><label style="font-size:11px;color:var(--text2)">Your Name</label><input type="text"
                             id="nom-by" placeholder="e.g. rajesh" value=""></div>
@@ -900,6 +1233,15 @@
         let _board = null;
         let _services = [];
         let _serviceMap = {};
+        let _customComponents = [];
+        let _customMap = {};
+        let _nomType = 'k8s';  // 'k8s' or 'custom'
+        let _boardView = localStorage.getItem('boardView') || 'tile';  // 'tile' or 'list'
+        let _namespace = '--';    // namespace from /api/services
+        let _ghUser = null;    // GitHub logged-in user
+        let _deployTarget = null;  // {service, version} for deploy modal
+        let _deployEnv = 'uat';
+        let _deployPolling = null;  // polling interval
 
         // ═══ Helpers ═════════════════════════════════════════════════════════════════
         function showToast(msg, type = 'success') {
@@ -916,11 +1258,14 @@
             document.getElementById('modal-overlay').classList.add('active');
         }
         function switchTab(name) {
+            const tabs = ['board', 'drift', 'readiness', 'audit', 'export', 'uat', 'deploy', 'chat', 'help'];
             document.querySelectorAll('.tab').forEach((t, i) => {
-                const tabs = ['board', 'drift', 'readiness', 'audit', 'export', 'help'];
                 t.classList.toggle('active', tabs[i] === name);
             });
             document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + name));
+            if (name === 'uat') loadUATServices();
+            if (name === 'deploy') loadDeployWorkflows();
+            if (name === 'chat') { const el = document.getElementById('chat-messages'); el.scrollTop = el.scrollHeight; document.getElementById('chat-input').focus(); }
         }
 
         // ═══ Data Fetching ═══════════════════════════════════════════════════════════
@@ -939,10 +1284,23 @@
                 const r = await fetch('/api/services');
                 const data = await r.json();
                 _services = data.services || [];
+                _namespace = data.namespace || '--';
                 _serviceMap = {};
                 _services.forEach(s => _serviceMap[s.name] = s);
                 renderServiceDropdown();
             } catch (e) { console.error('fetchServices:', e); }
+            // Also fetch custom components
+            try {
+                const r2 = await fetch('/api/custom_components');
+                const data2 = await r2.json();
+                _customComponents = data2.components || [];
+                _customMap = {};
+                _customComponents.forEach(c => _customMap[c.name] = c);
+                renderCustomDropdown();
+            } catch (e) { console.error('fetchCustomComponents:', e); }
+            // Update namespace in sidebar after services load
+            const nsEl = document.getElementById('info-namespace');
+            if (nsEl) nsEl.textContent = _namespace;
         }
 
         // ═══ Render Board ════════════════════════════════════════════════════════════
@@ -981,28 +1339,61 @@
                 container.innerHTML = '<div class="empty-state"><h3>No services nominated yet</h3><p>Use the nomination panel on the right to add services →</p></div>';
                 return;
             }
-            container.innerHTML = keys.map(k => {
-                const s = svcs[k];
-                const rClass = s.readiness || 'unknown';
-                const rBadge = s.readiness ? `<span class="readiness-badge readiness-${s.readiness}">${s.readiness === 'green' ? '🟢 Ready' : s.readiness === 'yellow' ? '🟡 Review' : '🔴 Risk'}</span>` : '<span class="readiness-badge" style="background:var(--surface2);color:var(--text2)">⏳ Not checked</span>';
-                return `<div class="card ${rClass}">
-            <div class="card-header">
-                <div><div class="card-name">${s.name}</div><div style="font-size:11px;color:var(--text2)">${s.kind || 'Deployment'}</div></div>
-                <span class="card-tag">${s.image_tag || '?'}</span>
-            </div>
-            ${rBadge}
-            <div class="card-meta">
-                <span>👤 ${s.nominated_by || '?'}</span>
-                <span>📅 ${(s.nominated_at || '').substring(0, 10)}</span>
-                ${s.helm_version ? `<span>⎈ ${s.helm_version}</span>` : ''}
-            </div>
-            ${s.notes ? `<div style="margin-top:8px;font-size:12px;color:var(--text2);font-style:italic">"${s.notes}"</div>` : ''}
-            <div class="card-actions">
-                <button class="btn btn-sm" onclick="viewServiceDetail('${k}')">👁 Details</button>
-                <button class="btn btn-sm btn-danger" onclick="removeNomination('${k}')">✕ Remove</button>
-            </div>
-        </div>`;
-            }).join('');
+
+            if (_boardView === 'list') {
+                // ── List View (table) ──
+                container.className = '';
+                let rows = keys.map(k => {
+                    const s = svcs[k];
+                    const rBadge = s.readiness ? `<span class="readiness-badge readiness-${s.readiness}" style="font-size:11px;padding:2px 8px">${s.readiness === 'green' ? '🟢 Ready' : s.readiness === 'yellow' ? '🟡 Review' : '🔴 Risk'}</span>` : '<span style="font-size:11px;color:var(--text2)">⏳ Pending</span>';
+                    const typeCls = s.is_custom ? 'type-badge custom' : 'type-badge';
+                    return `<tr>
+                        <td><strong>${s.name}</strong></td>
+                        <td><span class="${typeCls}">${s.is_custom ? '⚡ ' : ''}${s.kind || 'Deployment'}</span></td>
+                        <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span></td>
+                        <td>${s.helm_version || '<span style="color:var(--text2)">—</span>'}</td>
+                        <td>${rBadge}</td>
+                        <td style="font-size:12px">👤 ${s.nominated_by || '?'}</td>
+                        <td style="font-size:12px;color:var(--text2)">${(s.nominated_at || '').substring(0, 10)}</td>
+                        <td style="font-size:12px;color:var(--text2);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(s.notes || '').replace(/"/g, '&quot;')}">${s.notes || '—'}</td>
+                        <td style="white-space:nowrap">
+                            <button class="btn btn-sm" style="padding:3px 8px;font-size:11px" onclick="viewServiceDetail('${k}')">👁</button>
+                            <button class="btn btn-sm" style="padding:3px 8px;font-size:11px;background:rgba(99,102,241,.12);color:var(--accent);border-color:var(--accent)" onclick="showVersionHistory('${k}')">📜</button>
+                            <button class="btn btn-sm btn-danger" style="padding:3px 8px;font-size:11px" onclick="removeNomination('${k}')">✕</button>
+                        </td>
+                    </tr>`;
+                }).join('');
+                container.innerHTML = `<table class="list-view-table">
+                    <thead><tr><th>Service</th><th>Type</th><th>Version</th><th>Helm</th><th>Readiness</th><th>By</th><th>Date</th><th>Notes</th><th>Actions</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>`;
+            } else {
+                // ── Tile View (cards grid) ──
+                container.className = 'cards-grid';
+                container.innerHTML = keys.map(k => {
+                    const s = svcs[k];
+                    const rClass = s.readiness || 'unknown';
+                    const rBadge = s.readiness ? `<span class="readiness-badge readiness-${s.readiness}">${s.readiness === 'green' ? '🟢 Ready' : s.readiness === 'yellow' ? '🟡 Review' : '🔴 Risk'}</span>` : '<span class="readiness-badge" style="background:var(--surface2);color:var(--text2)">⏳ Not checked</span>';
+                    return `<div class="card ${rClass}">
+                <div class="card-header">
+                    <div><div class="card-name">${s.name}</div><div style="font-size:11px;color:var(--text2)">${s.is_custom ? '⚡ ' : ''}${s.kind || 'Deployment'}</div></div>
+                    <span class="card-tag">${s.image_tag || '?'}</span>
+                </div>
+                ${rBadge}
+                <div class="card-meta">
+                    <span>👤 ${s.nominated_by || '?'}</span>
+                    <span>📅 ${(s.nominated_at || '').substring(0, 10)}</span>
+                    ${s.helm_version ? `<span>⎈ ${s.helm_version}</span>` : ''}
+                </div>
+                ${s.notes ? `<div style="margin-top:8px;font-size:12px;color:var(--text2);font-style:italic">"${s.notes}"</div>` : ''}
+                <div class="card-actions">
+                    <button class="btn btn-sm" onclick="viewServiceDetail('${k}')">👁 Details</button>
+                    <button class="btn btn-sm" style="background:rgba(99,102,241,.12);color:var(--accent);border-color:var(--accent)" onclick="showVersionHistory('${k}')">📜 History</button>
+                    <button class="btn btn-sm btn-danger" onclick="removeNomination('${k}')">✕ Remove</button>
+                </div>
+            </div>`;
+                }).join('');
+            }
         }
 
         function updateCountdown() {
@@ -1028,7 +1419,7 @@
             document.getElementById('info-release-date').textContent = _board.release_date || '--';
             document.getElementById('info-cutoff').textContent = (_board.cutoff || '').replace('T', ' ');
             document.getElementById('info-svc-count').textContent = Object.keys(_board.services || {}).length;
-            document.getElementById('info-namespace').textContent = _board.namespace || 'default';
+            document.getElementById('info-namespace').textContent = _namespace;
             // Recent audit
             const trail = (_board.audit_trail || []).slice(-5).reverse();
             document.getElementById('sidebar-audit').innerHTML = trail.length ? trail.map(a =>
@@ -1051,16 +1442,60 @@
             };
         }
 
+        function toggleBoardView(view) {
+            _boardView = view;
+            localStorage.setItem('boardView', view);
+            document.getElementById('view-tile-btn').classList.toggle('active', view === 'tile');
+            document.getElementById('view-list-btn').classList.toggle('active', view === 'list');
+            renderBoard();
+        }
+
+        function renderCustomDropdown() {
+            const sel = document.getElementById('custom-select');
+            const nominated = _board ? Object.keys(_board.services || {}) : [];
+            sel.innerHTML = '<option value="">Select a component...</option>' +
+                _customComponents.map(c => {
+                    const already = nominated.includes(c.name);
+                    return `<option value="${c.name}" ${already ? 'style="color:#f59e0b"' : ''}>${c.name} (${c.type})${already ? ' ★ nominated' : ''}</option>`;
+                }).join('');
+            sel.onchange = function () {
+                const c = _customMap[this.value];
+                document.getElementById('custom-desc').textContent = c ? c.description : '';
+                document.getElementById('nom-custom-version').value = '';
+            };
+        }
+
+        function toggleNomType(type) {
+            _nomType = type;
+            document.getElementById('nom-k8s-section').style.display = type === 'k8s' ? '' : 'none';
+            document.getElementById('nom-custom-section').style.display = type === 'custom' ? '' : 'none';
+            document.getElementById('toggle-k8s').style.background = type === 'k8s' ? 'var(--accent)' : '';
+            document.getElementById('toggle-k8s').style.color = type === 'k8s' ? '#fff' : '';
+            document.getElementById('toggle-custom').style.background = type === 'custom' ? 'var(--accent)' : '';
+            document.getElementById('toggle-custom').style.color = type === 'custom' ? '#fff' : '';
+        }
+
         // ═══ Actions ═════════════════════════════════════════════════════════════════
         async function nominateService() {
-            const name = document.getElementById('service-select').value;
-            const notes = document.getElementById('nom-notes').value;
-            const by = document.getElementById('nom-by').value || 'anonymous';
-            if (!name) { showToast('Select a service first', 'error'); return; }
+            let name, body;
+            if (_nomType === 'custom') {
+                name = document.getElementById('custom-select').value;
+                const ver = document.getElementById('nom-custom-version').value.trim();
+                if (!name) { showToast('Select a component first', 'error'); return; }
+                if (!ver) { showToast('Enter a version number', 'error'); return; }
+                body = { service_name: name, notes: document.getElementById('nom-notes').value,
+                         nominated_by: document.getElementById('nom-by').value || 'anonymous',
+                         is_custom: true, manual_version: ver };
+            } else {
+                name = document.getElementById('service-select').value;
+                if (!name) { showToast('Select a service first', 'error'); return; }
+                body = { service_name: name, notes: document.getElementById('nom-notes').value,
+                         nominated_by: document.getElementById('nom-by').value || 'anonymous' };
+            }
             try {
-                const r = await fetch('/api/release/nominate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ service_name: name, notes, nominated_by: by }) });
+                const r = await fetch('/api/release/nominate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
                 const d = await r.json();
-                if (r.ok) { showToast(`Nominated ${name} (${d.image_tag})`); document.getElementById('nom-notes').value = ''; refreshAll(); }
+                if (r.ok) { showToast(`Nominated ${name} (${d.image_tag})`); document.getElementById('nom-notes').value = ''; if (_nomType === 'custom') document.getElementById('nom-custom-version').value = ''; refreshAll(); }
                 else showToast(d.error || 'Failed', 'error');
             } catch (e) { showToast('Network error', 'error'); }
         }
@@ -1130,15 +1565,58 @@
             } catch (e) { showToast('Export failed', 'error'); }
         }
 
+        function simpleMarkdownToHtml(md) {
+            // Convert markdown table, headers, bold, and line breaks to HTML
+            const lines = md.split('\n');
+            let html = '', inTable = false;
+            for (const line of lines) {
+                const t = line.trim();
+                // Skip separator rows like |---|---|
+                if (/^\|[\s\-:|]+\|$/.test(t)) { continue; }
+                // Table row
+                if (t.startsWith('|') && t.endsWith('|')) {
+                    const cells = t.slice(1, -1).split('|').map(c => c.trim());
+                    if (!inTable) { html += '<table class="list-view-table" style="margin:12px 0;font-size:13px"><tbody>'; inTable = true; }
+                    html += '<tr>' + cells.map(c => `<td style="padding:6px 12px">${c}</td>`).join('') + '</tr>';
+                } else {
+                    if (inTable) { html += '</tbody></table>'; inTable = false; }
+                    let h = t;
+                    // Headers
+                    if (h.startsWith('## ')) h = `<h3 style="margin:14px 0 6px;font-size:15px">${h.slice(3)}</h3>`;
+                    else if (h.startsWith('# ')) h = `<h2 style="margin:14px 0 6px;font-size:17px">${h.slice(2)}</h2>`;
+                    // Bold
+                    h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                    // Skip empty lines
+                    if (h.trim()) html += `<div style="margin:4px 0">${h}</div>`;
+                }
+            }
+            if (inTable) html += '</tbody></table>';
+            return html;
+        }
+
         async function generateReleaseNotes() {
             const container = document.getElementById('export-output');
             container.innerHTML = '<div class="loading"><div class="spinner"></div>Generating AI release notes...</div>';
             try {
                 const r = await fetch('/api/ai/release_notes', { method: 'POST' });
                 const data = await r.json();
-                container.innerHTML = `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:16px;white-space:pre-wrap;font-size:13px;line-height:1.7">${data.notes || 'No notes generated'}</div>
-        <button class="btn btn-sm" style="margin-top:8px" onclick="navigator.clipboard.writeText(document.querySelector('#export-output pre,#export-output div').textContent);showToast('Copied!')">📋 Copy to Clipboard</button>`;
-            } catch (e) { container.innerHTML = '<div class="empty-state"><p>Error: ' + e.message + '</p></div>'; }
+                if (!r.ok) {
+                    container.innerHTML = `<div class="empty-state"><h3>⚠️ ${data.error || 'Failed to generate notes'}</h3><p>${r.status === 400 ? 'Make sure you have services nominated on the board first.' : 'Please try again.'}</p></div>`;
+                    return;
+                }
+                const geminiTag = data.gemini_powered
+                    ? '<span style="font-size:10px;padding:2px 8px;background:rgba(99,102,241,.15);color:var(--accent);border-radius:4px;margin-left:8px">✨ Gemini Powered</span>'
+                    : '<span style="font-size:10px;padding:2px 8px;background:var(--surface2);color:var(--text2);border-radius:4px;margin-left:8px">📄 Template</span>';
+                const rendered = simpleMarkdownToHtml(data.notes || 'No notes generated');
+                container.innerHTML = `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:20px">
+                    <div style="display:flex;align-items:center;margin-bottom:12px"><span style="font-size:14px;font-weight:600">📋 Release Notes</span>${geminiTag}</div>
+                    <div style="font-size:13px;line-height:1.7">${rendered}</div>
+                </div>
+                <div style="margin-top:10px;display:flex;gap:8px">
+                    <button class="btn btn-sm" onclick="navigator.clipboard.writeText(${JSON.stringify(data.notes || '')});showToast('Copied!')">📋 Copy Markdown</button>
+                    <button class="btn btn-sm" onclick="navigator.clipboard.writeText(document.querySelector('#export-output .list-view-table')?.outerHTML || '');showToast('HTML copied!')">📄 Copy as HTML</button>
+                </div>`;
+            } catch (e) { container.innerHTML = '<div class="empty-state"><h3>❌ Error</h3><p>' + e.message + '</p></div>'; }
         }
 
         async function finalizeBoard() {
@@ -1185,12 +1663,57 @@
     `);
         }
 
+        // ═══ UAT Environment ═════════════════════════════════════════════════════════
+        async function loadUATServices() {
+            const container = document.getElementById('uat-services-list');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading UAT services...</div>';
+            try {
+                const r = await fetch('/api/services');
+                const d = await r.json();
+                const svcs = d.services || [];
+                if (!svcs.length) { container.innerHTML = '<div class="empty-state"><p>No services found in UAT namespace</p></div>'; return; }
+
+                const rows = svcs.map((s, i) => {
+                    const status = s.available ? '<span style="color:var(--green)">● Running</span>' : '<span style="color:var(--red)">● Down</span>';
+                    const helmBadge = s.helm_version ? `<span style="font-size:11px;padding:2px 8px;background:rgba(99,102,241,.12);color:var(--accent);border-radius:4px">${s.helm_version}</span>` : '<span style="color:var(--text2)">—</span>';
+                    return `<tr>
+                        <td style="font-weight:600">${s.name}</td>
+                        <td><span class="type-badge">${s.kind}</span></td>
+                        <td style="font-family:monospace;font-size:11px;color:var(--text2);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${s.image}">${s.image}</td>
+                        <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span></td>
+                        <td>${helmBadge}</td>
+                        <td style="text-align:center">${s.replicas}/${s.desired_replicas}</td>
+                        <td>${status}</td>
+                    </tr>`;
+                }).join('');
+
+                container.innerHTML = `
+                    <div style="display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap">
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
+                            📦 <strong>${svcs.length}</strong> services
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
+                            🏷️ Namespace: <strong>${d.namespace || 'uat'}</strong>
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
+                            ✅ Healthy: <strong style="color:var(--green)">${svcs.filter(s => s.available).length}</strong>
+                        </div>
+                    </div>
+                    <table class="list-view-table">
+                        <thead><tr><th>Service</th><th>Kind</th><th>Image</th><th>Tag</th><th>Helm Chart</th><th>Replicas</th><th>Status</th></tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>`;
+            } catch(e) {
+                container.innerHTML = '<div class="empty-state"><p>Failed to load UAT services</p></div>';
+            }
+        }
+
         function renderAudit() {
             const trail = (_board && _board.audit_trail) ? _board.audit_trail.slice().reverse() : [];
             const container = document.getElementById('audit-list');
             if (!trail.length) { container.innerHTML = '<div class="empty-state"><p>No actions recorded yet</p></div>'; return; }
             container.innerHTML = trail.map(a => {
-                const icon = a.action === 'nominate' ? '➕' : a.action === 're-nominate' ? '🔄' : a.action === 'remove' ? '❌' : a.action === 'finalize' ? '🔒' : a.action === 'release' ? '🚀' : '📋';
+                const icon = a.action === 'nominate' ? '➕' : a.action === 're-nominate' ? '🔄' : a.action === 'remove' ? '❌' : a.action === 'finalize' ? '🔒' : a.action === 'release' ? '🚀' : a.action === 'deploy_triggered' ? '🚢' : '📋';
                 return `<div class="audit-item" style="border-left-color:var(--accent)">
             <strong>${icon} ${a.action}</strong> ${a.service ? `<code>${a.service}</code>` : ''} ${a.version ? `→ ${a.version}` : ''} ${a.from_version ? `${a.from_version} → ${a.to_version}` : ''}
             <br>by <strong>${a.by || '?'}</strong> at ${(a.at || '').replace('T', ' ').substring(0, 19)}
@@ -1200,7 +1723,391 @@
 
         // ═══ Init ════════════════════════════════════════════════════════════════════
         async function refreshAll() { await fetchBoard(); await fetchServices(); }
+        // Restore saved view preference
+        if (_boardView === 'list') { toggleBoardView('list'); }
         refreshAll();
+        checkGitHubStatus();
+
+        // ═══ GitHub OAuth + Deploy ═══════════════════════════════════════════════════
+        async function checkGitHubStatus() {
+            try {
+                const r = await fetch('/api/github/status');
+                const d = await r.json();
+                if (d.logged_in) {
+                    _ghUser = d.user;
+                    document.getElementById('gh-login-section').style.display = 'none';
+                    document.getElementById('gh-user-section').style.display = 'block';
+                    document.getElementById('gh-username').textContent = d.user.login;
+                    document.getElementById('gh-avatar').textContent = d.user.login.charAt(0).toUpperCase();
+                } else {
+                    _ghUser = null;
+                    document.getElementById('gh-login-section').style.display = 'block';
+                    document.getElementById('gh-user-section').style.display = 'none';
+                }
+            } catch(e) { console.error('GitHub status check failed', e); }
+        }
+
+        async function githubLogin() {
+            // Redirect to real OAuth login
+            window.location.href = '/login';
+        }
+
+        async function githubLogout() {
+            await fetch('/api/github/logout', {method:'POST'});
+            _ghUser = null;
+            showToast('GitHub disconnected');
+            checkGitHubStatus();
+        }
+
+        function openDeployModal(serviceKey) {
+            if (!_ghUser) {
+                showToast('⚠️ Login with GitHub first to deploy', 'error');
+                return;
+            }
+            const svcs = _board && _board.services || {};
+            const s = svcs[serviceKey];
+            if (!s) return;
+            _deployTarget = { service: s.name, version: s.image_tag || '?' };
+            _deployEnv = 'uat';
+            document.getElementById('deploy-svc-name').textContent = s.name;
+            document.getElementById('deploy-svc-version').textContent = s.image_tag || '?';
+            document.getElementById('deploy-status-area').style.display = 'none';
+            document.getElementById('deploy-trigger-btn').disabled = false;
+            document.getElementById('deploy-trigger-btn').textContent = '🚀 Trigger Workflow';
+            document.getElementById('deploy-modal').classList.add('open');
+        }
+
+        function closeDeployModal() {
+            document.getElementById('deploy-modal').classList.remove('open');
+            if (_deployPolling) { clearInterval(_deployPolling); _deployPolling = null; }
+        }
+
+        // ═══ Version History ═════════════════════════════════════════════════════════
+        function showVersionHistory(serviceName) {
+            if (!_board || !_board.services || !_board.services[serviceName]) return;
+            const svc = _board.services[serviceName];
+            const history = svc.version_history || [];
+            document.getElementById('history-svc-name').textContent = svc.name;
+            document.getElementById('history-current-tag').textContent = svc.image_tag || '?';
+
+            const timeline = document.getElementById('history-timeline');
+            if (!history.length) {
+                timeline.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text2)">No version history available</div>';
+            } else {
+                // Get unique versions (deduplicate by to_tag), keeping order
+                const entries = history.slice().reverse();
+                timeline.innerHTML = entries.map((h, i) => {
+                    const isCurrent = (i === 0);
+                    const isInitial = (h.from_tag === null);
+                    const actionLabel = isInitial ? 'Initial Nomination' : h.reason || 'Version Update';
+                    const color = isCurrent ? 'var(--green)' : 'var(--text2)';
+                    const borderColor = isCurrent ? 'var(--green)' : 'var(--border)';
+                    const tag = h.to_tag || '?';
+                    const rollbackBtn = !isCurrent && tag !== svc.image_tag
+                        ? `<button class="btn btn-sm" style="padding:2px 10px;font-size:11px;background:rgba(99,102,241,.12);color:var(--accent);border-color:var(--accent);margin-top:6px" onclick="rollbackVersion('${serviceName}', '${tag}')">↩ Use this version</button>`
+                        : '';
+                    const currentBadge = isCurrent ? '<span style="font-size:10px;padding:1px 6px;background:rgba(16,185,129,.15);color:var(--green);border-radius:4px;margin-left:6px">CURRENT</span>' : '';
+                    return `<div style="padding:12px 14px;margin-bottom:8px;background:var(--surface2);border:1px solid ${borderColor};border-radius:8px;border-left:3px solid ${borderColor}">
+                        <div style="display:flex;justify-content:space-between;align-items:center">
+                            <div>
+                                <span class="card-tag" style="font-size:12px">${tag}</span>${currentBadge}
+                            </div>
+                            <span style="font-size:11px;color:var(--text2)">${(h.changed_at || '').replace('T', ' ').substring(0, 19)}</span>
+                        </div>
+                        <div style="font-size:12px;color:var(--text2);margin-top:6px">
+                            ${isInitial ? '🆕' : '🔄'} ${actionLabel}
+                            ${h.from_tag ? ` · <span style="text-decoration:line-through;opacity:.6">${h.from_tag}</span> → <strong>${tag}</strong>` : ''}
+                        </div>
+                        <div style="font-size:11px;color:var(--text2);margin-top:4px">👤 ${h.changed_by || '?'}</div>
+                        ${rollbackBtn}
+                    </div>`;
+                }).join('');
+            }
+            document.getElementById('history-modal').classList.add('open');
+        }
+
+        function closeHistoryModal() {
+            document.getElementById('history-modal').classList.remove('open');
+        }
+
+        async function rollbackVersion(serviceName, targetTag) {
+            const by = document.getElementById('nom-by').value.trim() || 'anonymous';
+            if (!confirm(`Rollback ${serviceName} to version ${targetTag}?`)) return;
+            try {
+                const r = await fetch('/api/release/rollback', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({service_name: serviceName, target_tag: targetTag, rolled_back_by: by})
+                });
+                const d = await r.json();
+                if (r.ok) {
+                    closeHistoryModal();
+                    await fetchBoard();
+                    // Reopen to show updated history
+                    showVersionHistory(serviceName);
+                } else {
+                    alert(d.error || 'Rollback failed');
+                }
+            } catch(e) { alert('Rollback failed: ' + e.message); }
+        }
+
+        // ═══ Deploy Tab — Workflow Browser ═══════════════════════════════════════════
+        let _deployTabPolling = null;
+        let _deployWorkflows = [];
+
+        async function loadDeployWorkflows() {
+            const container = document.getElementById('deploy-workflows-list');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading workflows...</div>';
+            try {
+                const r = await fetch('/api/deploy/workflows');
+                const data = await r.json();
+                _deployWorkflows = data.workflows || [];
+                const repo = data.repo || '';
+                document.getElementById('deploy-repo-name').textContent = repo || '(not configured)';
+
+                if (data.error && !_deployWorkflows.length) {
+                    container.innerHTML = `<div class="empty-state"><p>⚠️ ${data.error}</p></div>`;
+                    return;
+                }
+                if (!_deployWorkflows.length) {
+                    container.innerHTML = '<div class="empty-state"><p>No active workflows found in the deployment repo</p></div>';
+                    return;
+                }
+
+                container.innerHTML = _deployWorkflows.map((w, idx) => {
+                    const statusIcon = w.last_conclusion === 'success' ? '✅' :
+                                       w.last_conclusion === 'failure' ? '❌' :
+                                       w.last_conclusion === 'in_progress' ? '⚡' : '⬜';
+                    const statusColor = w.last_conclusion === 'success' ? '#10b981' :
+                                        w.last_conclusion === 'failure' ? '#ef4444' :
+                                        w.last_conclusion === 'in_progress' ? '#f59e0b' : 'var(--text2)';
+
+                    // Build inputs form
+                    const inputFields = (w.dispatch_inputs || []).map(inp => {
+                        const isEnv = inp.name === 'environment';
+                        if (inp.type === 'choice' && inp.options) {
+                            if (isEnv) {
+                                return `<div style="margin-bottom:8px">
+                                    <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:3px">${inp.name} ${inp.required ? '<span style="color:#ef4444">*</span>' : ''}</label>
+                                    <input type="text" value="uat" readonly class="wf-input" data-name="${inp.name}"
+                                        style="width:100%;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;opacity:.7;cursor:not-allowed"
+                                        title="Locked to UAT">
+                                    <div style="font-size:10px;color:#10b981;margin-top:2px">🔒 Locked to UAT</div>
+                                </div>`;
+                            }
+                            const opts = inp.options.map(o => `<option value="${o}" ${o === inp.default ? 'selected' : ''}>${o}</option>`).join('');
+                            return `<div style="margin-bottom:8px">
+                                <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:3px">${inp.name} ${inp.required ? '<span style="color:#ef4444">*</span>' : ''} ${inp.description ? '<span style="opacity:.6">— ' + inp.description + '</span>' : ''}</label>
+                                <select class="wf-input" data-name="${inp.name}" style="width:100%;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">${opts}</select>
+                            </div>`;
+                        }
+                        return `<div style="margin-bottom:8px">
+                            <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:3px">${inp.name} ${inp.required ? '<span style="color:#ef4444">*</span>' : ''} ${inp.description ? '<span style="opacity:.6">— ' + inp.description + '</span>' : ''}</label>
+                            <input type="text" class="wf-input" data-name="${inp.name}" value="${isEnv ? 'uat' : (inp.default || '')}" ${isEnv ? 'readonly style="opacity:.7;cursor:not-allowed;width:100%;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px"' : 'style="width:100%;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px"'}
+                                placeholder="${inp.description || inp.name}">
+                            ${isEnv ? '<div style="font-size:10px;color:#10b981;margin-top:2px">🔒 Locked to UAT</div>' : ''}
+                        </div>`;
+                    }).join('');
+
+                    return `<div style="margin-bottom:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);overflow:hidden" id="wf-card-${idx}">
+                        <div style="padding:14px 16px;cursor:pointer;display:flex;align-items:center;gap:12px" onclick="toggleWorkflowCard(${idx})">
+                            <span style="font-size:18px">${statusIcon}</span>
+                            <div style="flex:1">
+                                <div style="font-weight:700;font-size:14px">${w.name}</div>
+                                <div style="font-size:11px;color:var(--text2);margin-top:2px">
+                                    <span style="opacity:.8">${w.file}</span>
+                                    · Last: <span style="color:${statusColor}">${w.last_run_ago}</span>
+                                    · Duration: ${w.duration}
+                                    · by ${w.last_run_by}
+                                </div>
+                            </div>
+                            <span style="font-size:12px;color:var(--text2)" id="wf-arrow-${idx}">▶</span>
+                        </div>
+                        <div id="wf-body-${idx}" style="display:none;padding:0 16px 16px;border-top:1px solid var(--border)">
+                            <div style="padding-top:12px">
+                                <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:8px">WORKFLOW INPUTS</div>
+                                ${inputFields || '<div style="font-size:12px;color:var(--text2)">No inputs required</div>'}
+                                <button class="btn-deploy" onclick="triggerWorkflow(${w.id}, ${idx})" id="wf-trigger-${idx}" style="margin-top:10px">▶️ Run Workflow</button>
+                            </div>
+                        </div>
+                    </div>`;
+                }).join('');
+
+            } catch(e) {
+                container.innerHTML = `<div class="empty-state"><p>❌ Error loading workflows: ${e.message}</p></div>`;
+            }
+        }
+
+        function toggleWorkflowCard(idx) {
+            const body = document.getElementById('wf-body-' + idx);
+            const arrow = document.getElementById('wf-arrow-' + idx);
+            if (body.style.display === 'none') {
+                body.style.display = 'block';
+                arrow.textContent = '▼';
+            } else {
+                body.style.display = 'none';
+                arrow.textContent = '▶';
+            }
+        }
+
+        async function triggerWorkflow(workflowId, idx) {
+            if (!_ghUser) {
+                showToast('⚠️ Login with GitHub first to deploy', 'error');
+                return;
+            }
+            const btn = document.getElementById('wf-trigger-' + idx);
+            btn.disabled = true;
+            btn.textContent = '⏳ Triggering...';
+
+            // Gather inputs from the form
+            const card = document.getElementById('wf-card-' + idx);
+            const inputEls = card.querySelectorAll('.wf-input');
+            const inputs = {};
+            inputEls.forEach(el => {
+                inputs[el.dataset.name] = el.value;
+            });
+
+            // Force environment to UAT
+            if ('environment' in inputs) inputs['environment'] = 'uat';
+
+            try {
+                const r = await fetch('/api/deploy/trigger', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ workflow_id: workflowId, inputs })
+                });
+                const d = await r.json();
+                if (d.error) {
+                    showToast(d.error, 'error');
+                    btn.disabled = false;
+                    btn.textContent = '▶️ Run Workflow';
+                    return;
+                }
+                showToast('✅ Workflow triggered!');
+                btn.textContent = '✅ Triggered';
+
+                // Show inline status
+                const statusArea = document.getElementById('deploy-tab-status');
+                statusArea.style.display = 'block';
+                document.getElementById('deploy-tab-run-id').textContent = d.run.run_id ? 'Run: ' + d.run.run_id : '';
+                if (d.run.html_url) {
+                    const link = document.getElementById('deploy-tab-run-link');
+                    link.href = d.run.html_url;
+                    link.style.display = 'inline';
+                }
+                if (d.run.run_id) {
+                    pollDeployTabStatus(d.run.run_id);
+                }
+
+                // Reset button after delay
+                setTimeout(() => { btn.disabled = false; btn.textContent = '▶️ Run Workflow'; }, 5000);
+                fetchBoard();
+            } catch(e) {
+                showToast('Deploy trigger failed: ' + e.message, 'error');
+                btn.disabled = false;
+                btn.textContent = '▶️ Run Workflow';
+            }
+        }
+
+        function pollDeployTabStatus(runId) {
+            if (_deployTabPolling) clearInterval(_deployTabPolling);
+            updateDeployTabUI({status: 'queued', steps: []});
+            _deployTabPolling = setInterval(async () => {
+                try {
+                    const r = await fetch('/api/deploy/status/' + runId);
+                    const d = await r.json();
+                    updateDeployTabUI(d);
+                    if (d.status === 'completed' || d.status === 'failure') {
+                        clearInterval(_deployTabPolling);
+                        _deployTabPolling = null;
+                        if (d.status === 'completed') showToast('🎉 Workflow completed!');
+                        else showToast('❌ Workflow failed', 'error');
+                    }
+                } catch(e) { /* ignore poll errors */ }
+            }, 2000);
+        }
+
+        function updateDeployTabUI(run) {
+            const iconEl = document.getElementById('deploy-tab-status-icon');
+            const textEl = document.getElementById('deploy-tab-status-text');
+            const stepsEl = document.getElementById('deploy-tab-steps');
+
+            if (run.status === 'queued') { iconEl.textContent = '⏳'; textEl.textContent = 'Queued...'; textEl.style.color = 'var(--text2)'; }
+            else if (run.status === 'in_progress') { iconEl.textContent = '⚡'; textEl.textContent = 'In Progress'; textEl.style.color = '#f59e0b'; }
+            else if (run.status === 'completed') { iconEl.textContent = '✅'; textEl.textContent = 'Completed — Success'; textEl.style.color = '#10b981'; }
+            else if (run.status === 'failure') { iconEl.textContent = '❌'; textEl.textContent = 'Failed'; textEl.style.color = '#ef4444'; }
+
+            if (run.steps && run.steps.length) {
+                stepsEl.innerHTML = run.steps.map(s => {
+                    const ico = s.status === 'completed' ? '✅' : s.status === 'in_progress' ? '🔄' : s.status === 'failed' ? '❌' : '⬜';
+                    return `<div class="deploy-step"><span class="step-icon">${ico}</span><span>${s.name}</span></div>`;
+                }).join('');
+            }
+        }
+
+        function selectDeployEnv(env) {
+            _deployEnv = 'uat';  // Locked to UAT
+        }
+
+        async function triggerDeploy() {
+            if (!_deployTarget) return;
+            const btn = document.getElementById('deploy-trigger-btn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Triggering...';
+            try {
+                const r = await fetch('/api/deploy/trigger', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({
+                        service: _deployTarget.service,
+                        version: _deployTarget.version,
+                        environment: _deployEnv
+                    })
+                });
+                const d = await r.json();
+                if (d.error) { showToast(d.error, 'error'); btn.disabled = false; btn.textContent = '🚀 Trigger Workflow'; return; }
+                showToast('✅ Workflow triggered! Run: ' + d.run.run_id);
+                btn.textContent = '✅ Triggered';
+                document.getElementById('deploy-status-area').style.display = 'block';
+                document.getElementById('deploy-run-id').textContent = 'Run: ' + d.run.run_id;
+                pollDeployStatus(d.run.run_id);
+                // Refresh board to show audit trail
+                fetchBoard();
+            } catch(e) { showToast('Deploy trigger failed', 'error'); btn.disabled = false; btn.textContent = '🚀 Trigger Workflow'; }
+        }
+
+        function pollDeployStatus(runId) {
+            if (_deployPolling) clearInterval(_deployPolling);
+            updateDeployUI({status:'queued', steps:[]});
+            _deployPolling = setInterval(async () => {
+                try {
+                    const r = await fetch('/api/deploy/status/' + runId);
+                    const d = await r.json();
+                    updateDeployUI(d);
+                    if (d.status === 'completed' || d.status === 'failure') {
+                        clearInterval(_deployPolling);
+                        _deployPolling = null;
+                        if (d.status === 'completed') showToast('🎉 Deploy succeeded!');
+                        else showToast('❌ Deploy failed', 'error');
+                    }
+                } catch(e) { /* ignore poll errors */ }
+            }, 1500);
+        }
+
+        function updateDeployUI(run) {
+            const iconEl = document.getElementById('deploy-run-status-icon');
+            const textEl = document.getElementById('deploy-run-status-text');
+            const stepsEl = document.getElementById('deploy-steps-list');
+
+            if (run.status === 'queued') { iconEl.textContent = '⏳'; textEl.textContent = 'Queued...'; textEl.style.color = 'var(--text2)'; }
+            else if (run.status === 'in_progress') { iconEl.textContent = '⚡'; textEl.textContent = 'In Progress'; textEl.style.color = '#f59e0b'; }
+            else if (run.status === 'completed') { iconEl.textContent = '✅'; textEl.textContent = 'Completed — Success'; textEl.style.color = '#10b981'; }
+            else if (run.status === 'failure') { iconEl.textContent = '❌'; textEl.textContent = 'Failed'; textEl.style.color = '#ef4444'; }
+
+            if (run.steps && run.steps.length) {
+                stepsEl.innerHTML = run.steps.map(s => {
+                    const ico = s.status === 'completed' ? '✅' : s.status === 'in_progress' ? '🔄' : s.status === 'failed' ? '❌' : '⬜';
+                    return `<div class="deploy-step"><span class="step-icon">${ico}</span><span>${s.name}</span></div>`;
+                }).join('');
+            }
+        }
         setInterval(updateCountdown, 60000);
 
         // CIDP keepalive
@@ -1213,6 +2120,109 @@
                 try { await fetch('/api/ping'); } catch (e) { }
             }
         }, 3 * 60 * 1000);
+        // ═══ AI Chat ═════════════════════════════════════════════════════════════
+        const _chatSessionId = 'rr-' + Math.random().toString(36).slice(2, 10);
+        let _chatBusy = false;
+
+        function sendSuggestion(el) {
+            document.getElementById('chat-input').value = el.textContent;
+            sendChat();
+        }
+
+        async function sendChat() {
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+            if (!message || _chatBusy) return;
+
+            _chatBusy = true;
+            const sendBtn = document.getElementById('chat-send-btn');
+            sendBtn.disabled = true;
+            input.value = '';
+            input.style.height = 'auto';
+
+            // Hide suggestions after first message
+            const suggestions = document.getElementById('chat-suggestions');
+            if (suggestions) suggestions.style.display = 'none';
+
+            // Add user message
+            const msgsEl = document.getElementById('chat-messages');
+            msgsEl.innerHTML += `<div class="chat-msg user"><div class="avatar">👤</div><div class="bubble">${_escHtml(message)}</div></div>`;
+
+            // Typing indicator
+            const typingId = 'typing-' + Date.now();
+            msgsEl.innerHTML += `<div class="chat-msg bot" id="${typingId}"><div class="avatar">🤖</div><div class="bubble"><div class="typing-indicator"><span></span><span></span><span></span></div></div></div>`;
+            msgsEl.scrollTop = msgsEl.scrollHeight;
+
+            try {
+                const r = await fetch('/api/ai/converse', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Session-Id': _chatSessionId },
+                    body: JSON.stringify({ message })
+                });
+                const data = await r.json();
+                // Remove typing indicator
+                const typingEl = document.getElementById(typingId);
+                if (typingEl) typingEl.remove();
+
+                const reply = data.reply || data.error || '(no response)';
+                msgsEl.innerHTML += `<div class="chat-msg bot"><div class="avatar">🤖</div><div class="bubble">${_renderMd(reply)}</div></div>`;
+            } catch (e) {
+                const typingEl = document.getElementById(typingId);
+                if (typingEl) typingEl.remove();
+                msgsEl.innerHTML += `<div class="chat-msg bot"><div class="avatar">🤖</div><div class="bubble">⚠️ Error: ${_escHtml(e.message)}</div></div>`;
+            }
+
+            msgsEl.scrollTop = msgsEl.scrollHeight;
+            _chatBusy = false;
+            sendBtn.disabled = false;
+            input.focus();
+        }
+
+        async function clearChat() {
+            try { await fetch('/api/ai/converse/reset', { method: 'POST', headers: { 'X-Session-Id': _chatSessionId } }); } catch(e) {}
+            const msgsEl = document.getElementById('chat-messages');
+            msgsEl.innerHTML = `<div class="chat-msg bot"><div class="avatar">🤖</div><div class="bubble">Chat cleared! Ask me anything about the release. 🚀</div></div>`;
+            const suggestions = document.getElementById('chat-suggestions');
+            if (suggestions) suggestions.style.display = 'flex';
+        }
+
+        // Simple markdown → HTML for chat
+        function _renderMd(text) {
+            let html = _escHtml(text);
+            // Tables: detect | header | lines and convert
+            html = html.replace(/^(\|.+\|)\n(\|[-| :]+\|)\n((?:\|.+\|\n?)*)/gm, (m, hdr, sep, rows) => {
+                const headers = hdr.split('|').filter(c=>c.trim()).map(c=>`<th>${c.trim()}</th>`);
+                const bodyRows = rows.trim().split('\n').map(row => {
+                    const cells = row.split('|').filter(c=>c.trim()).map(c=>`<td>${c.trim()}</td>`);
+                    return `<tr>${cells.join('')}</tr>`;
+                });
+                return `<table><thead><tr>${headers.join('')}</tr></thead><tbody>${bodyRows.join('')}</tbody></table>`;
+            });
+            // Bold
+            html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            // Italic
+            html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+            // Inline code
+            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+            // Unordered lists
+            html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+            html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+            // Line breaks
+            html = html.replace(/\n/g, '<br>');
+            return html;
+        }
+
+        function _escHtml(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        // Auto-resize textarea
+        document.getElementById('chat-input').addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+        });
     </script>
 </body>
 

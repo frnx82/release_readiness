@@ -1,0 +1,246 @@
+---
+# ──────────────────────────────────────────────────────────────────
+# Release Readiness Dashboard — Kubernetes Deployment Manifest
+# ──────────────────────────────────────────────────────────────────
+#
+# Prerequisites:
+#
+# 1. Create OAuth secret (for GitHub Deploy tab):
+#
+#    kubectl create secret generic release-readiness-oauth \
+#      --from-literal=GITHUB_CLIENT_ID=Ov23liXXXXXXX \
+#      --from-literal=GITHUB_CLIENT_SECRET=your_secret_here \
+#      --from-literal=FLASK_SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))") \
+#      -n YOUR_NAMESPACE
+#
+# 2. (Optional) Create PAT secret (if using PAT instead of OAuth):
+#
+#    kubectl create secret generic release-readiness-github \
+#      --from-literal=GITHUB_TOKEN=ghp_YOUR_TOKEN_HERE \
+#      -n YOUR_NAMESPACE
+#
+# 3. (Optional) Create Gemini API key secret (if not using Vertex AI):
+#
+#    kubectl create secret generic release-readiness-gemini \
+#      --from-literal=GEMINI_API_KEY=your_api_key_here \
+#      -n YOUR_NAMESPACE
+#
+# 4. Apply:
+#
+#    kubectl apply -f deploy.yaml -n YOUR_NAMESPACE
+#
+# ──────────────────────────────────────────────────────────────────
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-readiness
+  labels:
+    app: release-readiness
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-readiness
+  template:
+    metadata:
+      labels:
+        app: release-readiness
+    spec:
+      serviceAccountName: release-readiness    # ← needs RBAC for ConfigMaps + read Deployments
+      containers:
+      - name: release-readiness
+        image: YOUR_REGISTRY/release-readiness:latest   # ← Replace with your image
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+
+        env:
+        # ════════════════════════════════════════════════════════════
+        # GitHub — Authentication (choose Option A or B)
+        # ════════════════════════════════════════════════════════════
+
+        # ── Option A: OAuth (recommended) ──────────────────────────
+        # Users log in with GitHub accounts. Per-user tokens for
+        # audit trails and workflow dispatch.
+        - name: GITHUB_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-oauth
+              key: GITHUB_CLIENT_ID
+              optional: true
+        - name: GITHUB_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-oauth
+              key: GITHUB_CLIENT_SECRET
+              optional: true
+        - name: FLASK_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-oauth
+              key: FLASK_SECRET_KEY
+              optional: true
+
+        # ── Option B: Shared PAT (legacy) ──────────────────────────
+        # All API calls use a single Personal Access Token
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-github
+              key: GITHUB_TOKEN
+              optional: true
+
+        # ════════════════════════════════════════════════════════════
+        # GitHub — Config
+        # ════════════════════════════════════════════════════════════
+        - name: GITHUB_URL
+          value: "https://github.com"                       # ← Replace with GHE URL if using GitHub Enterprise
+        - name: BASE_URL
+          value: "https://release-readiness.example.com"    # ← Replace with your external URL (for OAuth callback)
+
+        # ════════════════════════════════════════════════════════════
+        # Deploy Tab — GitHub Actions Integration
+        # ════════════════════════════════════════════════════════════
+        - name: DEPLOY_REPO
+          value: "your-org/app-deployments"                 # ← Replace with your deployment workflows repo
+        - name: DEPLOY_WORKFLOW
+          value: "deploy.yml"                               # ← Default workflow file (optional, Deploy tab auto-discovers all)
+
+        # ════════════════════════════════════════════════════════════
+        # Kubernetes — Namespace & Board Storage
+        # ════════════════════════════════════════════════════════════
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace                 # Auto-detect namespace from pod
+
+        # ════════════════════════════════════════════════════════════
+        # AI / Gemini — Choose one authentication method
+        # ════════════════════════════════════════════════════════════
+
+        # Method 1: Vertex AI (recommended for GDC/GCP)
+        # Uses Workload Identity or GOOGLE_APPLICATION_CREDENTIALS
+        - name: GCP_PROJECT_ID
+          value: ""                                         # ← Your GCP project ID
+        - name: GCP_REGION
+          value: "us-central1"                              # ← Vertex AI region
+
+        # Method 2: Gemini API Key (simpler, for non-GCP environments)
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-gemini
+              key: GEMINI_API_KEY
+              optional: true
+
+        # AI model selection
+        - name: GEMINI_MODEL
+          value: "gemini-2.0-flash"                         # ← Model to use for AI Readiness & Release Notes
+
+        # ════════════════════════════════════════════════════════════
+        # Custom Components (optional)
+        # ════════════════════════════════════════════════════════════
+        # Format: name1:Type1:Description,name2:Type2:Description
+        # - name: CUSTOM_COMPONENTS
+        #   value: "mobile-app:Mobile App:iOS/Android mobile application,config-rules:Config:Business rules engine"
+
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+        livenessProbe:
+          httpGet:
+            path: /api/board
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+
+        readinessProbe:
+          httpGet:
+            path: /api/board
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-readiness
+  labels:
+    app: release-readiness
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: release-readiness
+
+---
+# ──────────────────────────────────────────────────────────────────
+# RBAC — ServiceAccount + Role for K8s API access
+# ──────────────────────────────────────────────────────────────────
+# The app needs:
+#   - Read Deployments/StatefulSets/Pods/Events (for Board, UAT Env, AI Readiness)
+#   - Read/Write ConfigMaps (for board state persistence)
+# ──────────────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-readiness
+  labels:
+    app: release-readiness
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-readiness
+  labels:
+    app: release-readiness
+rules:
+# Read workloads — needed for service discovery, UAT Env tab, AI Readiness
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "replicasets"]
+  verbs: ["get", "list", "watch"]
+
+# Read pods & events — needed for AI Readiness health checks
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "events", "services"]
+  verbs: ["get", "list", "watch"]
+
+# Read/Write ConfigMaps — board state persistence
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "create", "update", "patch"]
+
+# Read Helm releases (stored as secrets with label owner=helm)
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-readiness
+  labels:
+    app: release-readiness
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-readiness
+subjects:
+- kind: ServiceAccount
+  name: release-readiness

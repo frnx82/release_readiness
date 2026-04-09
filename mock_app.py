@@ -3,12 +3,12 @@ Release Readiness Dashboard — MOCK MODE
 ========================================
 Runs locally without K8s or Gemini. Uses in-memory storage and fake data.
 """
-import os, json, re, time, datetime, threading, yaml
-from flask import Flask, request, jsonify, render_template
+import os, json, re, time, datetime, threading, yaml, uuid, random
+from flask import Flask, request, jsonify, render_template, session, redirect
 from flask_socketio import SocketIO
 
 app = Flask(__name__)
-app.secret_key = 'mock-secret'
+app.secret_key = 'mock-secret-key-for-sessions'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # ── Fake services (simulates a K8s cluster with 15 microservices) ─────────────
@@ -31,6 +31,22 @@ MOCK_SERVICES = [
 ]
 
 MOCK_SERVICE_MAP = {s['name']: s for s in MOCK_SERVICES}
+
+# ── Custom components (non-K8s: Spark/PySpark on Linux servers) ───────────────
+MOCK_CUSTOM_COMPONENTS = [
+    {"name": "ingestion-pipeline",       "type": "Spark",   "description": "Main data ingestion from source systems"},
+    {"name": "etl-transformer",          "type": "PySpark", "description": "Data transformation and enrichment"},
+    {"name": "data-validator",           "type": "PySpark", "description": "Data quality validation rules"},
+    {"name": "report-aggregator",        "type": "Spark",   "description": "Aggregation jobs for reporting"},
+    {"name": "event-stream-processor",   "type": "Spark",   "description": "Real-time event stream processing"},
+    {"name": "batch-reconciler",         "type": "PySpark", "description": "Batch reconciliation between systems"},
+    {"name": "data-archiver",            "type": "PySpark", "description": "Historical data archival jobs"},
+    {"name": "ml-feature-pipeline",      "type": "PySpark", "description": "ML feature extraction pipeline"},
+    {"name": "audit-log-processor",      "type": "Spark",   "description": "Audit log processing and indexing"},
+    {"name": "schema-migration-runner",  "type": "PySpark", "description": "Database schema migration runner"},
+]
+
+MOCK_CUSTOM_MAP = {c['name']: c for c in MOCK_CUSTOM_COMPONENTS}
 
 # ── In-memory board storage (replaces ConfigMap) ─────────────────────────────
 _board_store = {}
@@ -130,6 +146,10 @@ def auth_status():
 def list_services():
     return jsonify({'services': MOCK_SERVICES, 'namespace': 'mock-namespace', 'count': len(MOCK_SERVICES)})
 
+@app.route('/api/custom_components')
+def list_custom_components():
+    return jsonify({'components': MOCK_CUSTOM_COMPONENTS, 'count': len(MOCK_CUSTOM_COMPONENTS)})
+
 @app.route('/api/release/current')
 def get_current():
     board = _read_board()
@@ -146,6 +166,8 @@ def nominate():
     name = data.get('service_name', '').strip()
     notes = data.get('notes', '').strip()
     by = data.get('nominated_by', 'anonymous')
+    is_custom = data.get('is_custom', False)
+    manual_version = data.get('manual_version', '').strip()
     if not name:
         return jsonify({'error': 'service_name required'}), 400
     board = _read_board()
@@ -153,11 +175,23 @@ def nominate():
         board = _new_board()
     if board.get('status') in ('locked', 'released'):
         return jsonify({'error': 'Board is locked'}), 403
-    svc = MOCK_SERVICE_MAP.get(name, {})
-    image = svc.get('image', f'registry.example.com/{name}:unknown')
-    tag = svc.get('image_tag', 'unknown')
-    helm = svc.get('helm_version')
+
     now = datetime.datetime.utcnow().isoformat()
+
+    if is_custom:
+        # Custom component — version entered manually
+        comp = MOCK_CUSTOM_MAP.get(name, {})
+        tag = manual_version or 'unknown'
+        image = ''
+        helm = None
+        kind = comp.get('type', 'Custom')
+    else:
+        # K8s service — version auto-filled from cluster
+        svc = MOCK_SERVICE_MAP.get(name, {})
+        image = svc.get('image', f'registry.example.com/{name}:unknown')
+        tag = svc.get('image_tag', 'unknown')
+        helm = svc.get('helm_version')
+        kind = svc.get('kind', 'Deployment')
 
     existing = board['services'].get(name)
     if existing:
@@ -170,7 +204,7 @@ def nominate():
                                       'from_version': old_tag, 'to_version': tag, 'by': by, 'at': now})
     else:
         board['services'][name] = {
-            'name': name, 'kind': svc.get('kind', 'Deployment'),
+            'name': name, 'kind': kind, 'is_custom': is_custom,
             'image': image, 'image_tag': tag, 'helm_version': helm,
             'nominated_by': by, 'nominated_at': now, 'updated_at': now, 'updated_by': by,
             'notes': notes, 'readiness': None, 'readiness_details': None,
@@ -181,6 +215,48 @@ def nominate():
                                       'version': tag, 'by': by, 'at': now})
     _write_board(board)
     return jsonify({'status': 'ok', 'service': name, 'image_tag': tag})
+
+@app.route('/api/release/rollback', methods=['POST'])
+def rollback_version():
+    """Rollback a nominated service to a previously nominated version."""
+    data = request.json or {}
+    name = data.get('service_name', '').strip()
+    target_tag = data.get('target_tag', '').strip()
+    by = data.get('rolled_back_by', 'anonymous')
+    if not name or not target_tag:
+        return jsonify({'error': 'service_name and target_tag required'}), 400
+    board = _read_board()
+    if not board or name not in board.get('services', {}):
+        return jsonify({'error': 'Service not found on board'}), 404
+    if board.get('status') in ('locked', 'released'):
+        return jsonify({'error': 'Board is locked'}), 403
+
+    svc = board['services'][name]
+    old_tag = svc.get('image_tag', '')
+    if old_tag == target_tag:
+        return jsonify({'status': 'ok', 'message': 'Already at that version'}), 200
+
+    now = datetime.datetime.utcnow().isoformat()
+
+    # Update the image tag (and image path if it's a K8s service)
+    if not svc.get('is_custom'):
+        # Reconstruct image path with the target tag
+        base_image = svc.get('image', '').rsplit(':', 1)[0] if ':' in svc.get('image', '') else svc.get('image', '')
+        svc['image'] = f'{base_image}:{target_tag}'
+    svc['image_tag'] = target_tag
+    svc['updated_at'] = now
+    svc['updated_by'] = by
+
+    svc['version_history'].append({
+        'from_tag': old_tag, 'to_tag': target_tag,
+        'changed_by': by, 'changed_at': now, 'reason': f'Rollback from {old_tag}'
+    })
+    board['audit_trail'].append({
+        'action': 'rollback', 'service': name,
+        'from_version': old_tag, 'to_version': target_tag, 'by': by, 'at': now
+    })
+    _write_board(board)
+    return jsonify({'status': 'ok', 'service': name, 'image_tag': target_tag})
 
 @app.route('/api/release/remove', methods=['DELETE'])
 def remove():
@@ -314,6 +390,332 @@ def history():
                          'finalized_by': board.get('finalized_by'), 'created_at': board.get('created_at')})
     releases.sort(key=lambda x: x.get('release_date',''), reverse=True)
     return jsonify({'releases': releases})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GitHub OAuth (Mock) + Deploy
+# ══════════════════════════════════════════════════════════════════════════════
+_github_sessions = {}    # session_id -> user info
+_deploy_runs = {}        # run_id -> run details
+
+@app.route('/login')
+def login_page():
+    """Mock OAuth — auto-login and redirect home."""
+    session['github_user'] = {
+        'login': 'mock-user',
+        'name': 'Mock User',
+        'avatar_url': 'https://github.com/identicons/mock.png',
+        'logged_in': True
+    }
+    return redirect('/')
+
+@app.route('/logout')
+def logout_page():
+    """Clear session and redirect home."""
+    session.pop('github_user', None)
+    return redirect('/')
+
+@app.route('/api/github/login', methods=['POST'])
+def github_login():
+    """Mock GitHub OAuth — instantly logs in as the provided user."""
+    data = request.json or {}
+    username = data.get('username', 'rajesh')
+    session['github_user'] = {
+        'login': username,
+        'name': username.title(),
+        'avatar_url': f'https://github.com/{username}.png',
+        'logged_in': True
+    }
+    return jsonify({'status': 'ok', 'user': session['github_user']})
+
+@app.route('/api/github/status')
+def github_status():
+    """Check if user is logged into GitHub."""
+    user = session.get('github_user')
+    if user and user.get('logged_in'):
+        return jsonify({'logged_in': True, 'user': user})
+    return jsonify({'logged_in': False})
+
+@app.route('/api/github/logout', methods=['POST'])
+def github_logout():
+    session.pop('github_user', None)
+    return jsonify({'status': 'ok'})
+
+def _simulate_workflow_run(run_id):
+    """Background thread: progresses a workflow run through stages."""
+    time.sleep(2)  # queued for 2s
+    if run_id in _deploy_runs:
+        _deploy_runs[run_id]['status'] = 'in_progress'
+        _deploy_runs[run_id]['steps'] = [
+            {'name': 'Checkout code', 'status': 'completed'},
+            {'name': 'Build & Push Image', 'status': 'in_progress'},
+            {'name': 'Deploy to Environment', 'status': 'pending'},
+            {'name': 'Health Check', 'status': 'pending'}
+        ]
+    time.sleep(3)  # build for 3s
+    if run_id in _deploy_runs:
+        _deploy_runs[run_id]['steps'][1]['status'] = 'completed'
+        _deploy_runs[run_id]['steps'][2]['status'] = 'in_progress'
+    time.sleep(3)  # deploy for 3s
+    if run_id in _deploy_runs:
+        _deploy_runs[run_id]['steps'][2]['status'] = 'completed'
+        _deploy_runs[run_id]['steps'][3]['status'] = 'in_progress'
+    time.sleep(2)  # health check for 2s
+    if run_id in _deploy_runs:
+        # 85% chance success, 15% failure
+        success = random.random() > 0.15
+        _deploy_runs[run_id]['steps'][3]['status'] = 'completed' if success else 'failed'
+        _deploy_runs[run_id]['status'] = 'completed' if success else 'failure'
+        _deploy_runs[run_id]['conclusion'] = 'success' if success else 'failure'
+        _deploy_runs[run_id]['completed_at'] = datetime.datetime.utcnow().isoformat()
+
+@app.route('/api/deploy/workflows')
+def deploy_workflows():
+    """Mock: return sample deployment workflows."""
+    workflows = [
+        {
+            'id': 101, 'name': 'Deploy Service to UAT', 'file': 'deploy-uat.yml',
+            'state': 'active', 'last_conclusion': 'success', 'last_run_ago': '2h ago',
+            'duration': '3m 42s', 'last_run_by': 'rajesh', 'branch': 'main',
+            'dispatch_inputs': [
+                {'name': 'service', 'type': 'choice', 'description': 'Service to deploy', 'default': '', 'required': True,
+                 'options': ['billing-service', 'auth-service', 'payment-gateway', 'report-engine', 'notification-hub']},
+                {'name': 'version', 'type': 'string', 'description': 'Image tag / version', 'default': '', 'required': True},
+                {'name': 'environment', 'type': 'choice', 'description': 'Target environment', 'default': 'uat', 'required': True,
+                 'options': ['uat', 'staging', 'production']},
+            ]
+        },
+        {
+            'id': 102, 'name': 'Deploy Helm Chart', 'file': 'deploy-helm.yml',
+            'state': 'active', 'last_conclusion': 'success', 'last_run_ago': '5h ago',
+            'duration': '5m 18s', 'last_run_by': 'dev-team', 'branch': 'main',
+            'dispatch_inputs': [
+                {'name': 'chart_name', 'type': 'string', 'description': 'Helm chart name', 'default': '', 'required': True},
+                {'name': 'chart_version', 'type': 'string', 'description': 'Chart version', 'default': '', 'required': True},
+                {'name': 'namespace', 'type': 'string', 'description': 'Target namespace', 'default': 'uat', 'required': True},
+            ]
+        },
+        {
+            'id': 103, 'name': 'Rollback Service', 'file': 'rollback.yml',
+            'state': 'active', 'last_conclusion': 'failure', 'last_run_ago': '1d ago',
+            'duration': '1m 12s', 'last_run_by': 'ops-lead', 'branch': 'main',
+            'dispatch_inputs': [
+                {'name': 'service', 'type': 'string', 'description': 'Service to rollback', 'default': '', 'required': True},
+                {'name': 'target_version', 'type': 'string', 'description': 'Version to rollback to', 'default': '', 'required': True},
+            ]
+        },
+        {
+            'id': 104, 'name': 'Run Integration Tests', 'file': 'integration-tests.yml',
+            'state': 'active', 'last_conclusion': 'success', 'last_run_ago': '30m ago',
+            'duration': '8m 55s', 'last_run_by': 'rajesh', 'branch': 'main',
+            'dispatch_inputs': [
+                {'name': 'test_suite', 'type': 'choice', 'description': 'Which test suite', 'default': 'all', 'required': False,
+                 'options': ['all', 'smoke', 'regression', 'security']},
+            ]
+        },
+    ]
+    return jsonify({'workflows': workflows, 'repo': 'org/app-deployment'})
+
+@app.route('/api/deploy/trigger', methods=['POST'])
+def deploy_trigger():
+    """Trigger a mock GitHub Actions workflow_dispatch."""
+    gh_user = session.get('github_user')
+    if not gh_user or not gh_user.get('logged_in'):
+        return jsonify({'error': 'GitHub login required'}), 401
+
+    data = request.json or {}
+    workflow_id = data.get('workflow_id', '')
+    inputs = data.get('inputs', {})
+
+    # Force environment to UAT
+    if 'environment' in inputs:
+        inputs['environment'] = 'uat'
+
+    if not workflow_id:
+        return jsonify({'error': 'workflow_id required'}), 400
+
+    run_id = str(uuid.uuid4())[:8]
+    now = datetime.datetime.utcnow().isoformat()
+
+    run = {
+        'run_id': run_id,
+        'inputs': inputs,
+        'environment': 'uat',
+        'status': 'queued',
+        'conclusion': None,
+        'triggered_by': gh_user['login'],
+        'triggered_at': now,
+        'completed_at': None,
+        'workflow_id': workflow_id,
+        'repo': 'org/app-deployment',
+        'html_url': f'https://github.com/org/app-deployment/actions/runs/{run_id}',
+        'steps': [
+            {'name': 'Checkout code', 'status': 'pending'},
+            {'name': 'Build & Push Image', 'status': 'pending'},
+            {'name': 'Deploy to Environment', 'status': 'pending'},
+            {'name': 'Health Check', 'status': 'pending'}
+        ]
+    }
+    _deploy_runs[run_id] = run
+
+    # Add to board audit trail
+    board = _read_board()
+    if board:
+        board['audit_trail'].append({
+            'action': 'deploy_triggered',
+            'service': inputs.get('service', ''),
+            'version': inputs.get('version', ''),
+            'environment': 'uat',
+            'workflow_id': workflow_id,
+            'run_id': run_id, 'by': gh_user['login'], 'at': now
+        })
+        _write_board(board)
+
+    # Start background simulation
+    t = threading.Thread(target=_simulate_workflow_run, args=(run_id,), daemon=True)
+    t.start()
+
+    return jsonify({'status': 'ok', 'run': run})
+
+@app.route('/api/deploy/status/<run_id>')
+def deploy_status(run_id):
+    """Poll status of a specific workflow run."""
+    run = _deploy_runs.get(run_id)
+    if not run:
+        return jsonify({'error': 'Run not found'}), 404
+    return jsonify(run)
+
+@app.route('/api/deploy/history')
+def deploy_history():
+    """List all deploy runs, newest first."""
+    runs = sorted(_deploy_runs.values(), key=lambda r: r.get('triggered_at', ''), reverse=True)
+    return jsonify({'runs': runs, 'count': len(runs)})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI Release Chatbot (Mock)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/api/ai/converse', methods=['POST'])
+def ai_converse():
+    """Mock AI chatbot — returns contextual responses based on keywords."""
+    data = request.json or {}
+    message = data.get('message', '').lower().strip()
+
+    if not message:
+        return jsonify({'error': 'No message provided'}), 400
+
+    # Read current board for contextual answers
+    board = _read_board() or _new_board()
+    services = board.get('services', {})
+    svc_names = list(services.keys())
+    svc_count = len(svc_names)
+
+    # ── Keyword-based mock responses ──────────────────────────────────────
+    if any(w in message for w in ['what', 'release', 'board', 'going', 'friday', 'included']):
+        if svc_count == 0:
+            reply = ("📋 **No services nominated yet** for this release.\n\n"
+                     f"Release date: **{board.get('release_date', '?')}**\n"
+                     f"Board status: **{board.get('status', 'open')}**\n\n"
+                     "Use the Board tab to nominate services.")
+        else:
+            svc_lines = []
+            for name, svc in services.items():
+                svc_lines.append(f"| {name} | `{svc.get('image_tag', '?')}` | {svc.get('nominated_by', '?')} |")
+            table = "| Service | Version | Nominated By |\n|---------|---------|-------------|\n" + '\n'.join(svc_lines)
+            reply = (f"📋 **Release Board Summary**\n\n"
+                     f"- **Release Date:** {board.get('release_date', '?')}\n"
+                     f"- **Status:** {board.get('status', 'open')}\n"
+                     f"- **Services:** {svc_count} nominated\n"
+                     f"- **Cutoff:** {board.get('cutoff', '?')}\n\n"
+                     f"{table}")
+
+    elif any(w in message for w in ['drift', 'version', 'mismatch']):
+        if svc_count == 0:
+            reply = "🔀 No services nominated — nothing to check for drift."
+        else:
+            lines = []
+            for name, svc in services.items():
+                match = random.choice(['✅ Match', '⚠️ Drift'])
+                lines.append(f"| {name} | `{svc.get('image_tag', '?')}` | `{svc.get('image_tag', '?')}` | {match} |")
+            table = "| Service | Nominated | Live | Status |\n|---------|-----------|------|--------|\n" + '\n'.join(lines)
+            reply = f"🔀 **Version Drift Check**\n\n{table}\n\n💡 *Run the full drift check from the Version Drift tab for live data.*"
+
+    elif any(w in message for w in ['readiness', 'health', 'score', 'ready', 'green', 'red']):
+        if svc_count == 0:
+            reply = "🤖 No services nominated — run a readiness check after nominating services."
+        else:
+            lines = []
+            for name in svc_names:
+                score = random.randint(70, 99)
+                status = '🟢 Green' if score >= 80 else '🟡 Yellow'
+                lines.append(f"| {name} | {score}/100 | {status} |")
+            table = "| Service | Score | Status |\n|---------|-------|--------|\n" + '\n'.join(lines)
+            reply = f"🤖 **AI Readiness Summary**\n\n{table}\n\n💡 *Run the full check from the AI Readiness tab for actual Gemini analysis.*"
+
+    elif any(w in message for w in ['audit', 'trail', 'history', 'log', 'who', 'when']):
+        trail = board.get('audit_trail', [])
+        if not trail:
+            reply = "📜 **Audit trail is empty** — no actions recorded yet."
+        else:
+            lines = []
+            for e in list(reversed(trail))[:10]:
+                detail = e.get('service', '')
+                if e.get('image_tag'):
+                    detail += f" → `{e['image_tag']}`"
+                lines.append(f"| {e.get('action', '?')} | {e.get('by', '?')} | {e.get('at', '?')[:16]} | {detail} |")
+            table = "| Action | By | When | Details |\n|--------|----|----- |--------|\n" + '\n'.join(lines)
+            reply = f"📜 **Recent Audit Trail**\n\n{table}"
+
+    elif any(w in message for w in ['uat', 'cluster', 'running', 'deployed', 'live', 'namespace']):
+        lines = []
+        for s in MOCK_SERVICES[:8]:
+            lines.append(f"| {s['name']} | {s['kind']} | `{s['image_tag']}` | {s['replicas']}/{s['desired_replicas']} |")
+        table = "| Service | Kind | Image Tag | Ready |\n|---------|------|-----------|-------|\n" + '\n'.join(lines)
+        reply = f"🖥️ **UAT Namespace — Live Services**\n\n{table}\n\n*Showing 8 of {len(MOCK_SERVICES)} services.*"
+
+    elif any(name in message for name in svc_names):
+        # User asked about a specific service
+        matched = [n for n in svc_names if n in message][0]
+        svc = services[matched]
+        reply = (f"🔍 **Service: {matched}**\n\n"
+                 f"| Field | Value |\n|-------|-------|\n"
+                 f"| Image Tag | `{svc.get('image_tag', '?')}` |\n"
+                 f"| Helm Chart | `{svc.get('helm_chart_version', 'n/a')}` |\n"
+                 f"| Kind | {svc.get('kind', 'Deployment')} |\n"
+                 f"| Nominated By | {svc.get('nominated_by', '?')} |\n"
+                 f"| Nominated At | {svc.get('nominated_at', '?')} |\n"
+                 f"| Notes | {svc.get('notes', '—')} |\n\n"
+                 f"✅ **Status:** Healthy — all pods running")
+
+    elif any(w in message for w in ['help', 'can you', 'what can']):
+        reply = ("💬 **I can help you with:**\n\n"
+                 "- **\"What's in this release?\"** — shows all nominated services\n"
+                 "- **\"Check drift\"** — compares nominated vs live versions\n"
+                 "- **\"Show readiness scores\"** — AI health check results\n"
+                 "- **\"Show audit trail\"** — who did what and when\n"
+                 "- **\"What's running in UAT?\"** — live cluster services\n"
+                 "- **\"Is billing-service included?\"** — specific service status\n\n"
+                 "Just ask in natural language! 🚀")
+
+    else:
+        reply = (f"🤖 I understand you're asking about: *\"{data.get('message', '')}\"*\n\n"
+                 f"Here's what I can see:\n"
+                 f"- **{svc_count}** services on the board\n"
+                 f"- Board status: **{board.get('status', 'open')}**\n"
+                 f"- Release date: **{board.get('release_date', '?')}**\n\n"
+                 f"Try asking something specific like:\n"
+                 f"- \"What services are nominated?\"\n"
+                 f"- \"Check for version drift\"\n"
+                 f"- \"Show readiness scores\"")
+
+    return jsonify({'reply': reply, 'session_id': request.headers.get('X-Session-Id', 'default')})
+
+
+@app.route('/api/ai/converse/reset', methods=['POST'])
+def ai_converse_reset():
+    """Clear chat session (no-op in mock mode)."""
+    return jsonify({'status': 'cleared', 'session_id': request.headers.get('X-Session-Id', 'default')})
 
 
 if __name__ == '__main__':

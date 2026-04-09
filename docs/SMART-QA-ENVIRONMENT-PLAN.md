@@ -296,6 +296,12 @@ ARGOCD_READ_TOKEN=<read-only-token>
 UAT_NAMESPACE=uat
 HELM_REPO=https://charts.internal/
 
+# Deploy Tab — GitHub Actions Integration
+DEPLOY_REPO=your-org/app-deployments    # repo containing deployment workflows
+GITHUB_CLIENT_ID=<oauth-app-client-id>
+GITHUB_CLIENT_SECRET=<oauth-app-secret>
+BASE_URL=https://release-readiness.your-domain.com
+
 # Optional
 TEAMS_WEBHOOK_URL=https://outlook.office.com/webhook/...
 EMAIL_RECIPIENTS=qa-team@company.com
@@ -304,6 +310,128 @@ JIRA_TOKEN=<api-token>
 ```
 
 ---
+
+## 🚀 Deploy Tab — GitHub Actions Integration
+
+The **Deploy tab** connects directly to your `app-deployments` GitHub repository, auto-discovers all workflows, and lets developers trigger UAT deployments from the Release Readiness UI.
+
+### How It Works
+
+1. Set `DEPLOY_REPO=your-org/app-deployments` in your deployment config
+2. The Deploy tab calls the GitHub API to list all **active** workflows in that repo
+3. For each workflow, it parses the `workflow_dispatch.inputs` from the YAML to build dynamic input forms
+4. Developers fill in inputs (service, image version, etc.) and click **Run Workflow**
+5. The app triggers `workflow_dispatch` via GitHub API → your workflow runs → ArgoCD deploys to UAT
+6. Real-time status polling shows step-by-step progress
+
+> **Note:** The `environment` input is **force-locked to `uat`** — developers cannot select staging or production from this tool.
+
+### Example: ArgoCD Deployment Workflow
+
+Your `app-deployments` repo should have workflows with `workflow_dispatch` triggers. Example:
+
+```yaml
+# .github/workflows/deploy-service.yml
+name: Deploy Service via ArgoCD
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        type: choice
+        description: Service to deploy
+        required: true
+        options:
+          - billing-service
+          - auth-service
+          - payment-gateway
+          - report-engine
+          - notification-hub
+      version:
+        type: string
+        description: Docker image tag (e.g. v2.3.4)
+        required: true
+      environment:
+        type: choice
+        description: Target environment
+        required: true
+        default: uat
+        options:
+          - uat
+          - staging
+          - production
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ArgoCD CLI
+        run: |
+          curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x argocd && sudo mv argocd /usr/local/bin/
+
+      - name: Login to ArgoCD
+        run: argocd login ${{ secrets.ARGOCD_SERVER }} --username admin --password ${{ secrets.ARGOCD_PASSWORD }} --insecure
+
+      - name: Update Image Tag
+        run: |
+          argocd app set ${{ inputs.service }} \
+            --helm-set image.tag=${{ inputs.version }} \
+            --helm-set-string targetEnv=${{ inputs.environment }}
+
+      - name: Sync Application
+        run: argocd app sync ${{ inputs.service }} --prune --force
+
+      - name: Wait for Health
+        run: argocd app wait ${{ inputs.service }} --health --timeout 300
+```
+
+The Deploy tab will render this as:
+- A **dropdown** for `service` (auto-populated from the YAML `options` list)
+- A **text field** for `version` (image tag)
+- A **locked** `environment` field showing `uat` with 🔒 badge
+
+### Auto-Discovery
+
+The Deploy tab discovers **all** workflows automatically — no additional configuration needed. If you add new workflows to `app-deployments` (e.g., `rollback.yml`, `deploy-helm.yml`, `run-tests.yml`), they appear in the UI on the next refresh.
+
+### Kubernetes Deployment Config
+
+When deploying the Release Readiness app to your cluster, set the environment variables in your manifest:
+
+```yaml
+# deployment.yaml (or Helm values)
+env:
+  - name: DEPLOY_REPO
+    value: "your-org/app-deployments"
+  - name: GITHUB_CLIENT_ID
+    value: "Iv1.abc123def456"
+  - name: GITHUB_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: github-oauth-secret
+        key: client-secret
+  - name: BASE_URL
+    value: "https://release-readiness.your-domain.com"
+```
+
+### GitHub OAuth App Setup
+
+1. Go to **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App**
+2. Set:
+   - **Application name:** Release Readiness Dashboard
+   - **Homepage URL:** `https://release-readiness.your-domain.com`
+   - **Authorization callback URL:** `https://release-readiness.your-domain.com/auth/callback`
+3. Copy `Client ID` → `GITHUB_CLIENT_ID`
+4. Generate a `Client Secret` → `GITHUB_CLIENT_SECRET`
+
+### Required GitHub Permissions
+
+The user logging in via OAuth needs:
+- **Read access** to `app-deployments` repo (to list workflows and read YAML inputs)
+- **Write access / Actions permission** to trigger `workflow_dispatch` events
 
 ## New API Endpoints
 
