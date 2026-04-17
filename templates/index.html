@@ -843,191 +843,474 @@
 
             <!-- Help Tab -->
             <div class="tab-content" id="tab-help">
-                <div style="max-width:800px">
-                    <h2 style="margin-bottom:16px;font-size:20px;color:var(--accent2)">📖 How Release Readiness Works</h2>
-                    <p style="color:var(--text2);font-size:13px;line-height:1.7;margin-bottom:24px">
-                        Release Readiness is an AI-powered release coordination board. Instead of posting versions
-                        in Teams and compiling spreadsheets, developers nominate services here and AI validates
-                        everything before release. Deployments to UAT are triggered via GitHub Actions workflows
-                        from the Deploy tab.
+                <div style="max-width:820px">
+
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <!-- HEADER & OVERVIEW                                  -->
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <h2 style="margin-bottom:6px;font-size:22px;color:var(--accent2)">📖 Release Readiness — Complete Guide</h2>
+                    <p style="color:var(--text2);font-size:13px;line-height:1.7;margin-bottom:20px">
+                        Release Readiness is an <strong>AI-powered release coordination dashboard</strong> that replaces
+                        manual spreadsheets and Teams messages. Developers nominate services for each weekly release,
+                        AI validates health and generates release notes enriched with Jira ticket data, and deployments
+                        to UAT are triggered directly via GitHub Actions — all from a single dashboard.
                     </p>
+
+                    <!-- At-a-glance feature grid -->
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:24px">
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+                            <div style="font-size:24px;margin-bottom:4px">📋</div>
+                            <div style="font-size:12px;font-weight:600">Release Board</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">Nominate & track services</div>
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+                            <div style="font-size:24px;margin-bottom:4px">🎫</div>
+                            <div style="font-size:12px;font-weight:600">Jira Integration</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">Link tickets to releases</div>
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+                            <div style="font-size:24px;margin-bottom:4px">🤖</div>
+                            <div style="font-size:12px;font-weight:600">AI Readiness</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">Gemini health checks</div>
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+                            <div style="font-size:24px;margin-bottom:4px">🚀</div>
+                            <div style="font-size:12px;font-weight:600">UAT Deploy</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">GitHub Actions dispatch</div>
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+                            <div style="font-size:24px;margin-bottom:4px">📝</div>
+                            <div style="font-size:12px;font-weight:600">AI Release Notes</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">Jira-enriched summaries</div>
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+                            <div style="font-size:24px;margin-bottom:4px">💬</div>
+                            <div style="font-size:12px;font-weight:600">AI Chatbot</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">Ask about the release</div>
+                        </div>
+                    </div>
+
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <!-- STEP-BY-STEP WORKFLOW                              -->
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <div style="background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(139,92,246,.08));border:1px solid rgba(99,102,241,.2);border-radius:var(--radius);padding:24px;margin-bottom:20px">
+                        <h3 style="font-size:17px;margin-bottom:14px;color:var(--accent)">🔄 Typical Weekly Release Workflow</h3>
+                        <div style="font-size:13px;line-height:2.2;color:var(--text2)">
+                            <div style="display:flex;gap:10px;align-items:flex-start">
+                                <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">1</span>
+                                <div><strong style="color:var(--text)">Monday–Wednesday:</strong> Developers deploy code to UAT using the <strong>🚀 Deploy</strong> tab (GitHub Actions) and test their changes.</div>
+                            </div>
+                            <div style="display:flex;gap:10px;align-items:flex-start">
+                                <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">2</span>
+                                <div><strong style="color:var(--text)">Nominate Services:</strong> Once verified in UAT, developers nominate their service on the <strong>📋 Board</strong> tab — version is auto-captured from the live cluster. Add <strong>Jira IDs</strong> for the changes being released.</div>
+                            </div>
+                            <div style="display:flex;gap:10px;align-items:flex-start">
+                                <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">3</span>
+                                <div><strong style="color:var(--text)">QA Validation:</strong> Run <strong>🔀 Version Drift</strong> to check for mismatches, run <strong>🤖 AI Readiness</strong> for health checks. Use <strong>📜 Version History</strong> to rollback if needed.</div>
+                            </div>
+                            <div style="display:flex;gap:10px;align-items:flex-start">
+                                <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">4</span>
+                                <div><strong style="color:var(--text)">Wednesday 5 PM — Cutoff:</strong> Release Manager clicks <strong>🔒 Lock Board</strong>. No more nominations accepted.</div>
+                            </div>
+                            <div style="display:flex;gap:10px;align-items:flex-start">
+                                <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">5</span>
+                                <div><strong style="color:var(--text)">Generate Artifacts:</strong> Go to <strong>📦 Export</strong> tab → <strong>🤖 AI Release Notes</strong> (fetches Jira ticket summaries via MCP). Export JSON/YAML manifests for production deploy pipelines.</div>
+                            </div>
+                            <div style="display:flex;gap:10px;align-items:flex-start">
+                                <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">6</span>
+                                <div><strong style="color:var(--text)">Friday — Release Day:</strong> Deploy to production using exported manifests. Click <strong>✅ Mark Released</strong> to archive the board. A new weekly cycle begins automatically.</div>
+                            </div>
+                        </div>
+                    </div>
+
+
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <!-- SECTION: Getting Started                           -->
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <h3 style="font-size:16px;margin:24px 0 12px;color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:8px">🏁 Getting Started</h3>
 
                     <!-- GitHub Login -->
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
-                        <h3 style="font-size:16px;margin-bottom:8px">🔐 GitHub Login</h3>
+                        <h3 style="font-size:15px;margin-bottom:8px">🔐 Step 1: GitHub Login</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            Release Readiness uses <strong>GitHub OAuth</strong> for authentication. Click <strong>"Login with GitHub"</strong>
-                            in the sidebar to connect your account. This is required for triggering deployments from the Deploy tab.
+                            Click <strong>"Login with GitHub"</strong> in the sidebar to authenticate. This enables
+                            deployment workflows and associates your identity with board actions.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
-                            <strong style="color:var(--accent2)">Details:</strong>
+                            <strong style="color:var(--accent2)">Authentication modes:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li>Secure OAuth 2.0 flow — no passwords stored in the app</li>
-                                <li>Your GitHub identity is used for audit trail (who triggered which deploy)</li>
-                                <li>Requires <strong>read access</strong> to the deployment repo and <strong>Actions write access</strong> to trigger workflows</li>
-                                <li>Also supports PAT (Personal Access Token) mode — set <code>GITHUB_TOKEN</code> env var for service accounts</li>
+                                <li><strong>OAuth 2.0</strong> (recommended) — Secure browser-based login. Requires <code>GITHUB_CLIENT_ID</code> + <code>GITHUB_CLIENT_SECRET</code>.</li>
+                                <li><strong>PAT mode</strong> — Shared Personal Access Token for service accounts. Set <code>GITHUB_TOKEN</code> env var.</li>
+                                <li>Supports <strong>GitHub Enterprise</strong> — set <code>GITHUB_URL</code> to your GHE instance.</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Why it's needed:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>Your GitHub identity is logged in the <strong>Audit Trail</strong> for every action</li>
+                                <li>Required for the <strong>🚀 Deploy</strong> tab (triggers GitHub Actions using your token)</li>
+                                <li>Board nominations and AI features work without login — only Deploy requires auth</li>
                             </ul>
                         </div>
                     </div>
 
+
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <!-- SECTION: Board & Nominations                       -->
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <h3 style="font-size:16px;margin:24px 0 12px;color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:8px">📋 Board & Nominations</h3>
+
                     <!-- Board -->
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
-                        <h3 style="font-size:16px;margin-bottom:8px">📋 Board</h3>
+                        <h3 style="font-size:15px;margin-bottom:8px">📋 Release Board</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            The Board is the central hub of the release cycle. It shows all services nominated for
-                            the upcoming release. Supports both <strong>K8s services</strong> (auto-detected) and <strong>Custom Components</strong> (manual entry).
+                            The Board is the central hub for every release. It shows all services nominated for
+                            the upcoming Friday release with their locked versions.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
-                            <strong style="color:var(--accent2)">How it works:</strong>
+                            <strong style="color:var(--accent2)">How to nominate a service:</strong>
+                            <ol style="margin-left:18px;color:var(--text2)">
+                                <li>Choose <strong>● K8s Service</strong> or <strong>⚡ Custom Component</strong> in the sidebar</li>
+                                <li>Select a service from the dropdown — <strong>Image Tag</strong> and <strong>Helm Chart</strong> are auto-filled from the live UAT cluster</li>
+                                <li>Enter your name in <strong>Your Name</strong></li>
+                                <li>Enter associated <strong>Jira IDs</strong> (comma-separated, e.g., <code>BILL-101, BILL-102</code>)</li>
+                                <li>Add optional <strong>Release Notes</strong> describing the change</li>
+                                <li>Click <strong>🚀 Nominate</strong></li>
+                            </ol>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Key behaviors:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li>Select a service from the dropdown — the <strong>image tag</strong> and
-                                    <strong>Helm version</strong> are auto-filled from the live UAT cluster</li>
-                                <li>The version is <strong>locked at nomination time</strong> — if someone deploys a newer version to UAT later, the board still shows the original nominated version</li>
-                                <li>To update, <strong>re-nominate</strong> the service (logged in audit trail) or use <strong>📜 Version History</strong> to rollback</li>
+                                <li>Version is <strong>locked at nomination time</strong> — if someone deploys a newer version to UAT later, the board keeps the original nominated version</li>
+                                <li>To update, <strong>re-nominate</strong> the same service (previous version is saved in history)</li>
                                 <li>Toggle between <strong>Tile view (▦)</strong> and <strong>List view (☰)</strong></li>
+                                <li>Each card shows: version tag, Helm chart, readiness badge, <strong>🎫 Jira badges</strong>, nominator, date, and notes</li>
+                                <li>Click <strong>👁 Details</strong> to see full service info, <strong>📜 History</strong> for version timeline, <strong>✕ Remove</strong> to withdraw</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Board states:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><span style="color:var(--green)">● Open</span> — Accepting nominations (Monday through Wednesday cutoff)</li>
+                                <li><span style="color:var(--yellow)">🔒 Locked</span> — Past cutoff. No changes allowed. Only Release Manager can modify.</li>
+                                <li><span style="color:var(--text2)">✅ Released</span> — Archived as read-only. A new cycle begins.</li>
                             </ul>
                         </div>
                         <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--accent)">
-                            💡 <strong>Tip:</strong> The board has 3 states — <strong>Open</strong> (accepting nominations),
-                            <strong>Locked</strong> (past cutoff, no changes), and <strong>Released</strong> (read-only archive).
+                            💡 <strong>Tip:</strong> The summary bar at the top shows nominated count, readiness breakdown
+                            (Ready / Review / Risk), release date, and cutoff time at a glance.
+                        </div>
+                    </div>
+
+                    <!-- Custom Components -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px">⚡ Custom Components (Non-K8s)</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Not everything runs in Kubernetes. Custom Components let you nominate <strong>Spark jobs,
+                            PySpark pipelines, mobile apps, config rules</strong>, or any non-K8s artifact.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">How it differs:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>Click <strong>⚡ Custom Component</strong> tab in the nomination form</li>
+                                <li>Version is <strong>manually entered</strong> (not auto-detected from cluster)</li>
+                                <li>Component types and descriptions are configured via <code>CUSTOM_COMPONENTS</code> env var</li>
+                                <li>Jira IDs work the same — link Jira tickets to custom component releases</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--accent)">
+                            💡 <strong>Config example:</strong>
+                            <code style="display:block;margin-top:6px;font-size:11px">CUSTOM_COMPONENTS=ingestion-pipeline:Spark:Main data ingestion,etl-transformer:PySpark:Data transformation</code>
                         </div>
                     </div>
 
                     <!-- Version History -->
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
-                        <h3 style="font-size:16px;margin-bottom:8px">📜 Version History</h3>
+                        <h3 style="font-size:15px;margin-bottom:8px">📜 Version History & Rollback</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            Every time a service is nominated or re-nominated, the previous version is saved.
-                            Click the <strong>📜 button</strong> on any service card to view all past nominations.
+                            Every time a service is nominated or re-nominated, the previous version is saved in a timeline.
+                            Click the <strong>📜 History</strong> button on any service card to view and rollback.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">What you can do:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li>View a timeline of all nominated versions with who/when</li>
-                                <li>Click <strong>"↩ Rollback to this version"</strong> to revert to any previously nominated version</li>
-                                <li>Rollbacks are logged in the audit trail for traceability</li>
+                                <li>View full timeline — who nominated which version and when</li>
+                                <li>Click <strong>"↩ Rollback to this version"</strong> to instantly revert to any previous nomination</li>
+                                <li>All rollbacks are logged in the <strong>Audit Trail</strong> with from → to version</li>
                             </ul>
                         </div>
                         <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--yellow)">
-                            💡 <strong>Use case:</strong> You nominated v2.3.5, but QA found a bug. Rollback to the
-                            previously nominated v2.3.3 without needing to redeploy.
+                            💡 <strong>Use case:</strong> You nominated billing-service v2.3.5, but QA found a regression.
+                            Rollback to v2.3.3 without redeploying — the board nomination reverts instantly.
                         </div>
                     </div>
 
+
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <!-- SECTION: Jira Integration                          -->
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <h3 style="font-size:16px;margin:24px 0 12px;color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:8px">🎫 Jira Integration</h3>
+
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px">🎫 Linking Jira Tickets to Releases</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Each nominated service can have <strong>Jira ticket IDs</strong> attached, connecting the release
+                            board to your team's issue tracker. This enables AI-powered release notes that summarize
+                            <em>what actually changed</em> based on Jira descriptions.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">How to add Jira IDs:</strong>
+                            <ol style="margin-left:18px;color:var(--text2)">
+                                <li>When nominating a service, enter Jira ticket IDs in the <strong>Jira IDs</strong> field</li>
+                                <li>Use comma separation for multiple tickets: <code>BILL-101, BILL-102, BILL-103</code></li>
+                                <li>IDs must follow the standard format: <code>PROJECT-NUMBER</code> (e.g., <code>DEVOPS-123</code>)</li>
+                                <li>Jira IDs can be updated by re-nominating the service</li>
+                            </ol>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Where Jira IDs appear:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>Board tile view</strong> — Styled 🎫 badges on each service card</li>
+                                <li><strong>Board list view</strong> — Dedicated "Jira" column in the table</li>
+                                <li><strong>Service detail modal</strong> — Full Jira ID list when you click 👁 Details</li>
+                                <li><strong>AI Release Notes</strong> — "Jira Tickets" column + "What's Changed" section</li>
+                                <li><strong>AI Chatbot</strong> — Ask "What Jira tickets are in this release?" or about a specific service</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px">🔌 Jira MCP Server Connection</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Release Readiness connects to your organization's <strong>Jira MCP (Model Context Protocol) server</strong>
+                            to fetch ticket details (summary, description, status, type, priority). This data powers
+                            the AI release notes generation.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">How it works:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>When you click <strong>🤖 AI Release Notes</strong>, the system collects all Jira IDs from nominated services</li>
+                                <li>For each Jira ID, it calls the MCP server's <code>jira_get_issue</code> tool via JSON-RPC over HTTP</li>
+                                <li>Ticket summaries and descriptions are injected into the Gemini prompt</li>
+                                <li>Gemini generates release notes organized by change type: 🆕 Features, 🐛 Bug Fixes, ⚡ Improvements, 🔧 Maintenance</li>
+                                <li>Results are <strong>cached for 5 minutes</strong> to avoid redundant API calls</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Configuration:</strong>
+                            <div style="margin-top:6px;padding:10px 14px;background:var(--bg);border-radius:8px;font-family:monospace;font-size:12px;color:var(--text2)">
+                                JIRA_MCP_URL=https://jira-mcp.your-org.com<br>
+                                JIRA_SERVICE_ACCOUNT=jira-svc-account<br>
+                                JIRA_PAT_TOKEN=&lt;your-jira-pat-token&gt;
+                            </div>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--green)">
+                            💡 <strong>Graceful degradation:</strong> If no Jira MCP server is configured, or it's unreachable,
+                            release notes still generate — just without Jira descriptions. No errors, no breakage.
+                        </div>
+                    </div>
+
+
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <!-- SECTION: Quality & Validation                      -->
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <h3 style="font-size:16px;margin:24px 0 12px;color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:8px">✅ Quality & Validation</h3>
+
                     <!-- Version Drift -->
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
-                        <h3 style="font-size:16px;margin-bottom:8px">🔀 Version Drift</h3>
+                        <h3 style="font-size:15px;margin-bottom:8px">🔀 Version Drift Detection</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            Compares the <strong>nominated version</strong> on the board against what's
-                            <strong>actually running in UAT right now</strong>.
+                            Compares the <strong>nominated version on the board</strong> against what's
+                            <strong>actually running in UAT right now</strong>. Catches cases where someone deployed
+                            a newer version after nomination.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">Drift levels:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li><span style="color:var(--green)">🟢 No Drift</span> — Nominated version matches UAT</li>
-                                <li><span style="color:var(--yellow)">🟡 Minor Drift</span> — UAT has a newer patch/minor version. Developer should re-nominate.</li>
-                                <li><span style="color:var(--red)">🔴 Major Drift</span> — Different major version. Needs investigation.</li>
+                                <li><span style="color:var(--green)">🟢 No Drift</span> — Nominated version matches what's live in UAT</li>
+                                <li><span style="color:var(--yellow)">🟡 Minor Drift</span> — UAT has a newer patch/minor version. Developer should re-nominate with the correct version.</li>
+                                <li><span style="color:var(--red)">🔴 Major Drift</span> — Different major version in UAT. Needs immediate investigation — possible unintended deployment.</li>
                             </ul>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--yellow)">
+                            💡 <strong>When to run:</strong> Run drift checks <strong>before cutoff</strong> (Wednesday) and
+                            <strong>after any UAT deployment</strong> to ensure the board reflects reality.
                         </div>
                     </div>
 
                     <!-- AI Readiness -->
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
-                        <h3 style="font-size:16px;margin-bottom:8px">🤖 AI Readiness</h3>
+                        <h3 style="font-size:15px;margin-bottom:8px">🤖 AI Readiness Check</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            Uses <strong>Google Gemini</strong> to perform automated health checks on every
-                            nominated service. Analyzes live Kubernetes data to determine release safety.
+                            Powered by <strong>Google Gemini</strong>. Performs automated health analysis on every nominated service
+                            by examining live Kubernetes cluster data (pods, events, resources, probes).
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">What AI checks:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li><strong>Pod health</strong> — replicas, crash loops, restarts</li>
-                                <li><strong>K8s events</strong> — warnings, errors, scheduling issues</li>
-                                <li><strong>Resources</strong> — CPU/memory usage within limits</li>
-                                <li><strong>Container status</strong> — OOMKills, image pull errors, probe failures</li>
-                                <li><strong>Version risk</strong> — major version bumps flagged for review</li>
+                                <li><strong>Pod health</strong> — replica count, crash loops, restart count in last 48h</li>
+                                <li><strong>K8s events</strong> — warnings, errors, scheduling failures, ImagePullBackOff</li>
+                                <li><strong>Resources</strong> — CPU/memory requests vs limits, potential OOM risk</li>
+                                <li><strong>Probes</strong> — liveness/readiness probe configuration and failure rates</li>
+                                <li><strong>Image tag risk</strong> — flags <code>:latest</code> tags as unpinned supply chain risk</li>
+                                <li><strong>Version change risk</strong> — major version bumps flagged for extra review</li>
                             </ul>
                         </div>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">Readiness scores:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li><span style="color:var(--green)">🟢 Ready (70-100)</span> — safe to release</li>
-                                <li><span style="color:var(--yellow)">🟡 Review (40-69)</span> — release manager should review</li>
-                                <li><span style="color:var(--red)">🔴 Risk (0-39)</span> — should not release until resolved</li>
+                                <li><span style="color:var(--green)">🟢 Ready (70–100)</span> — Service is healthy. Safe to include in release.</li>
+                                <li><span style="color:var(--yellow)">🟡 Review (40–69)</span> — Some concerns found. Release Manager should investigate before approving.</li>
+                                <li><span style="color:var(--red)">🔴 Risk (0–39)</span> — Critical issues. Should <strong>not</strong> be released until resolved.</li>
                             </ul>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--green)">
+                            💡 <strong>Tip:</strong> Readiness results are shown as badges on each board card and in the
+                            summary bar at the top. Click <strong>👁 Details</strong> on any service to see the full AI analysis.
                         </div>
                     </div>
 
                     <!-- Audit Trail -->
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
-                        <h3 style="font-size:16px;margin-bottom:8px">📜 Audit Trail</h3>
+                        <h3 style="font-size:15px;margin-bottom:8px">📜 Audit Trail</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            Records <strong>every action</strong> on the release board with timestamps,
-                            who performed it, and what changed.
+                            Every action on the release board is recorded with timestamps, who did it, and what changed.
+                            Full traceability for compliance and post-mortems.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
-                            <strong style="color:var(--accent2)">What gets logged:</strong>
+                            <strong style="color:var(--accent2)">Events logged:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li><strong>Nominations</strong> — who nominated which service and when</li>
-                                <li><strong>Re-nominations</strong> — version changes with from → to versions</li>
-                                <li><strong>Rollbacks</strong> — when a previous version is restored via Version History</li>
-                                <li><strong>Removals</strong> — who removed a service</li>
-                                <li><strong>Deployments</strong> — who triggered which workflow + GitHub run ID</li>
-                                <li><strong>Board Lock / Release Complete</strong> — lifecycle events</li>
+                                <li><strong>nominate</strong> — Service added to the board with version and Jira IDs</li>
+                                <li><strong>re-nominate</strong> — Version updated (from → to) with reason</li>
+                                <li><strong>rollback</strong> — Version reverted via Version History</li>
+                                <li><strong>remove</strong> — Service withdrawn from the release</li>
+                                <li><strong>deploy_triggered</strong> — GitHub Actions workflow dispatched (includes run ID, who triggered, inputs)</li>
+                                <li><strong>finalize</strong> — Board locked at cutoff by Release Manager</li>
+                                <li><strong>release</strong> — Board marked as released (archived)</li>
                             </ul>
                         </div>
                     </div>
 
-                    <!-- Export -->
+
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <!-- SECTION: Export & Release Notes                     -->
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <h3 style="font-size:16px;margin:24px 0 12px;color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:8px">📦 Export & Release Notes</h3>
+
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
-                        <h3 style="font-size:16px;margin-bottom:8px">📦 Export</h3>
+                        <h3 style="font-size:15px;margin-bottom:8px">📦 Export Manifests</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            Generate release artifacts and control the board lifecycle.
+                            Download the release manifest in <strong>JSON</strong> or <strong>YAML</strong> format.
+                            These machine-readable manifests can be fed into Helm, ArgoCD, or custom deployment pipelines
+                            for the production release.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
-                            <strong style="color:var(--accent2)">Available actions:</strong>
+                            <strong style="color:var(--accent2)">Manifest contents:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li><strong>Export JSON / YAML</strong> — download the release manifest for Helm/ArgoCD workflows</li>
-                                <li><strong>AI Release Notes</strong> — Gemini generates human-readable release notes with change summaries and risk flags</li>
-                                <li><strong>Lock Board (Cutoff)</strong> — freezes the board. No more nominations.</li>
-                                <li><strong>Mark Released</strong> — archives the board. A new cycle begins.</li>
+                                <li>Release name, date, status, cutoff timestamp</li>
+                                <li>Per-service: name, image, image_tag, helm_chart, nominated_by, readiness, notes</li>
                             </ul>
                         </div>
                     </div>
 
-                    <!-- UAT Environment -->
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
-                        <h3 style="font-size:16px;margin-bottom:8px">🖥️ UAT Env</h3>
+                        <h3 style="font-size:15px;margin-bottom:8px">🤖 AI Release Notes (Jira-Enriched)</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            Shows <strong>all services currently deployed</strong> in the UAT Kubernetes namespace —
-                            a live view of what's running, independent of the nomination board.
+                            Generates professional, human-readable release notes powered by <strong>Google Gemini</strong>.
+                            When services have Jira IDs, the system fetches ticket details via the <strong>Jira MCP server</strong>
+                            and weaves them into the notes.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">What gets generated:</strong>
+                            <ol style="margin-left:18px;color:var(--text2)">
+                                <li><strong>Executive Summary</strong> — 2-3 sentence overview of the release</li>
+                                <li><strong>Service Table</strong> — Service | Version | Jira Tickets | Change Summary | Risk Level</li>
+                                <li><strong>What's Changed</strong> — Changes organized by type:
+                                    <ul style="margin-left:16px;margin-top:4px">
+                                        <li>🆕 <strong>New Features</strong> — from Story/Feature Jira tickets</li>
+                                        <li>🐛 <strong>Bug Fixes</strong> — from Bug tickets</li>
+                                        <li>⚡ <strong>Improvements</strong> — from Improvement tickets</li>
+                                        <li>🔧 <strong>Maintenance</strong> — from Task tickets</li>
+                                    </ul>
+                                </li>
+                                <li><strong>AI Risk Assessment</strong> — Overall release risk based on readiness scores and change scope</li>
+                            </ol>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Output options:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>📋 Copy Markdown</strong> — paste directly into Jira, Confluence, or Teams</li>
+                                <li><strong>📄 Copy as HTML</strong> — paste into email clients</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--accent)">
+                            ✨ <strong>Gemini Powered</strong> badge appears when notes are generated by AI.
+                            📄 <strong>Template</strong> badge appears when Gemini is not configured (deterministic fallback).
+                            Both modes include Jira data when available.
+                        </div>
+                    </div>
+
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px">🔒 Board Lifecycle Controls</h3>
+                        <div style="margin-top:8px;font-size:13px;line-height:1.8">
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>🔒 Lock Board (Cutoff)</strong> — Freezes nominations. Typically done Wednesday 5 PM.
+                                    Only Release Manager should use this. All nomination buttons are disabled after locking.</li>
+                                <li><strong>✅ Mark Released</strong> — Archives the board as read-only. The release date
+                                    advances to the next Friday and a fresh board is created for the new cycle.</li>
+                            </ul>
+                        </div>
+                    </div>
+
+
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <!-- SECTION: UAT Environment & Deploy                  -->
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <h3 style="font-size:16px;margin:24px 0 12px;color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:8px">🖥️ UAT Environment & Deployment</h3>
+
+                    <!-- UAT Env -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px">🖥️ UAT Environment</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            A <strong>live view of all services currently deployed</strong> in the UAT Kubernetes namespace.
+                            Independent of the nomination board — shows what's actually running right now.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">What it shows:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li>Service name, kind (Deployment/StatefulSet), replicas status</li>
-                                <li>Current image tag and Helm chart version</li>
+                                <li>Service name, kind (Deployment / StatefulSet), replica status (ready/desired)</li>
+                                <li>Current image tag and Helm chart version from the cluster</li>
+                                <li>Availability status — whether all pods are ready</li>
                                 <li>Use this to verify what's running vs what's nominated on the board</li>
+                                <li>Click <strong>🔄 Refresh</strong> to get the latest data from the cluster</li>
                             </ul>
                         </div>
                     </div>
 
-                    <!-- Deploy Tab -->
+                    <!-- Deploy -->
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
-                        <h3 style="font-size:16px;margin-bottom:8px">🚀 Deploy</h3>
+                        <h3 style="font-size:15px;margin-bottom:8px">🚀 Deploy (GitHub Actions)</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            Connects to your <strong>GitHub deployment repository</strong> (set by <code>DEPLOY_REPO</code> env var,
-                            e.g., <code>your-org/app-deployments</code>) and lists all active GitHub Actions workflows.
+                            Trigger <strong>GitHub Actions workflows</strong> directly from the dashboard.
+                            Connects to your org's deployment repository and auto-discovers all available workflows.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">How it works:</strong>
+                            <ol style="margin-left:18px;color:var(--text2)">
+                                <li><strong>Login with GitHub</strong> first (OAuth required for API access)</li>
+                                <li>Workflows are <strong>auto-discovered</strong> from the repo — just add workflow YAML files and they appear</li>
+                                <li>Each workflow card shows: name, file, last run result (✅/❌), duration, who ran it</li>
+                                <li>Click a workflow to expand — dispatch inputs are <strong>parsed from the YAML</strong> and rendered as form fields</li>
+                                <li>Fill in inputs (service name, version, namespace) and click <strong>▶️ Run Workflow</strong></li>
+                                <li><strong>Real-time status polling</strong> shows step-by-step progress with live updates</li>
+                            </ol>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Safety features:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li>Workflows are <strong>auto-discovered</strong> — no manual config needed. Add a new <code>.yml</code> workflow to your repo and it appears here.</li>
-                                <li>Each card shows: workflow name, file, last run status (✅/❌), duration, and who ran it</li>
-                                <li>Click a card to expand it — dispatch inputs are <strong>parsed from the YAML</strong> and rendered as form fields</li>
-                                <li>Fill in inputs (service, image version) and click <strong>▶️ Run Workflow</strong></li>
-                                <li><code>environment</code> input is <strong>🔒 locked to UAT</strong> — staging/production cannot be selected from this tool</li>
-                                <li><strong>Real-time status polling</strong> shows step-by-step progress after triggering</li>
+                                <li><code>environment</code> input is <strong>🔒 forced to UAT</strong> — staging/production cannot be targeted from this tool</li>
+                                <li>Every deploy trigger is logged in the <strong>Audit Trail</strong> with GitHub user, inputs, and run ID</li>
+                                <li>Deploy history shows all past runs with status and links to GitHub</li>
                             </ul>
                         </div>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
@@ -1040,55 +1323,207 @@
                             </div>
                         </div>
                         <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--green)">
-                            💡 <strong>Tip:</strong> Your workflows must have a <code>workflow_dispatch</code> trigger with inputs defined.
-                            The Deploy tab renders dropdowns for <code>choice</code> inputs and text fields for <code>string</code> inputs.
+                            💡 <strong>Tip:</strong> Workflows need a <code>workflow_dispatch</code> trigger with inputs.
+                            <code>choice</code> inputs render as dropdowns, <code>string</code> inputs as text fields.
                         </div>
                     </div>
 
-                    <!-- AI Chatbot -->
+
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <!-- SECTION: AI Chatbot                                -->
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <h3 style="font-size:16px;margin:24px 0 12px;color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:8px">💬 AI Chatbot</h3>
+
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
-                        <h3 style="font-size:16px;margin-bottom:8px">💬 AI Chatbot</h3>
+                        <h3 style="font-size:15px;margin-bottom:8px">💬 Conversational Release Assistant</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            A conversational AI assistant powered by <strong>Google Gemini</strong>. Ask natural language questions
-                            about the release and get instant, data-backed answers with formatted tables and status reports.
+                            A natural language AI assistant powered by <strong>Google Gemini with function calling</strong>.
+                            Ask questions about the release in plain English and get instant, data-backed answers
+                            with formatted tables and status reports.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
-                            <strong style="color:var(--accent2)">What you can ask:</strong>
+                            <strong style="color:var(--accent2)">Example questions:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li><strong>"What's in this release?"</strong> — lists all nominated services with versions</li>
-                                <li><strong>"Check drift"</strong> — compares nominated vs live versions</li>
-                                <li><strong>"Show readiness scores"</strong> — AI health check results for all services</li>
-                                <li><strong>"Show audit trail"</strong> — recent board activity with who/what/when</li>
-                                <li><strong>"What's running in UAT?"</strong> — live cluster services overview</li>
-                                <li><strong>"Is billing-service included?"</strong> — status of a specific service</li>
+                                <li><strong>"What's in this Friday's release?"</strong> — Full board summary with versions, Jira tickets</li>
+                                <li><strong>"Is billing-service nominated?"</strong> — Specific service status with all metadata</li>
+                                <li><strong>"Check for version drift"</strong> — Compares board vs live UAT</li>
+                                <li><strong>"Show readiness scores"</strong> — AI health check summary for all services</li>
+                                <li><strong>"Who nominated auth-service?"</strong> — Nomination details and history</li>
+                                <li><strong>"Show the audit trail"</strong> — Recent board activity</li>
+                                <li><strong>"What's running in UAT?"</strong> — Live cluster overview</li>
+                                <li><strong>"What Jira tickets are in this release?"</strong> — All Jira IDs across nominated services</li>
                             </ul>
                         </div>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">Features:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li>Multi-turn conversations with session memory</li>
-                                <li>Quick-ask suggestion pills for common queries</li>
-                                <li>Markdown rendering — tables, bold, code, lists</li>
-                                <li>Clear button resets conversation history</li>
+                                <li><strong>Multi-turn conversations</strong> — remembers context within a session</li>
+                                <li><strong>Function calling</strong> — Gemini calls 6 release-specific tools to query live data</li>
+                                <li><strong>Quick-ask pills</strong> — pre-built suggestion buttons for common queries</li>
+                                <li><strong>Markdown rendering</strong> — tables, bold, code blocks, lists</li>
+                                <li><strong>🗑 Clear</strong> button — resets conversation history for a fresh start</li>
+                                <li><strong>Read-only</strong> — the chatbot can query data but cannot modify the board</li>
                             </ul>
                         </div>
                         <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--green)">
-                            💡 <strong>Tip:</strong> The chatbot uses Gemini function-calling to query live board data.
-                            Requires <code>GCP_PROJECT_ID</code> or <code>GEMINI_API_KEY</code> configured.
-                            In mock mode, contextual keyword-matched responses are returned.
+                            💡 <strong>Powered by:</strong> Gemini function-calling with 6 tools — <code>release_get_board</code>,
+                            <code>release_get_service_status</code>, <code>release_get_drift</code>, <code>release_get_readiness</code>,
+                            <code>release_get_audit</code>, <code>release_get_uat_services</code>.
+                            Requires <code>GCP_PROJECT_ID</code> or <code>GEMINI_API_KEY</code>.
                         </div>
                     </div>
 
-                    <!-- Workflow -->
+
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <!-- SECTION: Configuration Reference                   -->
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <h3 style="font-size:16px;margin:24px 0 12px;color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:8px">⚙️ Configuration Reference</h3>
+
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
-                        <h3 style="font-size:16px;margin-bottom:8px">🔄 Typical Release Workflow</h3>
-                        <div style="font-size:13px;line-height:2;color:var(--text2)">
-                            <div>1️⃣ <strong>Monday–Wednesday:</strong> Developers deploy to UAT via the <strong>🚀 Deploy</strong> tab, then nominate confirmed versions on the Board</div>
-                            <div>2️⃣ <strong>Before cutoff:</strong> QA/Release Manager runs Version Drift + AI Readiness checks</div>
-                            <div>3️⃣ <strong>Need to change?</strong> Use <strong>📜 Version History</strong> to rollback, or re-nominate with a new version</div>
-                            <div>4️⃣ <strong>Wednesday 5 PM:</strong> Board is locked (cutoff). No more nominations.</div>
-                            <div>5️⃣ <strong>Thursday:</strong> Export manifests, generate AI release notes, update Jira</div>
-                            <div>6️⃣ <strong>Friday:</strong> Deploy to production. Mark Released. New cycle begins.</div>
+                        <h3 style="font-size:15px;margin-bottom:12px">⚙️ Environment Variables</h3>
+                        <div style="overflow-x:auto">
+                            <table style="width:100%;font-size:12px;border-collapse:collapse;color:var(--text2)">
+                                <thead>
+                                    <tr style="border-bottom:1px solid var(--border);text-align:left">
+                                        <th style="padding:8px 10px;color:var(--text);font-weight:600">Variable</th>
+                                        <th style="padding:8px 10px;color:var(--text);font-weight:600">Required</th>
+                                        <th style="padding:8px 10px;color:var(--text);font-weight:600">Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>POD_NAMESPACE</code></td><td style="padding:6px 10px">Auto</td><td style="padding:6px 10px">K8s namespace (auto-detected from pod metadata)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>GCP_PROJECT_ID</code></td><td style="padding:6px 10px">For AI</td><td style="padding:6px 10px">GCP project for Vertex AI / Gemini</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>GCP_REGION</code></td><td style="padding:6px 10px">For AI</td><td style="padding:6px 10px">Vertex AI region (default: us-central1)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>GEMINI_API_KEY</code></td><td style="padding:6px 10px">Alt AI</td><td style="padding:6px 10px">Gemini API key (alternative to Vertex AI auth)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>GEMINI_MODEL</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Model name (default: gemini-2.0-flash)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(99,102,241,.04)"><td style="padding:6px 10px"><code>GITHUB_CLIENT_ID</code></td><td style="padding:6px 10px">Deploy</td><td style="padding:6px 10px">GitHub OAuth App client ID</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(99,102,241,.04)"><td style="padding:6px 10px"><code>GITHUB_CLIENT_SECRET</code></td><td style="padding:6px 10px">Deploy</td><td style="padding:6px 10px">GitHub OAuth App secret</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(99,102,241,.04)"><td style="padding:6px 10px"><code>GITHUB_TOKEN</code></td><td style="padding:6px 10px">Alt</td><td style="padding:6px 10px">PAT fallback (if not using OAuth)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(99,102,241,.04)"><td style="padding:6px 10px"><code>DEPLOY_REPO</code></td><td style="padding:6px 10px">Deploy</td><td style="padding:6px 10px">GitHub repo with deploy workflows (e.g. org/app-deployments)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(99,102,241,.04)"><td style="padding:6px 10px"><code>BASE_URL</code></td><td style="padding:6px 10px">OAuth</td><td style="padding:6px 10px">External URL for OAuth callback</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(99,102,241,.04)"><td style="padding:6px 10px"><code>GITHUB_URL</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">GitHub Enterprise URL (default: https://github.com)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(139,92,246,.06)"><td style="padding:6px 10px"><code>JIRA_MCP_URL</code></td><td style="padding:6px 10px">Jira</td><td style="padding:6px 10px">Jira MCP server endpoint URL</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(139,92,246,.06)"><td style="padding:6px 10px"><code>JIRA_SERVICE_ACCOUNT</code></td><td style="padding:6px 10px">Jira</td><td style="padding:6px 10px">Jira service account username</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(139,92,246,.06)"><td style="padding:6px 10px"><code>JIRA_PAT_TOKEN</code></td><td style="padding:6px 10px">Jira</td><td style="padding:6px 10px">Jira Personal Access Token</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>CUSTOM_COMPONENTS</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Non-K8s components (format: name:type:description,...)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>SSL_VERIFY</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Set to false for self-signed certs (default: true)</td></tr>
+                                    <tr><td style="padding:6px 10px"><code>FLASK_SECRET_KEY</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Session encryption key (auto-generated if not set)</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <!-- SECTION: Architecture                              -->
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <h3 style="font-size:16px;margin:24px 0 12px;color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:8px">🏗️ Architecture Overview</h3>
+
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:12px">🏗️ How It All Fits Together</h3>
+                        <div style="font-size:13px;line-height:1.8;color:var(--text2)">
+                            <div style="padding:16px;background:var(--bg);border-radius:10px;font-family:monospace;font-size:11px;overflow-x:auto;line-height:1.6">
+<pre style="margin:0;white-space:pre">
+┌─────────────────────────────────────────────────────────────────┐
+│                    Release Readiness Dashboard                  │
+│                     (Flask + Socket.IO)                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   📋 Board ──── K8s API ──── UAT Cluster (Deployments/Pods)    │
+│       │                                                         │
+│       ├── 🎫 Jira IDs ──── Jira MCP Server ──── Jira Instance  │
+│       │                                                         │
+│       ├── 🤖 AI Readiness ──── Google Gemini (Vertex AI)       │
+│       │                                                         │
+│       ├── 📝 Release Notes ──── Gemini + Jira MCP              │
+│       │                                                         │
+│       ├── 💬 AI Chatbot ──── Gemini Function Calling            │
+│       │                                                         │
+│       └── 🚀 Deploy ──── GitHub API ──── Actions Workflows     │
+│                                                                 │
+│   💾 State: K8s ConfigMap (board data, audit trail)            │
+│   🔐 Auth: GitHub OAuth 2.0 / PAT                             │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+</pre>
+                            </div>
+                        </div>
+                        <div style="margin-top:16px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Tech stack:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>Backend:</strong> Python Flask + Flask-SocketIO + Gunicorn (gevent)</li>
+                                <li><strong>AI:</strong> Google Gemini via google-genai SDK (Vertex AI or API key)</li>
+                                <li><strong>Jira:</strong> MCP server via JSON-RPC over HTTP (Bearer token auth)</li>
+                                <li><strong>K8s:</strong> Official kubernetes Python SDK for cluster queries</li>
+                                <li><strong>Auth:</strong> GitHub OAuth 2.0 + session management</li>
+                                <li><strong>State:</strong> K8s ConfigMap (persists board data, audit trail, release history)</li>
+                                <li><strong>Frontend:</strong> Single-page app with vanilla JS, CSS custom properties, responsive layout</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Mock Mode -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px">🧪 Mock Mode (Local Development)</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Run <code>python mock_app.py</code> to start the dashboard without any external dependencies.
+                            No K8s cluster, no Gemini API, no GitHub OAuth needed.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">What mock mode provides:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>15 fake K8s microservices + 10 custom Spark/PySpark components</li>
+                                <li>15+ realistic mock Jira tickets (BILL-101, PAY-201, AUTH-301, etc.)</li>
+                                <li>Simulated AI readiness scores with randomized checks</li>
+                                <li>Simulated version drift with random probability</li>
+                                <li>Mock GitHub OAuth (auto-login, no real OAuth)</li>
+                                <li>Simulated deploy workflows with background progress (queued → building → deploying → complete)</li>
+                                <li>Keyword-based chatbot responses (no Gemini required)</li>
+                                <li>In-memory board storage (resets on restart)</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-family:monospace;font-size:12px;color:var(--text2)">
+                            $ pip install flask flask-socketio pyyaml<br>
+                            $ python mock_app.py<br>
+                            🚀 Release Readiness Dashboard (MOCK MODE)<br>
+                            &nbsp;&nbsp;&nbsp;http://localhost:8090
+                        </div>
+                    </div>
+
+                    <!-- FAQ -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:12px">❓ Frequently Asked Questions</h3>
+                        <div style="font-size:13px;line-height:1.8;color:var(--text2)">
+                            <div style="margin-bottom:14px">
+                                <strong style="color:var(--text)">Q: What happens if I nominate the same service twice?</strong><br>
+                                The old version is saved in Version History and the board updates to the new version.
+                                Both nominations are logged in the Audit Trail.
+                            </div>
+                            <div style="margin-bottom:14px">
+                                <strong style="color:var(--text)">Q: Can I add Jira IDs after initial nomination?</strong><br>
+                                Yes — re-nominate the service with the same version and add the Jira IDs.
+                                The field merges with existing IDs.
+                            </div>
+                            <div style="margin-bottom:14px">
+                                <strong style="color:var(--text)">Q: What if Jira MCP server is not configured?</strong><br>
+                                Everything works normally. Jira IDs are still displayed on the board, but the AI Release
+                                Notes won't include Jira ticket descriptions — they'll use service metadata and notes instead.
+                            </div>
+                            <div style="margin-bottom:14px">
+                                <strong style="color:var(--text)">Q: Can I deploy to production from this tool?</strong><br>
+                                No. The <code>environment</code> input is locked to UAT. Production deployments must go
+                                through your standard CI/CD pipeline using the exported manifests.
+                            </div>
+                            <div style="margin-bottom:14px">
+                                <strong style="color:var(--text)">Q: How does the board persist data?</strong><br>
+                                Board state is stored in a Kubernetes ConfigMap in the same namespace. Data survives pod restarts
+                                but lives within the cluster. In mock mode, data is in-memory (resets on restart).
+                            </div>
+                            <div>
+                                <strong style="color:var(--text)">Q: What if Gemini is not configured?</strong><br>
+                                AI Readiness and AI Chatbot are disabled. Release Notes fall back to a deterministic template
+                                (still includes Jira IDs if provided). The board and all other features work without AI.
+                            </div>
                         </div>
                     </div>
 
@@ -1195,6 +1630,8 @@
                     </div>
                     <div><label style="font-size:11px;color:var(--text2)">Your Name</label><input type="text"
                             id="nom-by" placeholder="e.g. rajesh" value=""></div>
+                    <div><label style="font-size:11px;color:var(--text2)">Jira IDs <span style="font-weight:normal">(comma-separated)</span></label><input type="text"
+                            id="nom-jira-ids" placeholder="e.g. PROJ-123, PROJ-456"></div>
                     <textarea id="nom-notes" placeholder="Release notes (optional)..."></textarea>
                     <button class="btn btn-primary" onclick="nominateService()" style="width:100%">🚀 Nominate</button>
                 </div>
@@ -1343,16 +1780,18 @@
             if (_boardView === 'list') {
                 // ── List View (table) ──
                 container.className = '';
-                let rows = keys.map(k => {
+                    let rows = keys.map(k => {
                     const s = svcs[k];
                     const rBadge = s.readiness ? `<span class="readiness-badge readiness-${s.readiness}" style="font-size:11px;padding:2px 8px">${s.readiness === 'green' ? '🟢 Ready' : s.readiness === 'yellow' ? '🟡 Review' : '🔴 Risk'}</span>` : '<span style="font-size:11px;color:var(--text2)">⏳ Pending</span>';
                     const typeCls = s.is_custom ? 'type-badge custom' : 'type-badge';
+                    const jiraCol = s.jira_ids ? `<span style="font-size:10px;color:var(--accent);font-family:monospace">${s.jira_ids}</span>` : '<span style="color:var(--text2)">—</span>';
                     return `<tr>
                         <td><strong>${s.name}</strong></td>
                         <td><span class="${typeCls}">${s.is_custom ? '⚡ ' : ''}${s.kind || 'Deployment'}</span></td>
                         <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span></td>
                         <td>${s.helm_version || '<span style="color:var(--text2)">—</span>'}</td>
                         <td>${rBadge}</td>
+                        <td style="font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(s.jira_ids || '').replace(/"/g, '&quot;')}">${jiraCol}</td>
                         <td style="font-size:12px">👤 ${s.nominated_by || '?'}</td>
                         <td style="font-size:12px;color:var(--text2)">${(s.nominated_at || '').substring(0, 10)}</td>
                         <td style="font-size:12px;color:var(--text2);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(s.notes || '').replace(/"/g, '&quot;')}">${s.notes || '—'}</td>
@@ -1364,13 +1803,13 @@
                     </tr>`;
                 }).join('');
                 container.innerHTML = `<table class="list-view-table">
-                    <thead><tr><th>Service</th><th>Type</th><th>Version</th><th>Helm</th><th>Readiness</th><th>By</th><th>Date</th><th>Notes</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>Service</th><th>Type</th><th>Version</th><th>Helm</th><th>Readiness</th><th>Jira</th><th>By</th><th>Date</th><th>Notes</th><th>Actions</th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table>`;
             } else {
                 // ── Tile View (cards grid) ──
                 container.className = 'cards-grid';
-                container.innerHTML = keys.map(k => {
+                    container.innerHTML = keys.map(k => {
                     const s = svcs[k];
                     const rClass = s.readiness || 'unknown';
                     const rBadge = s.readiness ? `<span class="readiness-badge readiness-${s.readiness}">${s.readiness === 'green' ? '🟢 Ready' : s.readiness === 'yellow' ? '🟡 Review' : '🔴 Risk'}</span>` : '<span class="readiness-badge" style="background:var(--surface2);color:var(--text2)">⏳ Not checked</span>';
@@ -1385,6 +1824,7 @@
                     <span>📅 ${(s.nominated_at || '').substring(0, 10)}</span>
                     ${s.helm_version ? `<span>⎈ ${s.helm_version}</span>` : ''}
                 </div>
+                ${s.jira_ids ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">${s.jira_ids.split(',').map(j => j.trim()).filter(j => j).map(j => `<span style="font-size:10px;padding:1px 6px;background:rgba(99,102,241,.1);color:var(--accent);border:1px solid rgba(99,102,241,.2);border-radius:4px;font-family:monospace">🎫 ${j}</span>`).join('')}</div>` : ''}
                 ${s.notes ? `<div style="margin-top:8px;font-size:12px;color:var(--text2);font-style:italic">"${s.notes}"</div>` : ''}
                 <div class="card-actions">
                     <button class="btn btn-sm" onclick="viewServiceDetail('${k}')">👁 Details</button>
@@ -1485,17 +1925,19 @@
                 if (!ver) { showToast('Enter a version number', 'error'); return; }
                 body = { service_name: name, notes: document.getElementById('nom-notes').value,
                          nominated_by: document.getElementById('nom-by').value || 'anonymous',
-                         is_custom: true, manual_version: ver };
+                         is_custom: true, manual_version: ver,
+                         jira_ids: document.getElementById('nom-jira-ids').value.trim() };
             } else {
                 name = document.getElementById('service-select').value;
                 if (!name) { showToast('Select a service first', 'error'); return; }
                 body = { service_name: name, notes: document.getElementById('nom-notes').value,
-                         nominated_by: document.getElementById('nom-by').value || 'anonymous' };
+                         nominated_by: document.getElementById('nom-by').value || 'anonymous',
+                         jira_ids: document.getElementById('nom-jira-ids').value.trim() };
             }
             try {
                 const r = await fetch('/api/release/nominate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
                 const d = await r.json();
-                if (r.ok) { showToast(`Nominated ${name} (${d.image_tag})`); document.getElementById('nom-notes').value = ''; if (_nomType === 'custom') document.getElementById('nom-custom-version').value = ''; refreshAll(); }
+                if (r.ok) { showToast(`Nominated ${name} (${d.image_tag})`); document.getElementById('nom-notes').value = ''; document.getElementById('nom-jira-ids').value = ''; if (_nomType === 'custom') document.getElementById('nom-custom-version').value = ''; refreshAll(); }
                 else showToast(d.error || 'Failed', 'error');
             } catch (e) { showToast('Network error', 'error'); }
         }
@@ -1655,6 +2097,7 @@
             <div>👤 Nominated by: ${s.nominated_by || '?'}</div>
             <div>📅 Nominated at: ${(s.nominated_at || '').replace('T', ' ').substring(0, 19)}</div>
             ${s.notes ? `<div>📝 Notes: <em>${s.notes}</em></div>` : ''}
+            ${s.jira_ids ? `<div>🎫 Jira: <span style="font-family:monospace;color:var(--accent)">${s.jira_ids}</span></div>` : ''}
             ${rdHtml}
             <hr style="border:none;border-top:1px solid var(--border);margin:12px 0">
             <div class="section-title">Version History</div>

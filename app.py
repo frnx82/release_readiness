@@ -43,6 +43,13 @@ DEPLOY_REPO          = os.getenv('DEPLOY_REPO', '')   # e.g. org/app-deployment
 DEPLOY_WORKFLOW      = os.getenv('DEPLOY_WORKFLOW', 'deploy.yml')
 BASE_URL             = os.getenv('BASE_URL', '').rstrip('/')  # external URL for OAuth
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Jira MCP Server Configuration
+# ══════════════════════════════════════════════════════════════════════════════
+JIRA_MCP_URL          = os.getenv('JIRA_MCP_URL', '')            # MCP server endpoint URL
+JIRA_SERVICE_ACCOUNT  = os.getenv('JIRA_SERVICE_ACCOUNT', '')    # Jira service account username
+JIRA_PAT_TOKEN        = os.getenv('JIRA_PAT_TOKEN', '')          # Jira PAT token
+
 # GitHub Enterprise support
 GITHUB_URL = os.getenv('GITHUB_URL', 'https://github.com').rstrip('/')
 if GITHUB_URL == 'https://github.com':
@@ -147,6 +154,17 @@ elif GITHUB_TOKEN:
 else:
     print("[Release Readiness] ⚠️  No GitHub auth configured. Deploy features will be unavailable.")
     print("    Set GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET for OAuth mode")
+
+# Print Jira MCP config status at startup
+if JIRA_MCP_URL:
+    print(f"[Release Readiness] ✅ Jira MCP server configured — URL: {JIRA_MCP_URL}")
+    if JIRA_SERVICE_ACCOUNT:
+        print(f"    Service account: {JIRA_SERVICE_ACCOUNT}")
+    if JIRA_PAT_TOKEN:
+        print(f"    PAT token: {'*' * 8}...configured")
+else:
+    print("[Release Readiness] ℹ️  No Jira MCP server configured. Jira integration disabled.")
+    print("    Set JIRA_MCP_URL + JIRA_SERVICE_ACCOUNT + JIRA_PAT_TOKEN to enable.")
     print("    Or set GITHUB_TOKEN for PAT mode")
 
 # ── Gemini SDK setup ─────────────────────────────────────────────────────────
@@ -285,6 +303,135 @@ def _cache_get(key):
 
 def _cache_set(key, data):
     _cache[key] = {'data': data, 'ts': time.time()}
+
+
+# ── Jira MCP Client ───────────────────────────────────────────────────────────
+_JIRA_ID_PATTERN = re.compile(r'^[A-Z][A-Z0-9]+-\d+$')
+
+def _parse_jira_ids(jira_ids_str):
+    """Parse a comma-separated Jira IDs string into a list of clean IDs."""
+    if not jira_ids_str:
+        return []
+    raw = [j.strip().upper() for j in jira_ids_str.split(',')]
+    return [j for j in raw if j and _JIRA_ID_PATTERN.match(j)]
+
+
+def _jira_mcp_call(tool_name, arguments, timeout=10):
+    """Call a tool on the Jira MCP server via HTTP.
+
+    Sends a JSON-RPC style request to the MCP server endpoint.
+    Returns the tool result or None on failure.
+    """
+    if not JIRA_MCP_URL:
+        return None
+    try:
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+        }
+        if JIRA_PAT_TOKEN:
+            headers['Authorization'] = f'Bearer {JIRA_PAT_TOKEN}'
+        if JIRA_SERVICE_ACCOUNT:
+            headers['X-Service-Account'] = JIRA_SERVICE_ACCOUNT
+
+        payload = {
+            'jsonrpc': '2.0',
+            'id': str(uuid.uuid4()),
+            'method': 'tools/call',
+            'params': {
+                'name': tool_name,
+                'arguments': arguments
+            }
+        }
+        r = requests.post(JIRA_MCP_URL, json=payload, headers=headers,
+                         timeout=timeout, verify=SSL_VERIFY)
+        r.raise_for_status()
+        result = r.json()
+
+        # MCP response: { result: { content: [...] } }
+        if 'result' in result:
+            content = result['result']
+            if isinstance(content, dict) and 'content' in content:
+                # MCP standard: content is a list of {type, text} items
+                texts = [c.get('text', '') for c in content.get('content', [])
+                         if isinstance(c, dict)]
+                return '\n'.join(texts) if texts else json.dumps(content)
+            return json.dumps(content) if not isinstance(content, str) else content
+        elif 'error' in result:
+            print(f"[Jira MCP] Error from server: {result['error']}")
+            return None
+        return json.dumps(result)
+    except requests.exceptions.Timeout:
+        print(f"[Jira MCP] Timeout calling {tool_name}")
+        return None
+    except requests.exceptions.ConnectionError as e:
+        print(f"[Jira MCP] Connection error: {e}")
+        return None
+    except Exception as e:
+        print(f"[Jira MCP] Error calling {tool_name}: {e}")
+        return None
+
+
+def _fetch_jira_issues(jira_ids):
+    """Fetch multiple Jira issues via MCP server.
+
+    Args:
+        jira_ids: list of Jira IDs (e.g. ['PROJ-123', 'PROJ-456'])
+
+    Returns:
+        dict of {jira_id: {summary, description, status, type, priority}}
+        Missing/failed issues are omitted from the result.
+    """
+    if not jira_ids or not JIRA_MCP_URL:
+        return {}
+
+    results = {}
+    for jira_id in jira_ids:
+        # Check cache first
+        cache_key = ('jira_issue', jira_id)
+        cached = _cache_get(cache_key)
+        if cached:
+            results[jira_id] = cached
+            continue
+
+        # Try fetching via MCP
+        raw = _jira_mcp_call('jira_get_issue', {'issue_key': jira_id})
+        if not raw:
+            # Try alternative tool name
+            raw = _jira_mcp_call('get_issue', {'issue_key': jira_id})
+        if not raw:
+            print(f"[Jira MCP] Could not fetch {jira_id}")
+            continue
+
+        # Parse the response — try JSON first, fall back to text
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            issue = {
+                'id': jira_id,
+                'summary': (data.get('summary') or data.get('fields', {}).get('summary', '')),
+                'description': (data.get('description') or
+                               data.get('fields', {}).get('description', '') or ''),
+                'status': (data.get('status') or
+                          data.get('fields', {}).get('status', {}).get('name', 'Unknown')),
+                'type': (data.get('issuetype') or data.get('issue_type') or
+                        data.get('fields', {}).get('issuetype', {}).get('name', 'Task')),
+                'priority': (data.get('priority') or
+                            data.get('fields', {}).get('priority', {}).get('name', 'Medium')),
+            }
+        except (json.JSONDecodeError, AttributeError):
+            # Fall back to treating the response as a text description
+            issue = {
+                'id': jira_id,
+                'summary': jira_id,
+                'description': str(raw)[:500],
+                'status': 'Unknown',
+                'type': 'Task',
+                'priority': 'Medium',
+            }
+        results[jira_id] = issue
+        _cache_set(cache_key, issue)
+
+    return results
 
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
@@ -593,6 +740,7 @@ def nominate_service():
     nominated_by = data.get('nominated_by', 'anonymous').strip()
     is_custom = data.get('is_custom', False)
     manual_version = data.get('manual_version', '').strip()
+    jira_ids = data.get('jira_ids', '').strip()
 
     if not service_name:
         return jsonify({'error': 'service_name is required'}), 400
@@ -654,6 +802,7 @@ def nominate_service():
         existing['image_tag'] = image_tag
         existing['helm_version'] = helm_version
         existing['notes'] = notes
+        existing['jira_ids'] = jira_ids or existing.get('jira_ids', '')
         existing['updated_at'] = now
         existing['updated_by'] = nominated_by
         existing['version_history'].append({
@@ -685,6 +834,7 @@ def nominate_service():
             'updated_at': now,
             'updated_by': nominated_by,
             'notes': notes,
+            'jira_ids': jira_ids,
             'readiness': None,
             'readiness_details': None,
             'version_history': [{
@@ -1090,29 +1240,111 @@ def export_release():
     return jsonify(manifest)
 
 
+@app.route('/api/jira/issues', methods=['POST'])
+def fetch_jira_details():
+    """Fetch details for given Jira IDs via MCP server."""
+    data = request.json or {}
+    jira_ids_str = data.get('jira_ids', '').strip()
+    jira_ids = _parse_jira_ids(jira_ids_str)
+
+    if not jira_ids:
+        return jsonify({'issues': [], 'errors': ['No valid Jira IDs provided']}), 400
+
+    if not JIRA_MCP_URL:
+        return jsonify({'issues': [], 'errors': ['Jira MCP server not configured'],
+                       'configured': False})
+
+    issues = _fetch_jira_issues(jira_ids)
+    found = list(issues.values())
+    missing = [j for j in jira_ids if j not in issues]
+    errors = [f'{j}: not found or fetch failed' for j in missing]
+
+    return jsonify({'issues': found, 'errors': errors,
+                   'configured': True, 'fetched': len(found)})
+
+
 @app.route('/api/ai/release_notes', methods=['POST'])
 def generate_release_notes():
-    """Generate AI-powered release notes for Teams/Jira."""
+    """Generate AI-powered release notes for Teams/Jira.
+
+    When Jira IDs are associated with nominated services, fetches ticket
+    details via the Jira MCP server and includes them in the AI prompt
+    for richer, change-aware release notes.
+    """
     board = _read_board()
     if not board or not board.get('services'):
         return jsonify({'error': 'No nominations to generate notes for'}), 400
+
+    # ── Collect and fetch Jira ticket details ──
+    all_jira_ids = []
+    svc_jira_map = {}  # service_name → [jira_ids]
+    for svc_name, svc_data in board['services'].items():
+        ids = _parse_jira_ids(svc_data.get('jira_ids', ''))
+        if ids:
+            svc_jira_map[svc_name] = ids
+            all_jira_ids.extend(ids)
+
+    jira_details = {}
+    if all_jira_ids:
+        jira_details = _fetch_jira_issues(list(set(all_jira_ids)))
 
     if not get_model():
         # Deterministic fallback
         lines = [f"## Release Notes — {board.get('release_date', 'Unknown')}\n"]
         lines.append(f"**{len(board['services'])} services updated:**\n")
-        lines.append("| Service | Version | Notes |")
-        lines.append("|---|---|---|")
+        lines.append("| Service | Version | Jira Tickets | Notes |")
+        lines.append("|---|---|---|---|")
         for svc_name, svc_data in board['services'].items():
-            lines.append(f"| {svc_name} | {svc_data.get('image_tag', '?')} | {svc_data.get('notes', '')} |")
-        return jsonify({'notes': '\n'.join(lines), 'gemini_powered': False})
+            jira_col = svc_data.get('jira_ids', '') or '—'
+            lines.append(f"| {svc_name} | {svc_data.get('image_tag', '?')} | {jira_col} | {svc_data.get('notes', '')} |")
 
+        # If we have Jira details, append a changes summary
+        if jira_details:
+            lines.append(f"\n## Changes Detail\n")
+            for svc_name, ids in svc_jira_map.items():
+                lines.append(f"\n### {svc_name}")
+                for jid in ids:
+                    issue = jira_details.get(jid, {})
+                    if issue:
+                        lines.append(f"- **{jid}** ({issue.get('type', 'Task')}): "
+                                    f"{issue.get('summary', 'No summary')} [{issue.get('status', '?')}]")
+                    else:
+                        lines.append(f"- **{jid}**: (details unavailable)")
+
+        return jsonify({'notes': '\n'.join(lines), 'gemini_powered': False,
+                       'jira_enriched': bool(jira_details)})
+
+    # ── Build AI prompt with Jira context ──
     service_list = []
     for svc_name, svc_data in board['services'].items():
-        service_list.append(f"- {svc_name}: tag={svc_data.get('image_tag','?')}, "
-                           f"helm={svc_data.get('helm_version','N/A')}, "
-                           f"readiness={svc_data.get('readiness','?')}, "
-                           f"notes=\"{svc_data.get('notes','')}\"")
+        svc_line = (f"- {svc_name}: tag={svc_data.get('image_tag','?')}, "
+                    f"helm={svc_data.get('helm_version','N/A')}, "
+                    f"readiness={svc_data.get('readiness','?')}, "
+                    f"notes=\"{svc_data.get('notes','')}\"")
+
+        # Append Jira ticket details for this service
+        svc_ids = svc_jira_map.get(svc_name, [])
+        if svc_ids:
+            svc_line += f", jira_tickets=[{', '.join(svc_ids)}]"
+            for jid in svc_ids:
+                issue = jira_details.get(jid, {})
+                if issue:
+                    desc = (issue.get('description', '') or '')[:300]
+                    svc_line += (f"\n    JIRA {jid}: type={issue.get('type','Task')}, "
+                                f"status={issue.get('status','?')}, "
+                                f"summary=\"{issue.get('summary','')}\", "
+                                f"description=\"{desc}\"")
+        service_list.append(svc_line)
+
+    jira_instruction = ""
+    if jira_details:
+        jira_instruction = """\n\nJira tickets are associated with each service. Use the Jira ticket summaries and
+descriptions to explain WHAT actually changed in each service. Organize changes by:
+- 🆕 New Features
+- 🐛 Bug Fixes
+- ⚡ Improvements
+- 🔧 Maintenance
+"""
 
     prompt = f"""Generate professional release notes for the operations team.
 
@@ -1121,9 +1353,13 @@ Status: {board.get('status', 'open')}
 
 Nominated services:
 {chr(10).join(service_list)}
+{jira_instruction}
+Format the output as markdown with:
+1. An executive summary of the release (2-3 sentences)
+2. A table with columns: Service | Version | Jira Tickets | Change Summary | Risk Level
+3. {'A "What\'s Changed" section organized by change type based on the Jira tickets' if jira_details else 'A brief summary of upcoming changes based on service notes'}
+4. An AI Risk Assessment summary at the end
 
-Format as a markdown table with columns: Service, Version, Change Type (Patch/Minor/Major based on version), Notes.
-Include an AI Risk Assessment summary at the end.
 Return ONLY the markdown text, no JSON wrapping.
 """
 
@@ -1131,6 +1367,8 @@ Return ONLY the markdown text, no JSON wrapping.
         response = gemini_generate_with_retry(prompt)
         notes = response.text if response else 'AI unavailable'
         return jsonify({'notes': notes, 'gemini_powered': True,
+                       'jira_enriched': bool(jira_details),
+                       'jira_count': len(jira_details),
                        'release_date': board.get('release_date')})
     except Exception as e:
         return jsonify({'error': str(e), 'notes': '', 'gemini_powered': False}), 500
@@ -1664,13 +1902,15 @@ def _tool_get_board() -> str:
             f"Cutoff: {board.get('cutoff', '?')}",
             f"Total Services: {len(board['services'])}",
             "",
-            "Service | Image Tag | Helm Chart | Nominated By | Nominated At | Kind",
-            "--------|-----------|------------|--------------|--------------|-----",
+            "Service | Image Tag | Helm Chart | Jira Tickets | Nominated By | Nominated At | Kind",
+            "--------|-----------|------------|--------------|--------------|--------------|-----",
         ]
         for name, svc in board['services'].items():
+            jira_col = svc.get('jira_ids', '') or '—'
             lines.append(
                 f"{name} | {svc.get('image_tag', '?')} | "
                 f"{svc.get('helm_chart_version', 'n/a')} | "
+                f"{jira_col} | "
                 f"{svc.get('nominated_by', '?')} | "
                 f"{svc.get('nominated_at', '?')} | "
                 f"{svc.get('kind', 'Deployment')}"
@@ -1699,6 +1939,7 @@ def _tool_get_service_status(service_name: str) -> str:
             f"Nominated By: {svc.get('nominated_by', '?')}",
             f"Nominated At: {svc.get('nominated_at', '?')}",
             f"Notes: {svc.get('notes', '')}",
+            f"Jira Tickets: {svc.get('jira_ids', '') or 'None'}",
         ]
         # Check live pod health
         try:

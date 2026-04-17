@@ -7,6 +7,16 @@ import os, json, re, time, datetime, threading, yaml, uuid, random
 from flask import Flask, request, jsonify, render_template, session, redirect
 from flask_socketio import SocketIO
 
+# ── Jira ID validation pattern ────────────────────────────────────────────────
+_JIRA_ID_PATTERN = re.compile(r'^[A-Z][A-Z0-9]+-\d+$')
+
+def _parse_jira_ids(jira_ids_str):
+    """Parse a comma-separated Jira IDs string into a list of clean IDs."""
+    if not jira_ids_str:
+        return []
+    raw = [j.strip().upper() for j in jira_ids_str.split(',')]
+    return [j for j in raw if j and _JIRA_ID_PATTERN.match(j)]
+
 app = Flask(__name__)
 app.secret_key = 'mock-secret-key-for-sessions'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -47,6 +57,25 @@ MOCK_CUSTOM_COMPONENTS = [
 ]
 
 MOCK_CUSTOM_MAP = {c['name']: c for c in MOCK_CUSTOM_COMPONENTS}
+
+# ── Mock Jira data (simulates MCP server responses) ───────────────────────────
+MOCK_JIRA_ISSUES = {
+    'BILL-101': {'id': 'BILL-101', 'summary': 'Fix decimal rounding in invoice calculations', 'description': 'Invoice totals were showing incorrect amounts due to floating point rounding. Fixed by switching to Decimal type for all monetary calculations.', 'status': 'Done', 'type': 'Bug', 'priority': 'High'},
+    'BILL-102': {'id': 'BILL-102', 'summary': 'Add multi-currency support for EU markets', 'description': 'Implement EUR, GBP, and CHF currency support alongside USD. Includes exchange rate API integration and currency conversion in billing pipeline.', 'status': 'Done', 'type': 'Story', 'priority': 'High'},
+    'BILL-103': {'id': 'BILL-103', 'summary': 'Upgrade billing API rate limiting', 'description': 'Increase rate limits for enterprise tier from 100/min to 500/min. Add burst capacity handling.', 'status': 'In Review', 'type': 'Improvement', 'priority': 'Medium'},
+    'PAY-201': {'id': 'PAY-201', 'summary': 'Integrate Stripe Connect for marketplace payouts', 'description': 'Add Stripe Connect integration to enable direct payouts to marketplace sellers. Includes onboarding flow and payout scheduling.', 'status': 'Done', 'type': 'Story', 'priority': 'High'},
+    'PAY-202': {'id': 'PAY-202', 'summary': 'Fix payment retry logic for declined cards', 'description': 'Payments were not retrying after soft declines. Implemented exponential backoff retry with configurable max attempts.', 'status': 'Done', 'type': 'Bug', 'priority': 'Critical'},
+    'AUTH-301': {'id': 'AUTH-301', 'summary': 'Implement OIDC token refresh flow', 'description': 'Add automatic token refresh for OIDC sessions. Tokens are refreshed 5 minutes before expiry to prevent session interruptions.', 'status': 'Done', 'type': 'Story', 'priority': 'High'},
+    'AUTH-302': {'id': 'AUTH-302', 'summary': 'Add MFA enforcement for admin accounts', 'description': 'Enforce multi-factor authentication for all admin-level accounts. Support TOTP and WebAuthn.', 'status': 'Done', 'type': 'Story', 'priority': 'Critical'},
+    'ORD-401': {'id': 'ORD-401', 'summary': 'Fix order status webhook delivery failures', 'description': 'Webhook deliveries were failing silently when partner endpoints returned 503. Added retry queue and dead letter handling.', 'status': 'Done', 'type': 'Bug', 'priority': 'High'},
+    'ORD-402': {'id': 'ORD-402', 'summary': 'Add bulk order import API endpoint', 'description': 'New REST endpoint for importing orders in bulk via CSV/JSON. Supports up to 10,000 orders per batch with async processing.', 'status': 'In Progress', 'type': 'Story', 'priority': 'Medium'},
+    'INV-501': {'id': 'INV-501', 'summary': 'Optimize inventory sync for large catalogs', 'description': 'Inventory sync was timing out for catalogs with >100k SKUs. Implemented delta sync and parallel processing.', 'status': 'Done', 'type': 'Improvement', 'priority': 'High'},
+    'SRCH-601': {'id': 'SRCH-601', 'summary': 'Upgrade Elasticsearch to v8.x', 'description': 'Migrate search index to Elasticsearch 8.x. Includes reindexing pipeline, query compatibility updates, and performance benchmarks.', 'status': 'Done', 'type': 'Task', 'priority': 'Medium'},
+    'DEVOPS-701': {'id': 'DEVOPS-701', 'summary': 'Add liveness/readiness probe tuning', 'description': 'Fine-tune K8s probe thresholds based on historical pod startup times. Reduces false-positive restarts by 60%.', 'status': 'Done', 'type': 'Improvement', 'priority': 'Medium'},
+    'DEVOPS-702': {'id': 'DEVOPS-702', 'summary': 'Implement graceful shutdown handlers', 'description': 'Add SIGTERM handlers to drain in-flight requests before pod termination. Prevents 502 errors during rolling deployments.', 'status': 'Done', 'type': 'Improvement', 'priority': 'High'},
+    'DATA-801': {'id': 'DATA-801', 'summary': 'Fix Spark job OOM on large partitions', 'description': 'Spark ingestion jobs were running out of memory on partitions >2GB. Implemented adaptive partition splitting and memory-aware scheduling.', 'status': 'Done', 'type': 'Bug', 'priority': 'Critical'},
+    'DATA-802': {'id': 'DATA-802', 'summary': 'Add data quality validation rules for PII fields', 'description': 'Implement automated PII detection and masking validation in the ETL pipeline. Covers email, phone, SSN patterns.', 'status': 'Done', 'type': 'Story', 'priority': 'High'},
+}
 
 # ── In-memory board storage (replaces ConfigMap) ─────────────────────────────
 _board_store = {}
@@ -168,6 +197,7 @@ def nominate():
     by = data.get('nominated_by', 'anonymous')
     is_custom = data.get('is_custom', False)
     manual_version = data.get('manual_version', '').strip()
+    jira_ids = data.get('jira_ids', '').strip()
     if not name:
         return jsonify({'error': 'service_name required'}), 400
     board = _read_board()
@@ -197,7 +227,8 @@ def nominate():
     if existing:
         old_tag = existing.get('image_tag', '')
         existing.update({'image': image, 'image_tag': tag, 'helm_version': helm,
-                         'notes': notes, 'updated_at': now, 'updated_by': by})
+                         'notes': notes, 'jira_ids': jira_ids or existing.get('jira_ids', ''),
+                         'updated_at': now, 'updated_by': by})
         existing['version_history'].append({'from_tag': old_tag, 'to_tag': tag,
                                             'changed_by': by, 'changed_at': now, 'reason': notes or 'Update'})
         board['audit_trail'].append({'action': 're-nominate', 'service': name,
@@ -207,7 +238,7 @@ def nominate():
             'name': name, 'kind': kind, 'is_custom': is_custom,
             'image': image, 'image_tag': tag, 'helm_version': helm,
             'nominated_by': by, 'nominated_at': now, 'updated_at': now, 'updated_by': by,
-            'notes': notes, 'readiness': None, 'readiness_details': None,
+            'notes': notes, 'jira_ids': jira_ids, 'readiness': None, 'readiness_details': None,
             'version_history': [{'from_tag': None, 'to_tag': tag, 'changed_by': by,
                                  'changed_at': now, 'reason': 'Initial nomination'}]
         }
@@ -368,18 +399,95 @@ def export():
                                   headers={'Content-Disposition': f'attachment; filename=release-{board["release_date"]}.yaml'})
     return jsonify(manifest)
 
+
+@app.route('/api/jira/issues', methods=['POST'])
+def jira_issues():
+    """Mock: Fetch Jira issue details."""
+    data = request.json or {}
+    jira_ids_str = data.get('jira_ids', '').strip()
+    jira_ids = _parse_jira_ids(jira_ids_str)
+    if not jira_ids:
+        return jsonify({'issues': [], 'errors': ['No valid Jira IDs provided']}), 400
+    found = []
+    for jid in jira_ids:
+        issue = MOCK_JIRA_ISSUES.get(jid)
+        if issue:
+            found.append(issue)
+        else:
+            found.append({
+                'id': jid, 'summary': f'Mock issue {jid}',
+                'description': f'This is a mock description for {jid}.',
+                'status': random.choice(['Done', 'In Progress', 'In Review']),
+                'type': random.choice(['Story', 'Bug', 'Task', 'Improvement']),
+                'priority': random.choice(['High', 'Medium', 'Low'])
+            })
+    return jsonify({'issues': found, 'errors': [], 'configured': True, 'fetched': len(found)})
+
+
 @app.route('/api/ai/release_notes', methods=['POST'])
 def release_notes():
     board = _read_board()
     if not board or not board.get('services'):
         return jsonify({'error': 'No nominations'}), 400
+
+    # Collect Jira details from mock data
+    svc_jira_map = {}
+    jira_details = {}
+    for name, s in board['services'].items():
+        ids = _parse_jira_ids(s.get('jira_ids', ''))
+        if ids:
+            svc_jira_map[name] = ids
+            for jid in ids:
+                if jid in MOCK_JIRA_ISSUES:
+                    jira_details[jid] = MOCK_JIRA_ISSUES[jid]
+                else:
+                    jira_details[jid] = {
+                        'id': jid, 'summary': f'Mock issue {jid}',
+                        'description': f'Description for {jid}',
+                        'status': 'Done', 'type': 'Task', 'priority': 'Medium'
+                    }
+
     lines = [f"## Release Notes — {board.get('release_date', 'Unknown')}\n",
              f"**{len(board['services'])} services updated:**\n",
-             "| Service | Version | Helm Chart | Notes |", "|---|---|---|---|"]
+             "| Service | Version | Jira Tickets | Helm Chart | Notes |", "|---|---|---|---|---|"]
     for name, s in board['services'].items():
-        lines.append(f"| {name} | {s.get('image_tag','?')} | {s.get('helm_version','N/A')} | {s.get('notes','')} |")
+        jira_col = s.get('jira_ids', '') or '—'
+        lines.append(f"| {name} | {s.get('image_tag','?')} | {jira_col} | {s.get('helm_version','N/A')} | {s.get('notes','')} |")
+
+    # Add Jira changes detail if any
+    if jira_details:
+        lines.append("\n## What's Changed\n")
+        features, bugs, improvements, tasks = [], [], [], []
+        for svc_name, ids in svc_jira_map.items():
+            for jid in ids:
+                issue = jira_details.get(jid, {})
+                entry = f"- **{jid}** ({svc_name}): {issue.get('summary', '?')} [{issue.get('status', '?')}]"
+                itype = issue.get('type', 'Task')
+                if itype in ('Story', 'Feature'):
+                    features.append(entry)
+                elif itype == 'Bug':
+                    bugs.append(entry)
+                elif itype == 'Improvement':
+                    improvements.append(entry)
+                else:
+                    tasks.append(entry)
+        if features:
+            lines.append("### 🆕 New Features")
+            lines.extend(features)
+        if bugs:
+            lines.append("\n### 🐛 Bug Fixes")
+            lines.extend(bugs)
+        if improvements:
+            lines.append("\n### ⚡ Improvements")
+            lines.extend(improvements)
+        if tasks:
+            lines.append("\n### 🔧 Maintenance")
+            lines.extend(tasks)
+
     lines.append(f"\n**AI Risk Assessment:** {'🟢 All services look healthy.' if len(board['services']) < 5 else '🟡 Review recommended for larger release scope.'}")
-    return jsonify({'notes': '\n'.join(lines), 'gemini_powered': False, 'release_date': board.get('release_date')})
+    return jsonify({'notes': '\n'.join(lines), 'gemini_powered': False,
+                   'jira_enriched': bool(jira_details),
+                   'release_date': board.get('release_date')})
 
 @app.route('/api/release/history')
 def history():
@@ -621,8 +729,9 @@ def ai_converse():
         else:
             svc_lines = []
             for name, svc in services.items():
-                svc_lines.append(f"| {name} | `{svc.get('image_tag', '?')}` | {svc.get('nominated_by', '?')} |")
-            table = "| Service | Version | Nominated By |\n|---------|---------|-------------|\n" + '\n'.join(svc_lines)
+                jira_col = svc.get('jira_ids', '') or '\u2014'
+                svc_lines.append(f"| {name} | `{svc.get('image_tag', '?')}` | {jira_col} | {svc.get('nominated_by', '?')} |")
+            table = "| Service | Version | Jira | Nominated By |\n|---------|---------|------|-------------|\n" + '\n'.join(svc_lines)
             reply = (f"📋 **Release Board Summary**\n\n"
                      f"- **Release Date:** {board.get('release_date', '?')}\n"
                      f"- **Status:** {board.get('status', 'open')}\n"
@@ -683,6 +792,7 @@ def ai_converse():
                  f"| Image Tag | `{svc.get('image_tag', '?')}` |\n"
                  f"| Helm Chart | `{svc.get('helm_chart_version', 'n/a')}` |\n"
                  f"| Kind | {svc.get('kind', 'Deployment')} |\n"
+                 f"| Jira Tickets | {svc.get('jira_ids', '') or 'None'} |\n"
                  f"| Nominated By | {svc.get('nominated_by', '?')} |\n"
                  f"| Nominated At | {svc.get('nominated_at', '?')} |\n"
                  f"| Notes | {svc.get('notes', '—')} |\n\n"

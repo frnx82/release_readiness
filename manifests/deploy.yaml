@@ -25,7 +25,15 @@
 #      --from-literal=GEMINI_API_KEY=your_api_key_here \
 #      -n YOUR_NAMESPACE
 #
-# 4. Apply:
+# 4. (Optional) Create Jira MCP secret (for Jira-enriched release notes):
+#
+#    kubectl create secret generic release-readiness-jira \
+#      --from-literal=mcp-url=https://jira-mcp.example.com \
+#      --from-literal=service-account=jira-svc-account \
+#      --from-literal=pat-token=your_jira_pat_token \
+#      -n YOUR_NAMESPACE
+#
+# 5. Apply:
 #
 #    kubectl apply -f deploy.yaml -n YOUR_NAMESPACE
 #
@@ -144,6 +152,28 @@ spec:
         # Format: name1:Type1:Description,name2:Type2:Description
         # - name: CUSTOM_COMPONENTS
         #   value: "mobile-app:Mobile App:iOS/Android mobile application,config-rules:Config:Business rules engine"
+
+        # ════════════════════════════════════════════════════════════
+        # Jira MCP Server (optional — enables Jira-enriched release notes)
+        # ════════════════════════════════════════════════════════════
+        - name: JIRA_MCP_URL
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-jira
+              key: mcp-url
+              optional: true
+        - name: JIRA_SERVICE_ACCOUNT
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-jira
+              key: service-account
+              optional: true
+        - name: JIRA_PAT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-jira
+              key: pat-token
+              optional: true
 
         resources:
           requests:
