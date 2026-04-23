@@ -331,7 +331,7 @@ def _jira_mcp_call(tool_name, arguments, timeout=10):
     try:
         headers = {
             'Content-Type': 'application/json',
-            'Accept': 'application/json',
+            'Accept': 'application/json, text/event-stream',
         }
 
         # Auth: X-Jira-User-Email header + Bearer PAT token
