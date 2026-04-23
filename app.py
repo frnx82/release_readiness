@@ -451,31 +451,75 @@ def _fetch_jira_issues(jira_ids):
             print(f"[Jira MCP] Could not fetch {jira_id}")
             continue
 
-        # Parse the response — try JSON first, fall back to text
-        try:
-            data = json.loads(raw) if isinstance(raw, str) else raw
-            issue = {
-                'id': jira_id,
-                'summary': (data.get('summary') or data.get('fields', {}).get('summary', '')),
-                'description': (data.get('description') or
-                               data.get('fields', {}).get('description', '') or ''),
-                'status': (data.get('status') or
-                          data.get('fields', {}).get('status', {}).get('name', 'Unknown')),
-                'type': (data.get('issuetype') or data.get('issue_type') or
-                        data.get('fields', {}).get('issuetype', {}).get('name', 'Task')),
-                'priority': (data.get('priority') or
-                            data.get('fields', {}).get('priority', {}).get('name', 'Medium')),
-            }
-        except (json.JSONDecodeError, AttributeError):
-            # Fall back to treating the response as a text description
+        # Parse the response — try JSON first, then key-value text, then raw text
+        print(f"[Jira MCP] Raw response for {jira_id}: {str(raw)[:300]}")
+
+        issue = None
+
+        # Attempt 1: JSON response
+        if isinstance(raw, str):
+            try:
+                data = json.loads(raw)
+                issue = {
+                    'id': jira_id,
+                    'summary': (data.get('summary') or data.get('fields', {}).get('summary', '')),
+                    'description': (data.get('description') or
+                                   data.get('fields', {}).get('description', '') or ''),
+                    'status': (data.get('status') or
+                              data.get('fields', {}).get('status', {}).get('name', 'Unknown')),
+                    'type': (data.get('issuetype') or data.get('issue_type') or
+                            data.get('fields', {}).get('issuetype', {}).get('name', 'Task')),
+                    'priority': (data.get('priority') or
+                                data.get('fields', {}).get('priority', {}).get('name', 'Medium')),
+                }
+                # Check if we actually got data (not all empty strings)
+                if issue['summary']:
+                    print(f"[Jira MCP] Parsed {jira_id} via JSON: {issue['summary'][:80]}")
+            except (json.JSONDecodeError, AttributeError):
+                issue = None
+
+        # Attempt 2: Key-value text format (e.g. "Key: PROJ-123\nSummary: Fix bug\n...")
+        if not issue or not issue.get('summary'):
+            raw_str = str(raw)
+            field_map = {}
+            for line in raw_str.split('\n'):
+                line = line.strip()
+                if ':' in line:
+                    key, _, value = line.partition(':')
+                    field_map[key.strip().lower()] = value.strip()
+
+            summary = (field_map.get('summary') or field_map.get('title') or
+                       field_map.get('headline') or '')
+            description = (field_map.get('description') or field_map.get('details') or
+                          field_map.get('body') or '')
+            status = (field_map.get('status') or field_map.get('state') or 'Unknown')
+            issue_type = (field_map.get('type') or field_map.get('issuetype') or
+                         field_map.get('issue type') or 'Task')
+            priority = (field_map.get('priority') or field_map.get('severity') or 'Medium')
+
+            if summary:
+                issue = {
+                    'id': jira_id,
+                    'summary': summary,
+                    'description': description or raw_str[:500],
+                    'status': status,
+                    'type': issue_type,
+                    'priority': priority,
+                }
+                print(f"[Jira MCP] Parsed {jira_id} via text: {summary[:80]}")
+
+        # Attempt 3: Use full raw text as description
+        if not issue or not issue.get('summary'):
             issue = {
                 'id': jira_id,
                 'summary': jira_id,
-                'description': str(raw)[:500],
+                'description': str(raw)[:1000],
                 'status': 'Unknown',
                 'type': 'Task',
                 'priority': 'Medium',
             }
+            print(f"[Jira MCP] Using raw text for {jira_id} (no structured fields found)")
+
         results[jira_id] = issue
         _cache_set(cache_key, issue)
 
