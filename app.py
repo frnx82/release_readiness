@@ -24,6 +24,7 @@ import threading
 import uuid
 import random
 import secrets
+import base64
 import yaml
 import requests
 from flask import Flask, request, jsonify, render_template, session, redirect, url_for
@@ -47,7 +48,8 @@ BASE_URL             = os.getenv('BASE_URL', '').rstrip('/')  # external URL for
 # Jira MCP Server Configuration
 # ══════════════════════════════════════════════════════════════════════════════
 JIRA_MCP_URL          = os.getenv('JIRA_MCP_URL', '')            # MCP server endpoint URL
-JIRA_SERVICE_ACCOUNT  = os.getenv('JIRA_SERVICE_ACCOUNT', '')    # Jira service account username
+JIRA_EMAIL            = os.getenv('JIRA_EMAIL',
+                        os.getenv('JIRA_SERVICE_ACCOUNT', ''))   # Jira email / service account
 JIRA_PAT_TOKEN        = os.getenv('JIRA_PAT_TOKEN', '')          # Jira PAT token
 
 # GitHub Enterprise support
@@ -158,14 +160,15 @@ else:
 # Print Jira MCP config status at startup
 if JIRA_MCP_URL:
     print(f"[Release Readiness] ✅ Jira MCP server configured — URL: {JIRA_MCP_URL}")
-    if JIRA_SERVICE_ACCOUNT:
-        print(f"    Service account: {JIRA_SERVICE_ACCOUNT}")
+    if JIRA_EMAIL:
+        print(f"    Jira email: {JIRA_EMAIL}")
     if JIRA_PAT_TOKEN:
         print(f"    PAT token: {'*' * 8}...configured")
+    auth_mode = 'Basic Auth' if (JIRA_EMAIL and JIRA_PAT_TOKEN) else 'Bearer' if JIRA_PAT_TOKEN else 'None'
+    print(f"    Auth mode: {auth_mode}")
 else:
     print("[Release Readiness] ℹ️  No Jira MCP server configured. Jira integration disabled.")
-    print("    Set JIRA_MCP_URL + JIRA_SERVICE_ACCOUNT + JIRA_PAT_TOKEN to enable.")
-    print("    Or set GITHUB_TOKEN for PAT mode")
+    print("    Set JIRA_MCP_URL + JIRA_EMAIL + JIRA_PAT_TOKEN to enable.")
 
 # ── Gemini SDK setup ─────────────────────────────────────────────────────────
 GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash')
@@ -320,6 +323,7 @@ def _jira_mcp_call(tool_name, arguments, timeout=10):
     """Call a tool on the Jira MCP server via HTTP.
 
     Sends a JSON-RPC style request to the MCP server endpoint.
+    Uses Basic Auth (email:PAT) for Jira authentication.
     Returns the tool result or None on failure.
     """
     if not JIRA_MCP_URL:
@@ -329,10 +333,16 @@ def _jira_mcp_call(tool_name, arguments, timeout=10):
             'Content-Type': 'application/json',
             'Accept': 'application/json',
         }
-        if JIRA_PAT_TOKEN:
+
+        # Auth: Basic Auth (email:PAT) is standard for Jira Cloud/Server
+        if JIRA_EMAIL and JIRA_PAT_TOKEN:
+            credentials = base64.b64encode(
+                f'{JIRA_EMAIL}:{JIRA_PAT_TOKEN}'.encode()
+            ).decode()
+            headers['Authorization'] = f'Basic {credentials}'
+        elif JIRA_PAT_TOKEN:
+            # Fallback: Bearer token if only PAT is provided (no email)
             headers['Authorization'] = f'Bearer {JIRA_PAT_TOKEN}'
-        if JIRA_SERVICE_ACCOUNT:
-            headers['X-Service-Account'] = JIRA_SERVICE_ACCOUNT
 
         payload = {
             'jsonrpc': '2.0',
@@ -343,8 +353,14 @@ def _jira_mcp_call(tool_name, arguments, timeout=10):
                 'arguments': arguments
             }
         }
-        r = requests.post(JIRA_MCP_URL, json=payload, headers=headers,
-                         timeout=timeout, verify=SSL_VERIFY)
+
+        # Use the shared session for proxy/Kerberos support if configured
+        if PROXY_URL:
+            r = gh_http.post(JIRA_MCP_URL, json=payload, headers=headers,
+                             timeout=timeout, verify=SSL_VERIFY)
+        else:
+            r = requests.post(JIRA_MCP_URL, json=payload, headers=headers,
+                             timeout=timeout, verify=SSL_VERIFY)
         r.raise_for_status()
         result = r.json()
 
@@ -366,6 +382,11 @@ def _jira_mcp_call(tool_name, arguments, timeout=10):
         return None
     except requests.exceptions.ConnectionError as e:
         print(f"[Jira MCP] Connection error: {e}")
+        return None
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 'unknown'
+        body = e.response.text[:200] if e.response is not None else ''
+        print(f"[Jira MCP] HTTP {status} calling {tool_name}: {body}")
         return None
     except Exception as e:
         print(f"[Jira MCP] Error calling {tool_name}: {e}")
