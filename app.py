@@ -358,7 +358,38 @@ def _jira_mcp_call(tool_name, arguments, timeout=10):
             r = requests.post(JIRA_MCP_URL, json=payload, headers=headers,
                              timeout=timeout, verify=SSL_VERIFY)
         r.raise_for_status()
-        result = r.json()
+
+        # Parse response — handle both JSON and SSE (text/event-stream) formats
+        content_type = r.headers.get('Content-Type', '')
+        raw_text = r.text.strip()
+
+        if not raw_text:
+            print(f"[Jira MCP] Empty response body from {tool_name} (Content-Type: {content_type})")
+            return None
+
+        # SSE format: lines like "event: message\ndata: {json}\n\n"
+        if 'text/event-stream' in content_type or raw_text.startswith('event:') or raw_text.startswith('data:'):
+            # Extract JSON from SSE data lines
+            result = None
+            for line in raw_text.split('\n'):
+                line = line.strip()
+                if line.startswith('data:'):
+                    data_str = line[5:].strip()
+                    if data_str:
+                        try:
+                            result = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+            if not result:
+                print(f"[Jira MCP] Could not parse SSE response for {tool_name}: {raw_text[:200]}")
+                return None
+        else:
+            # Standard JSON response
+            try:
+                result = json.loads(raw_text)
+            except json.JSONDecodeError as e:
+                print(f"[Jira MCP] Invalid JSON from {tool_name} (Content-Type: {content_type}): {raw_text[:200]}")
+                return None
 
         # MCP response: { result: { content: [...] } }
         if 'result' in result:
