@@ -334,16 +334,10 @@ def _jira_mcp_call(tool_name, arguments, timeout=10):
             'Accept': 'application/json',
         }
 
-        # Auth: Basic Auth (email:PAT) + required X-Jira-User-Email header
+        # Auth: X-Jira-User-Email header + Bearer PAT token
         if JIRA_EMAIL:
             headers['X-Jira-User-Email'] = JIRA_EMAIL
-        if JIRA_EMAIL and JIRA_PAT_TOKEN:
-            credentials = base64.b64encode(
-                f'{JIRA_EMAIL}:{JIRA_PAT_TOKEN}'.encode()
-            ).decode()
-            headers['Authorization'] = f'Basic {credentials}'
-        elif JIRA_PAT_TOKEN:
-            # Fallback: Bearer token if only PAT is provided (no email)
+        if JIRA_PAT_TOKEN:
             headers['Authorization'] = f'Bearer {JIRA_PAT_TOKEN}'
 
         payload = {
