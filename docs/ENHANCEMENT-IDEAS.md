@@ -11,11 +11,21 @@
 | Release board (nominate/remove services) | ✅ Built |
 | Version drift detection | ✅ Built |
 | AI readiness check (Gemini) | ✅ Built |
-| AI release notes generation | ✅ Built |
+| AI release notes generation (with JIRA descriptions) | ✅ Built |
+| AI release chatbot (natural language queries) | ✅ Built |
 | Export manifest (JSON/YAML) | ✅ Built |
 | Board lifecycle (open → locked → released) | ✅ Built |
-| Audit trail | ✅ Built |
-| ConfigMap-based storage | ✅ Built |
+| Audit trail (full action history) | ✅ Built |
+| ConfigMap-based storage (primary) | ✅ Built |
+| File-based fallback storage (when no ConfigMap RBAC) | ✅ Built |
+| JIRA MCP integration (fetch issue details) | ✅ Built |
+| JIRA IDs per nomination (linked on cards) | ✅ Built |
+| Exception nominations (post-cutoff with reason/approver) | ✅ Built |
+| Exception reporting endpoint (`/api/release/exceptions`) | ✅ Built |
+| AI post-cutoff warning in release notes | ✅ Built |
+| Deploy trigger (Argo CD integration) | ✅ Built |
+| Custom component nomination (manual version) | ✅ Built |
+| Release history tracking | ✅ Built |
 
 ---
 
@@ -308,37 +318,41 @@ auth      ✅ v3.1.0    ❌ v3.0.9     🚫 blocked (staging != prod version)
 
 ## 🏗️ Implementation Priority
 
-### Phase 1 — Quick Wins (1-2 weeks)
-| # | Feature | Effort |
+### Phase 1 — Quick Wins ✅ COMPLETE
+| # | Feature | Status |
 |---|---------|--------|
-| 11 | Automated post-cutoff report (email) | 2-3 days |
-| 13 | Teams channel notifications (webhook) | 1-2 days |
-| 6 | QA sign-off workflow | 2-3 days |
-| 1 | AI Release Chatbot (basic) | 3-4 days |
+| 11 | Automated post-cutoff report (email) | 🔲 Pending |
+| 13 | Teams channel notifications (webhook) | 🔲 Pending |
+| 6 | QA sign-off workflow | 🔲 Pending |
+| 1 | AI Release Chatbot (basic) | ✅ **Done** |
+| — | Exception nominations (post-cutoff) | ✅ **Done** |
+| — | JIRA MCP integration | ✅ **Done** |
+| — | File-based fallback storage | ✅ **Done** |
+| — | AI release notes with JIRA descriptions | ✅ **Done** |
 
 ### Phase 2 — Core Integrations (2-3 weeks)
-| # | Feature | Effort |
+| # | Feature | Status |
 |---|---------|--------|
-| 12 | Jira integration | 3-5 days |
-| 7 | Test results integration | 2-3 days |
-| 15 | Auto-nomination from CI/CD | 1-2 days |
-| 16 | Composite readiness score | 2-3 days |
+| 12 | Jira integration (auto-create tickets) | 🔲 Pending |
+| 7 | Test results integration | 🔲 Pending |
+| 15 | Auto-nomination from CI/CD | 🔲 Pending |
+| 16 | Composite readiness score | 🔲 Pending |
 
 ### Phase 3 — Advanced AI (3-4 weeks)
-| # | Feature | Effort |
+| # | Feature | Status |
 |---|---------|--------|
-| 2 | AI risk assessment | 3-4 days |
-| 3 | AI change impact analysis | 3-4 days |
-| 4 | AI post-release analysis | 2-3 days |
-| 17 | Release blockers & gates | 3-4 days |
+| 2 | AI risk assessment | 🔲 Pending |
+| 3 | AI change impact analysis | 🔲 Pending |
+| 4 | AI post-release analysis | 🔲 Pending |
+| 17 | Release blockers & gates | 🔲 Pending |
 
 ### Phase 4 — Platform (4+ weeks)
-| # | Feature | Effort |
+| # | Feature | Status |
 |---|---------|--------|
-| 9 | Environment promotion tracking | 1 week |
-| 18 | Rollback automation | 1 week |
-| 19 | Release calendar & history dashboard | 1 week |
-| 20 | Multi-environment coordination | 1-2 weeks |
+| 9 | Environment promotion tracking | 🔲 Pending |
+| 18 | Rollback automation | 🔲 Pending |
+| 19 | Release calendar & history dashboard | 🔲 Pending |
+| 20 | Multi-environment coordination | 🔲 Pending |
 
 ---
 

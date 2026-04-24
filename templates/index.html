@@ -888,6 +888,16 @@
                             <div style="font-size:12px;font-weight:600">AI Chatbot</div>
                             <div style="font-size:10px;color:var(--text2);margin-top:2px">Ask about the release</div>
                         </div>
+                        <div style="background:var(--surface2);border:1px solid rgba(245,158,11,.3);border-radius:10px;padding:14px;text-align:center">
+                            <div style="font-size:24px;margin-bottom:4px">⚠️</div>
+                            <div style="font-size:12px;font-weight:600">Exceptions</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">Post-cutoff nominations</div>
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+                            <div style="font-size:24px;margin-bottom:4px">💾</div>
+                            <div style="font-size:12px;font-weight:600">Dual Storage</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">ConfigMap + file fallback</div>
+                        </div>
                     </div>
 
                     <!-- ═══════════════════════════════════════════════════ -->
@@ -910,7 +920,7 @@
                             </div>
                             <div style="display:flex;gap:10px;align-items:flex-start">
                                 <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">4</span>
-                                <div><strong style="color:var(--text)">Wednesday 5 PM — Cutoff:</strong> Release Manager clicks <strong>🔒 Lock Board</strong>. No more nominations accepted.</div>
+                                <div><strong style="color:var(--text)">Wednesday 5 PM — Cutoff:</strong> Release Manager clicks <strong>🔒 Lock Board</strong>. No more regular nominations accepted. <strong style="color:#f59e0b">⚠️ Exception Nominations</strong> are still possible with approver and reason (for Thursday hotfixes).</div>
                             </div>
                             <div style="display:flex;gap:10px;align-items:flex-start">
                                 <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">5</span>
@@ -992,7 +1002,7 @@
                             <strong style="color:var(--accent2)">Board states:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
                                 <li><span style="color:var(--green)">● Open</span> — Accepting nominations (Monday through Wednesday cutoff)</li>
-                                <li><span style="color:var(--yellow)">🔒 Locked</span> — Past cutoff. No changes allowed. Only Release Manager can modify.</li>
+                                <li><span style="color:var(--yellow)">🔒 Locked</span> — Past cutoff. Regular nominations blocked. <strong style="color:#f59e0b">Exception nominations</strong> still allowed with reason + approver.</li>
                                 <li><span style="color:var(--text2)">✅ Released</span> — Archived as read-only. A new cycle begins.</li>
                             </ul>
                         </div>
@@ -1042,6 +1052,41 @@
                         <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--yellow)">
                             💡 <strong>Use case:</strong> You nominated billing-service v2.3.5, but QA found a regression.
                             Rollback to v2.3.3 without redeploying — the board nomination reverts instantly.
+                        </div>
+                    </div>
+
+
+                    <!-- Exception Nominations -->
+                    <div style="background:var(--surface2);border:1px solid rgba(245,158,11,.3);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px;color:#f59e0b">⚠️ Exception Nominations (Post-Cutoff)</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            After the board is <strong>locked</strong> (Wednesday 5 PM cutoff), developers can still nominate services
+                            as <strong>exceptions</strong>. This is for Thursday hotfixes or critical changes that must go into the Friday release.
+                            Every exception is tracked and reported for weekly review.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">How it works:</strong>
+                            <ol style="margin-left:18px;color:var(--text2)">
+                                <li>Try to nominate a service after the board is locked</li>
+                                <li>An <strong style="color:#f59e0b">⚠️ Exception Nomination</strong> modal appears automatically</li>
+                                <li>Enter a <strong>Reason</strong> (why this is needed after cutoff) — required</li>
+                                <li>Enter an <strong>Approver</strong> (who approved this exception) — required</li>
+                                <li>Click <strong>Submit Exception Nomination</strong></li>
+                            </ol>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">What gets tracked:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>Board cards</strong> — Exception services show an <span style="color:#f59e0b;font-weight:600">⚠️ EXCEPTION</span> badge with approver and reason</li>
+                                <li><strong>Sidebar</strong> — Exception count displayed in Quick Info when > 0</li>
+                                <li><strong>Audit Trail</strong> — Logged as <code>exception-nominate</code> or <code>exception-re-nominate</code> with amber highlighting</li>
+                                <li><strong>AI Release Notes</strong> — A <strong>⚠️ Post-Cutoff Changes</strong> section is added, flagging these as higher-risk items</li>
+                                <li><strong>Exception Report</strong> — <code>GET /api/release/exceptions</code> returns stats grouped by requester and approver</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid #f59e0b">
+                            💡 <strong>Why it matters:</strong> Exception tracking creates accountability. Weekly reports show how many
+                            post-cutoff changes are happening and who is requesting them — helping the team reduce late changes over time.
                         </div>
                     </div>
 
@@ -1182,6 +1227,8 @@
                             <ul style="margin-left:18px;color:var(--text2)">
                                 <li><strong>nominate</strong> — Service added to the board with version and Jira IDs</li>
                                 <li><strong>re-nominate</strong> — Version updated (from → to) with reason</li>
+                                <li><strong style="color:#f59e0b">exception-nominate</strong> — Post-cutoff nomination with approver and reason (amber highlight)</li>
+                                <li><strong style="color:#f59e0b">exception-re-nominate</strong> — Post-cutoff re-nomination with approver and reason</li>
                                 <li><strong>rollback</strong> — Version reverted via Version History</li>
                                 <li><strong>remove</strong> — Service withdrawn from the release</li>
                                 <li><strong>deploy_triggered</strong> — GitHub Actions workflow dispatched (includes run ID, who triggered, inputs)</li>
@@ -1516,8 +1563,19 @@
                             </div>
                             <div style="margin-bottom:14px">
                                 <strong style="color:var(--text)">Q: How does the board persist data?</strong><br>
-                                Board state is stored in a Kubernetes ConfigMap in the same namespace. Data survives pod restarts
-                                but lives within the cluster. In mock mode, data is in-memory (resets on restart).
+                                Board state is stored in a Kubernetes ConfigMap in the same namespace. If the service account
+                                lacks ConfigMap write permissions, data falls back to a <strong>file on a PersistentVolume</strong>.
+                                Both methods are automatic — no configuration needed. In mock mode, data is in-memory (resets on restart).
+                            </div>
+                            <div style="margin-bottom:14px">
+                                <strong style="color:var(--text)">Q: Can I nominate a service after the board is locked?</strong><br>
+                                Yes — as an <strong style="color:#f59e0b">Exception Nomination</strong>. You'll need to provide a reason and
+                                an approver name. The service will be flagged with an ⚠️ badge and included in the weekly exception report.
+                            </div>
+                            <div style="margin-bottom:14px">
+                                <strong style="color:var(--text)">Q: Where can I see how many exceptions happened this week?</strong><br>
+                                The sidebar shows exception count when > 0. For detailed stats, the Release Manager can call
+                                <code>GET /api/release/exceptions</code> which returns counts grouped by requester and approver.
                             </div>
                             <div>
                                 <strong style="color:var(--text)">Q: What if Gemini is not configured?</strong><br>
@@ -1609,8 +1667,9 @@
                     </div>
                     <!-- K8s service dropdown -->
                     <div id="nom-k8s-section">
-                        <select id="service-select">
-                            <option value="">Loading services...</option>
+                        <label style="font-size:11px;color:var(--text2)">Select Service <span style="color:#ef4444;font-weight:700">*</span></label>
+                        <select id="service-select" onchange="validateNominateForm()">
+                            <option value="">— Select a service —</option>
                         </select>
                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
                             <div><label style="font-size:11px;color:var(--text2)">Image Tag</label><input type="text"
@@ -1621,19 +1680,20 @@
                     </div>
                     <!-- Custom component dropdown -->
                     <div id="nom-custom-section" style="display:none">
-                        <select id="custom-select">
-                            <option value="">Loading components...</option>
+                        <label style="font-size:11px;color:var(--text2)">Select Component <span style="color:#ef4444;font-weight:700">*</span></label>
+                        <select id="custom-select" onchange="validateNominateForm()">
+                            <option value="">— Select a component —</option>
                         </select>
-                        <div><label style="font-size:11px;color:var(--text2)">Version (manual entry)</label><input type="text"
-                                id="nom-custom-version" placeholder="e.g. v1.2.3 or build-20260326"></div>
+                        <div><label style="font-size:11px;color:var(--text2)">Version (manual entry) <span style="color:#ef4444;font-weight:700">*</span></label><input type="text"
+                                id="nom-custom-version" placeholder="e.g. v1.2.3 or build-20260326" oninput="validateNominateForm()"></div>
                         <div id="custom-desc" style="font-size:11px;color:var(--text2);margin-top:2px;font-style:italic"></div>
                     </div>
-                    <div><label style="font-size:11px;color:var(--text2)">Your Name</label><input type="text"
-                            id="nom-by" placeholder="e.g. rajesh" value=""></div>
-                    <div><label style="font-size:11px;color:var(--text2)">Jira IDs <span style="font-weight:normal">(comma-separated)</span></label><input type="text"
-                            id="nom-jira-ids" placeholder="e.g. PROJ-123, PROJ-456"></div>
+                    <div><label style="font-size:11px;color:var(--text2)">Your Name <span style="color:#ef4444;font-weight:700">*</span></label><input type="text"
+                            id="nom-by" placeholder="e.g. rajesh" value="" oninput="validateNominateForm()"></div>
+                    <div><label style="font-size:11px;color:var(--text2)">Jira IDs <span style="font-weight:normal">(comma-separated)</span> <span style="color:#ef4444;font-weight:700">*</span></label><input type="text"
+                            id="nom-jira-ids" placeholder="e.g. PROJ-123, PROJ-456" oninput="validateNominateForm()"></div>
                     <textarea id="nom-notes" placeholder="Release notes (optional)..."></textarea>
-                    <button class="btn btn-primary" onclick="nominateService()" style="width:100%">🚀 Nominate</button>
+                    <button id="btn-nominate" class="btn btn-primary" onclick="nominateService()" style="width:100%;opacity:0.5;cursor:not-allowed" disabled>🚀 Nominate</button>
                 </div>
             </div>
             <hr style="border:none;border-top:1px solid var(--border)">
@@ -1906,7 +1966,7 @@
         function renderServiceDropdown() {
             const sel = document.getElementById('service-select');
             const nominated = _board ? Object.keys(_board.services || {}) : [];
-            sel.innerHTML = '<option value="">Select a service...</option>' +
+            sel.innerHTML = '<option value="">— Select a service —</option>' +
                 _services.map(s => {
                     const already = nominated.includes(s.name);
                     return `<option value="${s.name}" ${already ? 'style="color:#f59e0b"' : ''}>${s.name} (${s.image_tag})${already ? ' ★ nominated' : ''}</option>`;
@@ -1949,6 +2009,23 @@
             document.getElementById('toggle-k8s').style.color = type === 'k8s' ? '#fff' : '';
             document.getElementById('toggle-custom').style.background = type === 'custom' ? 'var(--accent)' : '';
             document.getElementById('toggle-custom').style.color = type === 'custom' ? '#fff' : '';
+            validateNominateForm();
+        }
+
+        function validateNominateForm() {
+            const btn = document.getElementById('btn-nominate');
+            const name = document.getElementById('nom-by').value.trim();
+            const jira = document.getElementById('nom-jira-ids').value.trim();
+            let valid = name.length > 0 && jira.length > 0;
+            if (_nomType === 'k8s') {
+                valid = valid && document.getElementById('service-select').value !== '';
+            } else {
+                valid = valid && document.getElementById('custom-select').value !== '';
+                valid = valid && document.getElementById('nom-custom-version').value.trim().length > 0;
+            }
+            btn.disabled = !valid;
+            btn.style.opacity = valid ? '1' : '0.5';
+            btn.style.cursor = valid ? 'pointer' : 'not-allowed';
         }
 
         // ═══ Actions ═════════════════════════════════════════════════════════════════
@@ -1956,28 +2033,32 @@
 
         async function nominateService() {
             let name, body;
+            const nominatedBy = document.getElementById('nom-by').value.trim();
+            const jiraIds = document.getElementById('nom-jira-ids').value.trim();
+            if (!nominatedBy) { showToast('Your Name is required', 'error'); document.getElementById('nom-by').focus(); return; }
+            if (!jiraIds) { showToast('Jira IDs are required', 'error'); document.getElementById('nom-jira-ids').focus(); return; }
             if (_nomType === 'custom') {
                 name = document.getElementById('custom-select').value;
                 const ver = document.getElementById('nom-custom-version').value.trim();
                 if (!name) { showToast('Select a component first', 'error'); return; }
-                if (!ver) { showToast('Enter a version number', 'error'); return; }
+                if (!ver) { showToast('Version is required for custom components', 'error'); document.getElementById('nom-custom-version').focus(); return; }
                 body = { service_name: name, notes: document.getElementById('nom-notes').value,
-                         nominated_by: document.getElementById('nom-by').value || 'anonymous',
+                         nominated_by: nominatedBy,
                          is_custom: true, manual_version: ver,
-                         jira_ids: document.getElementById('nom-jira-ids').value.trim() };
+                         jira_ids: jiraIds };
             } else {
                 name = document.getElementById('service-select').value;
                 if (!name) { showToast('Select a service first', 'error'); return; }
                 body = { service_name: name, notes: document.getElementById('nom-notes').value,
-                         nominated_by: document.getElementById('nom-by').value || 'anonymous',
-                         jira_ids: document.getElementById('nom-jira-ids').value.trim() };
+                         nominated_by: nominatedBy,
+                         jira_ids: jiraIds };
             }
             try {
                 const r = await fetch('/api/release/nominate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
                 const d = await r.json();
                 if (r.ok) {
                     const excLabel = d.is_exception ? ' (EXCEPTION)' : '';
-                    showToast(`Nominated ${name} (${d.image_tag})${excLabel}`); document.getElementById('nom-notes').value = ''; document.getElementById('nom-jira-ids').value = ''; if (_nomType === 'custom') document.getElementById('nom-custom-version').value = ''; refreshAll();
+                    showToast(`Nominated ${name} (${d.image_tag})${excLabel}`); document.getElementById('nom-notes').value = ''; document.getElementById('nom-jira-ids').value = ''; if (_nomType === 'custom') document.getElementById('nom-custom-version').value = ''; validateNominateForm(); refreshAll();
                 } else if (r.status === 403 && d.is_locked) {
                     // Board is locked — offer exception nomination
                     _pendingExceptionBody = body;
@@ -2014,6 +2095,7 @@
                     document.getElementById('nom-notes').value = '';
                     document.getElementById('nom-jira-ids').value = '';
                     if (_nomType === 'custom') document.getElementById('nom-custom-version').value = '';
+                    validateNominateForm();
                     refreshAll();
                 } else {
                     showToast(d.error || 'Exception nomination failed', 'error');

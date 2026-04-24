@@ -103,6 +103,7 @@ def _new_board():
         'status': 'open',
         'services': {},
         'audit_trail': [],
+        'exception_nominations': [],
         'created_at': datetime.datetime.utcnow().isoformat(),
         'finalized_by': None, 'finalized_at': None
     }
@@ -187,6 +188,7 @@ def get_current():
         _write_board(board)
     board['is_past_cutoff'] = datetime.datetime.utcnow().isoformat() > board.get('cutoff', '')
     board['nominated_count'] = len(board.get('services', {}))
+    board['exception_count'] = len(board.get('exception_nominations', []))
     return jsonify(board)
 
 @app.route('/api/release/nominate', methods=['POST'])
@@ -203,20 +205,23 @@ def nominate():
     board = _read_board()
     if not board:
         board = _new_board()
-    if board.get('status') in ('locked', 'released'):
-        return jsonify({'error': 'Board is locked'}), 403
+
+    is_exception = data.get('is_exception', False)
+    exception_reason = data.get('exception_reason', '').strip()
+    exception_approver = data.get('exception_approver', '').strip()
+
+    if board.get('status') in ('locked', 'released') and not is_exception:
+        return jsonify({'error': 'Board is locked', 'is_locked': True}), 403
 
     now = datetime.datetime.utcnow().isoformat()
 
     if is_custom:
-        # Custom component — version entered manually
         comp = MOCK_CUSTOM_MAP.get(name, {})
         tag = manual_version or 'unknown'
         image = ''
         helm = None
         kind = comp.get('type', 'Custom')
     else:
-        # K8s service — version auto-filled from cluster
         svc = MOCK_SERVICE_MAP.get(name, {})
         image = svc.get('image', f'registry.example.com/{name}:unknown')
         tag = svc.get('image_tag', 'unknown')
@@ -224,17 +229,22 @@ def nominate():
         kind = svc.get('kind', 'Deployment')
 
     existing = board['services'].get(name)
+    action_prefix = 'exception-' if is_exception else ''
     if existing:
         old_tag = existing.get('image_tag', '')
         existing.update({'image': image, 'image_tag': tag, 'helm_version': helm,
                          'notes': notes, 'jira_ids': jira_ids or existing.get('jira_ids', ''),
                          'updated_at': now, 'updated_by': by})
+        if is_exception:
+            existing['is_exception'] = True
+            existing['exception_reason'] = exception_reason
+            existing['exception_approver'] = exception_approver
         existing['version_history'].append({'from_tag': old_tag, 'to_tag': tag,
                                             'changed_by': by, 'changed_at': now, 'reason': notes or 'Update'})
-        board['audit_trail'].append({'action': 're-nominate', 'service': name,
+        board['audit_trail'].append({'action': f'{action_prefix}re-nominate', 'service': name,
                                       'from_version': old_tag, 'to_version': tag, 'by': by, 'at': now})
     else:
-        board['services'][name] = {
+        svc_entry = {
             'name': name, 'kind': kind, 'is_custom': is_custom,
             'image': image, 'image_tag': tag, 'helm_version': helm,
             'nominated_by': by, 'nominated_at': now, 'updated_at': now, 'updated_by': by,
@@ -242,10 +252,24 @@ def nominate():
             'version_history': [{'from_tag': None, 'to_tag': tag, 'changed_by': by,
                                  'changed_at': now, 'reason': 'Initial nomination'}]
         }
-        board['audit_trail'].append({'action': 'nominate', 'service': name,
+        if is_exception:
+            svc_entry['is_exception'] = True
+            svc_entry['exception_reason'] = exception_reason
+            svc_entry['exception_approver'] = exception_approver
+        board['services'][name] = svc_entry
+        board['audit_trail'].append({'action': f'{action_prefix}nominate', 'service': name,
                                       'version': tag, 'by': by, 'at': now})
+
+    if is_exception:
+        if 'exception_nominations' not in board:
+            board['exception_nominations'] = []
+        board['exception_nominations'].append({
+            'service': name, 'version': tag, 'reason': exception_reason,
+            'approver': exception_approver, 'requested_by': by, 'at': now
+        })
+
     _write_board(board)
-    return jsonify({'status': 'ok', 'service': name, 'image_tag': tag})
+    return jsonify({'status': 'ok', 'service': name, 'image_tag': tag, 'is_exception': is_exception})
 
 @app.route('/api/release/rollback', methods=['POST'])
 def rollback_version():
@@ -484,6 +508,15 @@ def release_notes():
             lines.append("\n### 🔧 Maintenance")
             lines.extend(tasks)
 
+    # Add post-cutoff exception warning
+    exc_services = [n for n, s in board['services'].items() if s.get('is_exception')]
+    if exc_services:
+        lines.append("\n## ⚠️ Post-Cutoff Changes\n")
+        lines.append("> The following services were nominated **after the cutoff deadline** as exceptions.\n")
+        for n in exc_services:
+            s = board['services'][n]
+            lines.append(f"- **{n}** (`{s.get('image_tag', '?')}`) — Approved by: {s.get('exception_approver', '?')}, Reason: {s.get('exception_reason', '?')}")
+
     lines.append(f"\n**AI Risk Assessment:** {'🟢 All services look healthy.' if len(board['services']) < 5 else '🟡 Review recommended for larger release scope.'}")
     return jsonify({'notes': '\n'.join(lines), 'gemini_powered': False,
                    'jira_enriched': bool(jira_details),
@@ -498,6 +531,23 @@ def history():
                          'finalized_by': board.get('finalized_by'), 'created_at': board.get('created_at')})
     releases.sort(key=lambda x: x.get('release_date',''), reverse=True)
     return jsonify({'releases': releases})
+
+@app.route('/api/release/exceptions')
+def release_exceptions():
+    """Exception nomination analytics."""
+    board = _read_board()
+    if not board:
+        return jsonify({'total': 0, 'exceptions': [], 'by_requester': {}, 'by_approver': {}})
+    exceptions = board.get('exception_nominations', [])
+    by_req, by_app = {}, {}
+    for e in exceptions:
+        by_req[e.get('requested_by', '?')] = by_req.get(e.get('requested_by', '?'), 0) + 1
+        by_app[e.get('approver', '?')] = by_app.get(e.get('approver', '?'), 0) + 1
+    return jsonify({
+        'total': len(exceptions), 'exceptions': exceptions,
+        'by_requester': by_req, 'by_approver': by_app,
+        'release_date': board.get('release_date')
+    })
 
 
 # ══════════════════════════════════════════════════════════════════════════════
