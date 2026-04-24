@@ -835,7 +835,192 @@ fi
 
 ---
 
-## 13. Summary
+## 13. Understanding the Kiali Traffic Graph
+
+Since you have access to Kiali, it's the **best visual tool** to understand how your services communicate. Here's how to read it.
+
+### Navigating to Your Traffic Graph
+
+![Kiali Dashboard Key Areas](images/kiali_navigation_guide.png)
+
+**Step-by-step:**
+1. Open Kiali in your browser
+2. In the left sidebar, click **Graph**
+3. At the top, select your namespace from the **Namespace** dropdown → `uat`
+4. Set the time range (top right) → `Last 5m` or `Last 10m` to see recent traffic
+5. Click **Refresh** to load the latest data
+
+> [!TIP]
+> If the graph is empty, it means **no traffic has flowed** in the selected time window. Try increasing to `Last 30m` or `Last 1h`, or generate some traffic by calling your services.
+
+---
+
+### Reading the Graph: Nodes
+
+![Reading the Kiali Traffic Graph](images/kiali_graph_explained.png)
+
+Each shape on the graph represents a component:
+
+| Shape | What It Represents | Example |
+|-------|-------------------|---------|
+| ⬠ **Pentagon** | Istio Gateway (ingress/egress) | `istio-ingressgateway` |
+| △ **Triangle** | Application (group of workloads) | `api-gateway` |
+| ● **Circle** | Workload (individual deployment) | `order-service`, `payment-service` |
+| ◇ **Diamond** | Service Entry (external service) | External API, database |
+| □ **Square** | Unknown/outside mesh | Services without sidecar |
+
+**Node Colors tell you health:**
+
+| Color | Meaning | What to Do |
+|-------|---------|-----------|
+| 🟢 **Green** | Healthy — all requests succeeding | Nothing, everything is good |
+| 🟡 **Yellow** | Degraded — some errors (< 20%) | Click to investigate which requests fail |
+| 🔴 **Red** | Failing — high error rate (> 20%) | Immediate investigation needed |
+| ⚪ **Gray** | No traffic in the time window | Normal if service isn't being called |
+
+---
+
+### Reading the Graph: Edges (Connection Lines)
+
+The lines between nodes represent **actual traffic flow**:
+
+| Edge Style | Meaning |
+|-----------|---------|
+| **Solid green line** | Healthy traffic — requests succeeding |
+| **Solid red line** | Error traffic — 5xx responses |
+| **Solid orange line** | Mixed — some successes and some errors |
+| **Dashed gray line** | No recent traffic on this path |
+| **Line thickness** | Proportional to request volume (thicker = more traffic) |
+| **🔒 Lock icon on line** | mTLS is active on this connection |
+| **Arrow direction** | Shows which service is calling which |
+
+---
+
+### Display Settings You Should Enable
+
+In the **Display** panel (right side or top of the graph), enable these options:
+
+| Setting | What It Shows | Recommended |
+|---------|--------------|:-----------:|
+| **Traffic Animation** | Moving dots along edges showing live requests | ✅ Enable |
+| **Security** | Lock icons on edges where mTLS is active | ✅ Enable |
+| **Response Time** | Latency labels on edges (e.g., `12ms`) | ✅ Enable |
+| **Throughput** | Request rate labels (e.g., `45 req/s`) | ✅ Enable |
+| **Traffic Distribution** | Percentage split if using canary routing | Optional |
+
+**Graph Type** (dropdown at top):
+- **Workload graph** → Shows individual deployments (recommended for debugging)
+- **App graph** → Groups workloads by `app` label (cleaner view)
+- **Service graph** → Shows K8s services only
+- **Versioned app graph** → Shows version subsets (useful for canary deployments)
+
+---
+
+### Clicking on Edges: The Details Panel
+
+![Kiali Edge Details Panel](images/kiali_edge_details.png)
+
+**Click on any edge (line)** between two services to see detailed traffic metrics:
+
+| Panel Section | What It Shows | What to Look For |
+|--------------|---------------|-----------------|
+| **Traffic** | Request rate, success rate, error rate | Success rate should be > 99% |
+| **Response Time** | P50, P95, P99 latency | P95 should be < your SLA target |
+| **Flags** | mTLS status, protocol | mTLS should show ✅ Enabled |
+| **Response Codes** | Breakdown of HTTP status codes | 200s should dominate; watch for 500s |
+
+**Key metrics to check:**
+- **Success Rate: 98%+** → Healthy
+- **Success Rate: 90-98%** → Investigate — some requests failing
+- **Success Rate: < 90%** → Critical — service communication issues
+- **mTLS: Enabled** → Traffic is encrypted ✅
+- **mTLS: Disabled** → Traffic is plain text ⚠️ (check PeerAuthentication)
+
+---
+
+### Clicking on Nodes: Service Details
+
+**Click on any node (service)** to see:
+
+1. **Inbound traffic** — who is calling this service, at what rate
+2. **Outbound traffic** — what services this node calls
+3. **Health** — success rate, error breakdown
+4. **Workload details** — pod count, Istio config status
+
+From the side panel, you can also click:
+- **"Workload"** → See pod details, logs link
+- **"Service"** → See Kubernetes service details
+- **"Istio Config"** → See VirtualService, DestinationRule applied
+
+---
+
+### What a Healthy Graph Looks Like
+
+✅ **All good signs:**
+- All nodes are **green**
+- All edges are **solid green**
+- Lock icons (🔒) on every edge → mTLS is active everywhere
+- Traffic animation shows moving dots → live traffic flowing
+- Response times on edges are low (< 100ms for internal calls)
+
+---
+
+### What Problems Look Like
+
+❌ **Red edges between services:**
+- Click the red edge → check "Response Codes" → look for 500, 502, 503
+- Check the destination service pod health
+- Check proxy logs: `kubectl logs deploy/<service> -n uat -c istio-proxy --tail=20`
+
+❌ **Missing edges (no line between services that should communicate):**
+- No traffic is flowing in the selected time window
+- Check if the source service is actually making calls
+- Verify the service DNS name is correct in the code
+
+❌ **No lock icon on an edge:**
+- mTLS is not active on that connection
+- Check: `kubectl get peerauthentication -n uat`
+- If mode is `PERMISSIVE`, some connections may fall back to plaintext
+
+❌ **Node showing as a square (outside mesh):**
+- That workload doesn't have a sidecar
+- Check: `kubectl get pod <pod> -n uat` → should show 2/2, not 1/1
+
+❌ **"Unknown" node appearing:**
+- Traffic is coming from outside the mesh (external client or non-meshed pod)
+- This is normal for ingress traffic
+
+---
+
+### Useful Kiali Workflows
+
+**"Is my new deployment receiving traffic?"**
+1. Go to Graph → select `uat`
+2. Look for your service node
+3. Check if edges point TO it with green traffic
+4. Click the edge → verify request count is increasing
+
+**"Which service is causing errors?"**
+1. Go to Graph → look for red nodes or red edges
+2. Click the red edge → check Response Codes panel
+3. Note the error percentage and status codes
+4. Go to Workloads → click the failing service → check pod logs
+
+**"Is mTLS enabled on all my services?"**
+1. Go to Graph → enable **Security** in Display settings
+2. Every edge should show a 🔒 lock icon
+3. If any edge is missing the lock → click it → check the "Flags" section
+4. Fix: apply `PeerAuthentication` with `mode: STRICT`
+
+**"What's the latency between my services?"**
+1. Go to Graph → enable **Response Time** in Display settings
+2. Each edge shows P95 latency
+3. Click any edge for full P50/P95/P99 breakdown
+4. High latency? Check pod resources, connection pool settings
+
+---
+
+## 14. Summary
 
 > [!IMPORTANT]
 > **The #1 takeaway for your development team:** The service mesh is an infrastructure concern, not an application concern. Developers should continue writing normal Python HTTP services. The mesh handles security, reliability, and observability transparently.
