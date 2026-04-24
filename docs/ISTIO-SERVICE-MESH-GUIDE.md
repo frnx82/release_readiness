@@ -478,7 +478,350 @@ response = requests.get("http://user-service:8080/api/users/123")
 
 ---
 
-## 12. Summary
+## 12. How to Verify Service Mesh Traffic is Working
+
+![Mesh Verification Checklist](images/mesh_verification_flow.png)
+
+Follow these steps in order to confirm your service mesh is functioning correctly.
+
+---
+
+### Step 1: Verify Sidecar Injection
+
+Every meshed pod should show **2/2** (or **3/3** during init) in the `READY` column:
+
+```bash
+kubectl get pods -n uat
+```
+
+**✅ Expected (mesh working):**
+```
+NAME                              READY   STATUS    RESTARTS
+order-service-7b9d4f6c88-x2j4k   2/2     Running   0
+payment-service-5c8f7d9b44-m8p2   2/2     Running   0
+user-service-6d7e8f0a33-k5n1     2/2     Running   0
+```
+
+**❌ Problem (sidecar not injected):**
+```
+NAME                              READY   STATUS    RESTARTS
+order-service-7b9d4f6c88-x2j4k   1/1     Running   0
+```
+
+**Fix:** Ensure the namespace has the injection label:
+```bash
+# Check label
+kubectl get namespace uat --show-labels | grep istio
+
+# If missing, add it
+kubectl label namespace uat istio-injection=enabled
+
+# Restart pods to pick up sidecar
+kubectl rollout restart deployment -n uat
+```
+
+---
+
+### Step 2: Verify Sidecar Containers Are Running
+
+Inspect the containers inside a specific pod:
+
+```bash
+kubectl describe pod <pod-name> -n uat | grep -A 2 "Container ID"
+```
+
+Or list all containers:
+```bash
+kubectl get pod <pod-name> -n uat -o jsonpath='{.spec.containers[*].name}'
+```
+
+**✅ Expected:** `order-service istio-proxy`
+
+Check init containers:
+```bash
+kubectl get pod <pod-name> -n uat -o jsonpath='{.spec.initContainers[*].name}'
+```
+
+**✅ Expected:** `istio-init` (or `istio-validation`)
+
+---
+
+### Step 3: Verify mTLS is Active
+
+Check that mTLS is established between services:
+
+```bash
+# Check mTLS status for all services in the namespace
+istioctl authn tls-check <pod-name>.uat -n uat
+```
+
+**✅ Expected output:**
+```
+HOST:PORT                                STATUS   SERVER        CLIENT       AUTHN POLICY     DESTINATION RULE
+payment-service.uat.svc.cluster.local    OK       STRICT        ISTIO_MUTUAL default/uat      -
+user-service.uat.svc.cluster.local       OK       STRICT        ISTIO_MUTUAL default/uat      -
+order-service.uat.svc.cluster.local      OK       STRICT        ISTIO_MUTUAL default/uat      -
+```
+
+Key things to look for:
+- **STATUS = OK** → mTLS handshake is working
+- **SERVER = STRICT** → Only mTLS connections accepted (no plaintext)
+- **CLIENT = ISTIO_MUTUAL** → Client is sending mTLS certificates
+
+**Alternative:** Check PeerAuthentication policy:
+```bash
+kubectl get peerauthentication -n uat
+```
+
+**✅ Expected:**
+```
+NAME      MODE     AGE
+default   STRICT   30d
+```
+
+---
+
+### Step 4: Test Service-to-Service Connectivity
+
+Exec into a pod and call another service to confirm mesh routing works:
+
+```bash
+# Exec into order-service pod
+kubectl exec -it deploy/order-service -n uat -c order-service -- /bin/sh
+
+# From inside the pod, call payment-service
+curl -v http://payment-service:8080/health
+```
+
+**✅ Expected:** HTTP 200 response from the payment service.
+
+**What to look for in verbose output (`-v`):**
+```
+* Connected to payment-service (10.96.45.123) port 8080
+> GET /health HTTP/1.1
+> Host: payment-service:8080
+< HTTP/1.1 200 OK
+< x-envoy-upstream-service-time: 3
+< server: envoy
+```
+
+Key indicators the mesh is working:
+- `server: envoy` header → response came through the Envoy sidecar
+- `x-envoy-upstream-service-time` header → Envoy measured the upstream latency
+- `x-request-id` header → Envoy generated a trace ID
+
+> [!TIP]
+> If you see `server: envoy` in the response headers, it confirms the traffic is going through the mesh sidecar, not directly to the app.
+
+---
+
+### Step 5: Check Envoy Proxy Sync Status
+
+Verify that all sidecar proxies are synchronized with the control plane (istiod):
+
+```bash
+istioctl proxy-status -n uat
+```
+
+**✅ Expected (all SYNCED):**
+```
+NAME                                    CDS     LDS     EDS     RDS     ECDS    ISTIOD                    VERSION
+order-service-7b9d4f6c88-x2j4k.uat     SYNCED  SYNCED  SYNCED  SYNCED  -       istiod-6f8c7d9b4-abc12    1.20.2
+payment-service-5c8f7d9b44-m8p2.uat     SYNCED  SYNCED  SYNCED  SYNCED  -       istiod-6f8c7d9b4-abc12    1.20.2
+user-service-6d7e8f0a33-k5n1.uat        SYNCED  SYNCED  SYNCED  SYNCED  -       istiod-6f8c7d9b4-abc12    1.20.2
+```
+
+**❌ Problem:** If any column shows `STALE` or `NOT SENT`:
+```bash
+# Force config re-sync by restarting the proxy
+kubectl delete pod <pod-name> -n uat
+```
+
+What each column means:
+
+| Column | Full Name | What It Does |
+|--------|-----------|-------------|
+| **CDS** | Cluster Discovery Service | Service endpoints the proxy knows about |
+| **LDS** | Listener Discovery Service | Ports the proxy is listening on |
+| **EDS** | Endpoint Discovery Service | Individual pod IPs for each service |
+| **RDS** | Route Discovery Service | HTTP routing rules |
+
+---
+
+### Step 6: Inspect Envoy Proxy Logs
+
+Check the sidecar logs for connection and request details:
+
+```bash
+# View istio-proxy logs for a specific pod
+kubectl logs deploy/order-service -n uat -c istio-proxy --tail=50
+```
+
+**✅ Healthy log (successful mTLS request):**
+```
+[2026-04-24T12:30:15.123Z] "GET /api/users/123 HTTP/1.1" 200 - via_upstream -
+"-" 0 234 12 11 "-" "python-requests/2.31.0" "abc123-trace-id"
+"user-service.uat.svc.cluster.local:8080" "10.244.1.15:8080"
+outbound|8080||user-service.uat.svc.cluster.local 10.244.2.8:54321
+```
+
+Key fields:
+- `200` → HTTP status code
+- `12` → Total request time (ms)
+- `outbound|8080||user-service.uat.svc.cluster.local` → Envoy routed this through the mesh
+- `via_upstream` → Request successfully proxied
+
+**❌ Error log (connection refused):**
+```
+[2026-04-24T12:30:15.123Z] "GET /api/users/123 HTTP/1.1" 503 UF upstream_reset_before_response_started
+```
+- `503 UF` → Upstream failure, service unreachable
+
+**Enable debug logging temporarily:**
+```bash
+# Increase Envoy log level for a specific pod
+istioctl proxy-config log <pod-name>.uat --level debug
+
+# Reset back to warning level
+istioctl proxy-config log <pod-name>.uat --level warning
+```
+
+---
+
+### Step 7: Verify Mesh Metrics in Prometheus
+
+Check that Istio is generating traffic metrics:
+
+```bash
+# Port-forward to Prometheus
+kubectl port-forward svc/prometheus -n istio-system 9090:9090
+```
+
+Then open `http://localhost:9090` and query:
+
+```promql
+# Total requests between services
+istio_requests_total{
+  reporter="source",
+  source_workload="order-service",
+  destination_service="payment-service.uat.svc.cluster.local"
+}
+```
+
+**✅ Expected:** Non-zero counter values with labels showing source/destination.
+
+Other useful queries:
+
+```promql
+# Request latency P95
+histogram_quantile(0.95, sum(rate(istio_request_duration_milliseconds_bucket{
+  destination_service="payment-service.uat.svc.cluster.local"
+}[5m])) by (le))
+
+# Error rate
+sum(rate(istio_requests_total{
+  response_code=~"5.*",
+  destination_service="payment-service.uat.svc.cluster.local"
+}[5m]))
+
+# Active connections
+istio_tcp_connections_opened_total{destination_service="payment-service.uat.svc.cluster.local"}
+```
+
+---
+
+### Step 8: Verify with Kiali Service Graph (Visual)
+
+If Kiali is installed:
+
+```bash
+# Port-forward to Kiali
+kubectl port-forward svc/kiali -n istio-system 20001:20001
+```
+
+Open `http://localhost:20001` → Navigate to **Graph** → Select your namespace (`uat`).
+
+**✅ What you should see:**
+- Green edges between services → successful traffic
+- Lock icons on edges → mTLS enabled
+- Request rates on each edge → active traffic flow
+- Service nodes with health indicators
+
+**❌ What indicates problems:**
+- Red edges → 5xx errors
+- Missing edges → no traffic flowing
+- No lock icon → mTLS not active on that path
+
+---
+
+### Quick Verification Checklist
+
+Run this all-in-one check script from your terminal:
+
+```bash
+#!/bin/bash
+NAMESPACE="uat"
+
+echo "═══ 1. Sidecar Injection ═══"
+kubectl get pods -n $NAMESPACE -o custom-columns='NAME:.metadata.name,READY:.status.containerStatuses[*].ready,CONTAINERS:.spec.containers[*].name' | head -20
+
+echo ""
+echo "═══ 2. PeerAuthentication (mTLS) ═══"
+kubectl get peerauthentication -n $NAMESPACE -o wide
+
+echo ""
+echo "═══ 3. AuthorizationPolicy ═══"
+kubectl get authorizationpolicy -n $NAMESPACE -o wide
+
+echo ""
+echo "═══ 4. Proxy Sync Status ═══"
+istioctl proxy-status -n $NAMESPACE 2>/dev/null | head -15
+
+echo ""
+echo "═══ 5. VirtualServices & DestinationRules ═══"
+echo "VirtualServices:"
+kubectl get virtualservice -n $NAMESPACE 2>/dev/null || echo "  None"
+echo "DestinationRules:"
+kubectl get destinationrule -n $NAMESPACE 2>/dev/null || echo "  None"
+
+echo ""
+echo "═══ 6. Service-to-Service Test ═══"
+SOURCE_POD=$(kubectl get pod -n $NAMESPACE -l app=order-service -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+if [ -n "$SOURCE_POD" ]; then
+    echo "Testing from $SOURCE_POD → payment-service..."
+    kubectl exec $SOURCE_POD -n $NAMESPACE -c order-service -- \
+        curl -s -o /dev/null -w "HTTP %{http_code} | Time: %{time_total}s | Server: %{header.server}\n" \
+        http://payment-service:8080/health 2>/dev/null || echo "  Could not reach payment-service"
+else
+    echo "  No order-service pod found to test from"
+fi
+
+echo ""
+echo "═══ 7. Recent Proxy Errors ═══"
+SOURCE_POD=$(kubectl get pod -n $NAMESPACE -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+if [ -n "$SOURCE_POD" ]; then
+    kubectl logs $SOURCE_POD -n $NAMESPACE -c istio-proxy --tail=10 2>/dev/null | grep -E "(503|404|connection refused|upstream)" || echo "  No recent errors"
+fi
+```
+
+---
+
+### Common Issues & Fixes
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Pod shows `1/1` instead of `2/2` | Sidecar not injected | Add `istio-injection=enabled` label to namespace, restart pods |
+| `503 UF` in proxy logs | Destination service not available | Check if destination pod is running and healthy |
+| `503 UC` in proxy logs | Upstream connection failure | Check network policies, service port mismatch |
+| `RBAC: access denied` in logs | `AuthorizationPolicy` blocking | Check policy rules, verify source identity |
+| `STALE` in `proxy-status` | Envoy config out of sync | Delete and recreate the pod |
+| `connection refused` on port 15012 | istiod is down | Check `kubectl get pods -n istio-system` |
+| mTLS shows `PERMISSIVE` not `STRICT` | PeerAuthentication not set | Apply `PeerAuthentication` with `mode: STRICT` |
+| Trace headers missing | App not propagating headers | Add the trace header propagation code from Section 6 |
+
+---
+
+## 13. Summary
 
 > [!IMPORTANT]
 > **The #1 takeaway for your development team:** The service mesh is an infrastructure concern, not an application concern. Developers should continue writing normal Python HTTP services. The mesh handles security, reliability, and observability transparently.
@@ -497,3 +840,4 @@ response = requests.get("http://user-service:8080/api/users/123")
 ---
 
 *Document prepared for internal distribution to development teams working with Istio/Anthos Service Mesh on GDC.*
+
