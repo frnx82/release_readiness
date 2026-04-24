@@ -563,6 +563,62 @@ RELEASE_CADENCE = os.getenv('RELEASE_CADENCE', 'friday')  # 'friday' or 'custom'
 CUTOFF_DAY = int(os.getenv('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
 CUTOFF_HOUR = int(os.getenv('CUTOFF_HOUR', '17'))  # 17:00
 
+# ── Storage Backend ───────────────────────────────────────────────────────────
+STORAGE_BACKEND = os.getenv('STORAGE_BACKEND', 'auto')   # 'auto', 'configmap', 'file'
+BOARD_DATA_DIR  = os.getenv('BOARD_DATA_DIR', '/data/boards')
+
+_STORAGE_MODE = None  # Set at startup: 'configmap' or 'file'
+
+
+def _detect_storage_mode():
+    """Auto-detect whether ConfigMap create/update permissions are available.
+    Sets _STORAGE_MODE to 'configmap' or 'file'.
+    """
+    global _STORAGE_MODE
+
+    if STORAGE_BACKEND in ('configmap', 'file'):
+        _STORAGE_MODE = STORAGE_BACKEND
+        print(f"[storage] Mode set explicitly: {_STORAGE_MODE}")
+        if _STORAGE_MODE == 'file' or _STORAGE_MODE == 'auto':
+            os.makedirs(BOARD_DATA_DIR, exist_ok=True)
+        return
+
+    # Auto-detect: try creating a probe ConfigMap
+    try:
+        v1 = client.CoreV1Api()
+        probe_name = 'release-readiness-probe'
+        probe = client.V1ConfigMap(
+            metadata=client.V1ObjectMeta(name=probe_name,
+                                         labels={'app': 'release-readiness', 'probe': 'true'}),
+            data={'probe': 'storage-detection'}
+        )
+        _k8s_retry(v1.create_namespaced_config_map, NAMESPACE, probe)
+        # Clean up probe
+        try:
+            _k8s_retry(v1.delete_namespaced_config_map, probe_name, NAMESPACE)
+        except Exception:
+            pass
+        _STORAGE_MODE = 'configmap'
+        print(f"[storage] ✅ ConfigMap permissions verified — using ConfigMap + file backup")
+    except client.exceptions.ApiException as e:
+        if e.status == 403:
+            _STORAGE_MODE = 'file'
+            print(f"[storage] ⚠️  No ConfigMap create/update permissions (403) — using file-only mode")
+        else:
+            _STORAGE_MODE = 'file'
+            print(f"[storage] ⚠️  ConfigMap probe failed (HTTP {e.status}) — using file-only mode")
+    except Exception as e:
+        _STORAGE_MODE = 'file'
+        print(f"[storage] ⚠️  K8s not available ({e}) — using file-only mode")
+
+    # Ensure data directory exists for file mode (and backup in configmap mode)
+    os.makedirs(BOARD_DATA_DIR, exist_ok=True)
+    print(f"[storage] Data directory: {BOARD_DATA_DIR}")
+
+
+# Run storage detection after K8s config is loaded
+_detect_storage_mode()
+
 
 def _get_current_release_date():
     """Calculate the next release Friday (or whatever cadence)."""
@@ -590,44 +646,89 @@ def _board_configmap_name(release_date=None):
     return f"release-board-{release_date}"
 
 
-def _read_board(release_date=None):
-    """Read the release board from its ConfigMap. Returns dict or None."""
+# ── File-based storage helpers ────────────────────────────────────────────────
+def _board_file_path(release_date=None):
+    """Get the file path for a board's JSON file on the PVC."""
+    name = _board_configmap_name(release_date)
+    return os.path.join(BOARD_DATA_DIR, f'{name}.json')
+
+
+def _read_board_file(release_date=None):
+    """Read board data from a JSON file on the PVC."""
+    path = _board_file_path(release_date)
     try:
-        v1 = client.CoreV1Api()
-        cm_name = _board_configmap_name(release_date)
-        cm = _k8s_retry(v1.read_namespaced_config_map, cm_name, NAMESPACE)
-        data = json.loads(cm.data.get('manifest.json', '{}'))
-        return data
-    except client.exceptions.ApiException as e:
-        if e.status == 404:
-            return None
-        raise
-    except Exception:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        print(f"[storage] Error reading {path}: {e}")
         return None
 
 
-def _write_board(board_data, release_date=None):
-    """Write the release board to its ConfigMap. Creates if doesn't exist."""
-    v1 = client.CoreV1Api()
-    cm_name = _board_configmap_name(release_date)
-    body = client.V1ConfigMap(
-        metadata=client.V1ObjectMeta(
-            name=cm_name,
-            labels={
-                'app': 'release-readiness',
-                'release-date': release_date or _get_current_release_date()
-            }
-        ),
-        data={'manifest.json': json.dumps(board_data, indent=2)}
-    )
-    try:
-        _k8s_retry(v1.read_namespaced_config_map, cm_name, NAMESPACE)
-        _k8s_retry(v1.replace_namespaced_config_map, cm_name, NAMESPACE, body)
-    except client.exceptions.ApiException as e:
-        if e.status == 404:
-            _k8s_retry(v1.create_namespaced_config_map, NAMESPACE, body)
-        else:
+def _write_board_file(board_data, release_date=None):
+    """Write board data to a JSON file on the PVC."""
+    path = _board_file_path(release_date)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        json.dump(board_data, f, indent=2)
+
+
+# ── Board read/write (dual-mode) ─────────────────────────────────────────────
+def _read_board(release_date=None):
+    """Read the release board. Uses ConfigMap or file based on detected storage mode."""
+    if _STORAGE_MODE == 'configmap':
+        try:
+            v1 = client.CoreV1Api()
+            cm_name = _board_configmap_name(release_date)
+            cm = _k8s_retry(v1.read_namespaced_config_map, cm_name, NAMESPACE)
+            return json.loads(cm.data.get('manifest.json', '{}'))
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                # ConfigMap not found — check if file backup exists
+                return _read_board_file(release_date)
             raise
+        except Exception:
+            # K8s error — fall back to file
+            return _read_board_file(release_date)
+    else:
+        # File-only mode
+        return _read_board_file(release_date)
+
+
+def _write_board(board_data, release_date=None):
+    """Write the release board. Uses ConfigMap + file backup, or file-only."""
+    # Always write to file (guaranteed to work if PVC/dir is available)
+    try:
+        _write_board_file(board_data, release_date)
+    except Exception as e:
+        print(f"[storage] ⚠️  File write failed: {e}")
+
+    # Also write to ConfigMap if permissions exist
+    if _STORAGE_MODE == 'configmap':
+        try:
+            v1 = client.CoreV1Api()
+            cm_name = _board_configmap_name(release_date)
+            body = client.V1ConfigMap(
+                metadata=client.V1ObjectMeta(
+                    name=cm_name,
+                    labels={
+                        'app': 'release-readiness',
+                        'release-date': release_date or _get_current_release_date()
+                    }
+                ),
+                data={'manifest.json': json.dumps(board_data, indent=2)}
+            )
+            try:
+                _k8s_retry(v1.read_namespaced_config_map, cm_name, NAMESPACE)
+                _k8s_retry(v1.replace_namespaced_config_map, cm_name, NAMESPACE, body)
+            except client.exceptions.ApiException as e:
+                if e.status == 404:
+                    _k8s_retry(v1.create_namespaced_config_map, NAMESPACE, body)
+                else:
+                    raise
+        except Exception as e:
+            print(f"[storage] ⚠️  ConfigMap write failed (file backup exists): {e}")
 
 
 def _new_board():
@@ -639,6 +740,7 @@ def _new_board():
         'status': 'open',
         'services': {},
         'audit_trail': [],
+        'exception_nominations': [],
         'created_at': datetime.datetime.utcnow().isoformat(),
         'finalized_by': None,
         'finalized_at': None
@@ -820,6 +922,7 @@ def get_current_release():
     # Enrich with live metadata
     board['is_past_cutoff'] = datetime.datetime.utcnow().isoformat() > board.get('cutoff', '')
     board['nominated_count'] = len(board.get('services', {}))
+    board['exception_count'] = len(board.get('exception_nominations', []))
     return jsonify(board)
 
 
@@ -841,8 +944,23 @@ def nominate_service():
     if not board:
         board = _new_board()
 
+    # Exception nomination fields
+    is_exception = data.get('is_exception', False)
+    exception_reason = data.get('exception_reason', '').strip()
+    exception_approver = data.get('exception_approver', '').strip()
+
     if board.get('status') == 'locked':
-        return jsonify({'error': 'Release board is locked (past cutoff). Contact Release Manager.'}), 403
+        if not is_exception:
+            return jsonify({
+                'error': 'Release board is locked (past cutoff). Use exception nomination.',
+                'is_locked': True,
+                'cutoff': board.get('cutoff')
+            }), 403
+
+        if not exception_reason or not exception_approver:
+            return jsonify({
+                'error': 'Exception nominations require a reason and approver name.'
+            }), 400
 
     if board.get('status') == 'released':
         return jsonify({'error': 'This release has already been completed.'}), 403
@@ -888,6 +1006,8 @@ def nominate_service():
 
     # Check if re-nomination
     existing = board.get('services', {}).get(service_name)
+    action_type = 're-nominate' if existing else 'nominate'
+
     if existing:
         old_tag = existing.get('image_tag', '')
         existing['image'] = image
@@ -905,16 +1025,25 @@ def nominate_service():
             'reason': notes or 'Version update'
         })
 
+        # Exception metadata on re-nomination
+        if is_exception:
+            existing['is_exception'] = True
+            existing['exception_reason'] = exception_reason
+            existing['exception_approver'] = exception_approver
+            existing['exception_at'] = now
+
         board['audit_trail'].append({
-            'action': 're-nominate',
+            'action': f'exception-{action_type}' if is_exception else action_type,
             'service': service_name,
             'from_version': old_tag,
             'to_version': image_tag,
             'by': nominated_by,
-            'at': now
+            'at': now,
+            **(({'approver': exception_approver, 'reason': exception_reason})
+               if is_exception else {})
         })
     else:
-        board.setdefault('services', {})[service_name] = {
+        svc_record = {
             'name': service_name,
             'kind': kind,
             'is_custom': is_custom,
@@ -929,6 +1058,7 @@ def nominate_service():
             'jira_ids': jira_ids,
             'readiness': None,
             'readiness_details': None,
+            'is_exception': is_exception,
             'version_history': [{
                 'from_tag': None,
                 'to_tag': image_tag,
@@ -938,16 +1068,43 @@ def nominate_service():
             }]
         }
 
+        # Exception metadata on new nomination
+        if is_exception:
+            svc_record['exception_reason'] = exception_reason
+            svc_record['exception_approver'] = exception_approver
+            svc_record['exception_at'] = now
+
+        board.setdefault('services', {})[service_name] = svc_record
+
         board['audit_trail'].append({
-            'action': 'nominate',
+            'action': f'exception-{action_type}' if is_exception else action_type,
             'service': service_name,
             'version': image_tag,
             'by': nominated_by,
-            'at': now
+            'at': now,
+            **(({'approver': exception_approver, 'reason': exception_reason})
+               if is_exception else {})
+        })
+
+    # Track exception nominations separately for reporting
+    if is_exception:
+        board.setdefault('exception_nominations', []).append({
+            'service': service_name,
+            'requested_by': nominated_by,
+            'approver': exception_approver,
+            'reason': exception_reason,
+            'image_tag': image_tag,
+            'at': now,
+            'action': action_type
         })
 
     _write_board(board)
-    return jsonify({'status': 'ok', 'service': service_name, 'image_tag': image_tag})
+    return jsonify({
+        'status': 'ok',
+        'service': service_name,
+        'image_tag': image_tag,
+        'is_exception': is_exception
+    })
 
 
 @app.route('/api/release/rollback', methods=['POST'])
@@ -1080,6 +1237,32 @@ def complete_release():
     _write_board(board)
     return jsonify({'status': 'released'})
 
+
+@app.route('/api/release/exceptions')
+def get_exception_stats():
+    """Get exception nomination stats for the current release board."""
+    board = _read_board()
+    exceptions = board.get('exception_nominations', []) if board else []
+
+    # Group by requester
+    by_requester = {}
+    for exc in exceptions:
+        key = exc.get('requested_by', 'unknown')
+        by_requester.setdefault(key, []).append(exc)
+
+    # Group by approver
+    by_approver = {}
+    for exc in exceptions:
+        key = exc.get('approver', 'unknown')
+        by_approver.setdefault(key, []).append(exc)
+
+    return jsonify({
+        'release_date': board.get('release_date') if board else None,
+        'total_exceptions': len(exceptions),
+        'exceptions': exceptions,
+        'by_requester': {k: len(v) for k, v in by_requester.items()},
+        'by_approver': {k: len(v) for k, v in by_approver.items()}
+    })
 
 # ── Version Drift Detection ──────────────────────────────────────────────────
 @app.route('/api/release/drift')
@@ -1408,11 +1591,19 @@ def generate_release_notes():
 
     # ── Build AI prompt with Jira context ──
     service_list = []
+    exception_services = []
     for svc_name, svc_data in board['services'].items():
         svc_line = (f"- {svc_name}: tag={svc_data.get('image_tag','?')}, "
                     f"helm={svc_data.get('helm_version','N/A')}, "
                     f"readiness={svc_data.get('readiness','?')}, "
                     f"notes=\"{svc_data.get('notes','')}\"")
+
+        # Flag exception nominations
+        if svc_data.get('is_exception'):
+            svc_line += (f", EXCEPTION_NOMINATION=true, "
+                        f"exception_reason=\"{svc_data.get('exception_reason', '')}\", "
+                        f"exception_approver=\"{svc_data.get('exception_approver', '')}\"")
+            exception_services.append(svc_name)
 
         # Append Jira ticket details for this service
         svc_ids = svc_jira_map.get(svc_name, [])
@@ -1421,9 +1612,10 @@ def generate_release_notes():
             for jid in svc_ids:
                 issue = jira_details.get(jid, {})
                 if issue:
-                    desc = (issue.get('description', '') or '')[:300]
+                    desc = (issue.get('description', '') or '')[:1500]
                     svc_line += (f"\n    JIRA {jid}: type={issue.get('type','Task')}, "
                                 f"status={issue.get('status','?')}, "
+                                f"priority={issue.get('priority','Medium')}, "
                                 f"summary=\"{issue.get('summary','')}\", "
                                 f"description=\"{desc}\"")
         service_list.append(svc_line)
@@ -1438,20 +1630,41 @@ descriptions to explain WHAT actually changed in each service. Organize changes 
 - 🔧 Maintenance
 """
 
+    whats_changed_instruction = (
+        'A detailed "What\'s Changed" section organized by change type '
+        '(Features, Bug Fixes, Improvements, Maintenance). For each Jira ticket, '
+        'provide a DETAILED explanation using the full Jira description — not just '
+        'the summary. Include what was changed, why it was changed, and any technical '
+        'details from the ticket description.'
+        if jira_details else
+        'A brief summary of upcoming changes based on service notes'
+    )
+
+    exception_instruction = ""
+    if exception_services:
+        exc_list = ', '.join(exception_services)
+        exception_instruction = (
+            f"\n\nIMPORTANT: The following services were nominated AFTER the cutoff as "
+            f"exception nominations: {exc_list}. Add a '⚠️ Post-Cutoff Changes' section "
+            f"at the end highlighting these exception nominations, who requested them, "
+            f"the reason, and who approved them. Flag these as higher risk.\n"
+        )
+
+    newline = '\n'
     prompt = f"""Generate professional release notes for the operations team.
 
 Release Date: {board.get('release_date', 'Unknown')}
 Status: {board.get('status', 'open')}
 
 Nominated services:
-{chr(10).join(service_list)}
-{jira_instruction}
+{newline.join(service_list)}
+{jira_instruction}{exception_instruction}
 Format the output as markdown with:
 1. An executive summary of the release (2-3 sentences)
-2. A table with columns: Service | Version | Jira Tickets | Change Summary | Risk Level
-3. {'A "What\'s Changed" section organized by change type based on the Jira tickets' if jira_details else 'A brief summary of upcoming changes based on service notes'}
+2. A table with columns: Service | Version | Jira Tickets | Change Summary | Risk Level. The Change Summary column should be 2-3 sentences describing the key changes from the Jira tickets — not just a few words.
+3. {whats_changed_instruction}
 4. An AI Risk Assessment summary at the end
-
+{'5. A ⚠️ Post-Cutoff Exception Nominations section listing each exception, who requested it, who approved it, and the reason.' if exception_services else ''}
 Return ONLY the markdown text, no JSON wrapping.
 """
 

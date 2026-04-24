@@ -1,0 +1,25 @@
+---
+# ──────────────────────────────────────────────────────────────────
+# PersistentVolumeClaim for Release Board Data
+# ──────────────────────────────────────────────────────────────────
+# Stores release board JSON files as a backup (or primary in file-only mode).
+# Data persists across pod restarts and app reinstalls.
+#
+# Apply BEFORE deploying the app:
+#   kubectl apply -f pvc.yaml -n YOUR_NAMESPACE
+# ──────────────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-board-data
+  labels:
+    app: release-readiness
+    component: board-storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Mi
+  # storageClassName: standard    # ← Uncomment and set to your org's storage class

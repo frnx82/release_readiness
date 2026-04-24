@@ -1643,6 +1643,7 @@
                     <div>📅 Release: <strong id="info-release-date">--</strong></div>
                     <div>⏰ Cutoff: <strong id="info-cutoff">--</strong></div>
                     <div>📦 Services: <strong id="info-svc-count">0</strong></div>
+                    <div id="info-exceptions-row" style="display:none">⚠️ Exceptions: <strong id="info-exception-count" style="color:#f59e0b">0</strong></div>
                     <div>🏷️ Namespace: <strong id="info-namespace">--</strong></div>
                 </div>
             </div>
@@ -1651,6 +1652,33 @@
                 <div class="section-title">📜 Recent Activity</div>
                 <div id="sidebar-audit" style="max-height:250px;overflow-y:auto"></div>
             </div>
+        </div>
+    </div>
+
+    <!-- Exception Nomination Modal -->
+    <div class="deploy-modal-overlay" id="exception-modal" onclick="if(event.target===this)closeExceptionModal()">
+        <div class="deploy-modal" style="width:460px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                <h3 style="margin:0;font-size:16px">⚠️ Exception Nomination</h3>
+                <button class="btn btn-sm" onclick="closeExceptionModal()">✕ Close</button>
+            </div>
+            <div style="padding:12px 14px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:8px;margin-bottom:16px">
+                <div style="font-size:13px;color:#f59e0b;font-weight:600">🔒 Board is locked (past cutoff)</div>
+                <div style="font-size:12px;color:var(--text2);margin-top:4px">This will be recorded as a post-cutoff exception nomination. A reason and approver are required.</div>
+            </div>
+            <div style="font-size:13px;margin-bottom:12px">
+                <div>Service: <strong id="exc-service-name">—</strong></div>
+                <div>Version: <strong id="exc-service-version">—</strong></div>
+            </div>
+            <div style="margin-bottom:10px">
+                <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:3px">Reason for Exception <span style="color:#ef4444">*</span></label>
+                <textarea id="exc-reason" placeholder="Why is this needed after cutoff? e.g. Critical hotfix for login timeout" style="width:100%;min-height:60px;padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;resize:vertical"></textarea>
+            </div>
+            <div style="margin-bottom:16px">
+                <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:3px">Approved By <span style="color:#ef4444">*</span></label>
+                <input type="text" id="exc-approver" placeholder="e.g. manager@company.com or manager name" style="width:100%;padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+            </div>
+            <button class="btn btn-primary" onclick="submitExceptionNomination()" style="width:100%;background:#f59e0b;border-color:#f59e0b">⚠️ Submit Exception Nomination</button>
         </div>
     </div>
 
@@ -1825,6 +1853,7 @@
                     ${s.helm_version ? `<span>⎈ ${s.helm_version}</span>` : ''}
                 </div>
                 ${s.jira_ids ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">${s.jira_ids.split(',').map(j => j.trim()).filter(j => j).map(j => `<span style="font-size:10px;padding:1px 6px;background:rgba(99,102,241,.1);color:var(--accent);border:1px solid rgba(99,102,241,.2);border-radius:4px;font-family:monospace">🎫 ${j}</span>`).join('')}</div>` : ''}
+                ${s.is_exception ? `<div style="margin-top:6px;padding:6px 10px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:6px;font-size:11px"><span style="color:#f59e0b;font-weight:600">⚠️ EXCEPTION</span><div style="color:var(--text2);margin-top:2px">Approved by: ${s.exception_approver || '?'}<br>Reason: ${s.exception_reason || '?'}</div></div>` : ''}
                 ${s.notes ? `<div style="margin-top:8px;font-size:12px;color:var(--text2);font-style:italic">"${s.notes}"</div>` : ''}
                 <div class="card-actions">
                     <button class="btn btn-sm" onclick="viewServiceDetail('${k}')">👁 Details</button>
@@ -1860,6 +1889,13 @@
             document.getElementById('info-cutoff').textContent = (_board.cutoff || '').replace('T', ' ');
             document.getElementById('info-svc-count').textContent = Object.keys(_board.services || {}).length;
             document.getElementById('info-namespace').textContent = _namespace;
+            // Exception count
+            const excCount = _board.exception_count || 0;
+            const excRow = document.getElementById('info-exceptions-row');
+            if (excRow) {
+                excRow.style.display = excCount > 0 ? '' : 'none';
+                document.getElementById('info-exception-count').textContent = excCount;
+            }
             // Recent audit
             const trail = (_board.audit_trail || []).slice(-5).reverse();
             document.getElementById('sidebar-audit').innerHTML = trail.length ? trail.map(a =>
@@ -1916,6 +1952,8 @@
         }
 
         // ═══ Actions ═════════════════════════════════════════════════════════════════
+        let _pendingExceptionBody = null;  // stashed nomination body for exception flow
+
         async function nominateService() {
             let name, body;
             if (_nomType === 'custom') {
@@ -1937,8 +1975,49 @@
             try {
                 const r = await fetch('/api/release/nominate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
                 const d = await r.json();
-                if (r.ok) { showToast(`Nominated ${name} (${d.image_tag})`); document.getElementById('nom-notes').value = ''; document.getElementById('nom-jira-ids').value = ''; if (_nomType === 'custom') document.getElementById('nom-custom-version').value = ''; refreshAll(); }
-                else showToast(d.error || 'Failed', 'error');
+                if (r.ok) {
+                    const excLabel = d.is_exception ? ' (EXCEPTION)' : '';
+                    showToast(`Nominated ${name} (${d.image_tag})${excLabel}`); document.getElementById('nom-notes').value = ''; document.getElementById('nom-jira-ids').value = ''; if (_nomType === 'custom') document.getElementById('nom-custom-version').value = ''; refreshAll();
+                } else if (r.status === 403 && d.is_locked) {
+                    // Board is locked — offer exception nomination
+                    _pendingExceptionBody = body;
+                    document.getElementById('exc-service-name').textContent = body.service_name;
+                    document.getElementById('exc-service-version').textContent = body.manual_version || '(from cluster)';
+                    document.getElementById('exc-reason').value = '';
+                    document.getElementById('exc-approver').value = '';
+                    document.getElementById('exception-modal').classList.add('open');
+                } else {
+                    showToast(d.error || 'Failed', 'error');
+                }
+            } catch (e) { showToast('Network error', 'error'); }
+        }
+
+        function closeExceptionModal() {
+            document.getElementById('exception-modal').classList.remove('open');
+            _pendingExceptionBody = null;
+        }
+
+        async function submitExceptionNomination() {
+            if (!_pendingExceptionBody) return;
+            const reason = document.getElementById('exc-reason').value.trim();
+            const approver = document.getElementById('exc-approver').value.trim();
+            if (!reason) { showToast('Please provide a reason', 'error'); return; }
+            if (!approver) { showToast('Please provide an approver name', 'error'); return; }
+
+            const body = { ..._pendingExceptionBody, is_exception: true, exception_reason: reason, exception_approver: approver };
+            try {
+                const r = await fetch('/api/release/nominate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                const d = await r.json();
+                if (r.ok) {
+                    showToast(`⚠️ Exception nomination: ${body.service_name} (${d.image_tag})`);
+                    closeExceptionModal();
+                    document.getElementById('nom-notes').value = '';
+                    document.getElementById('nom-jira-ids').value = '';
+                    if (_nomType === 'custom') document.getElementById('nom-custom-version').value = '';
+                    refreshAll();
+                } else {
+                    showToast(d.error || 'Exception nomination failed', 'error');
+                }
             } catch (e) { showToast('Network error', 'error'); }
         }
 
@@ -2156,10 +2235,11 @@
             const container = document.getElementById('audit-list');
             if (!trail.length) { container.innerHTML = '<div class="empty-state"><p>No actions recorded yet</p></div>'; return; }
             container.innerHTML = trail.map(a => {
-                const icon = a.action === 'nominate' ? '➕' : a.action === 're-nominate' ? '🔄' : a.action === 'remove' ? '❌' : a.action === 'finalize' ? '🔒' : a.action === 'release' ? '🚀' : a.action === 'deploy_triggered' ? '🚢' : '📋';
-                return `<div class="audit-item" style="border-left-color:var(--accent)">
+                const icon = a.action === 'nominate' ? '➕' : a.action === 're-nominate' ? '🔄' : a.action === 'remove' ? '❌' : a.action === 'finalize' ? '🔒' : a.action === 'release' ? '🚀' : a.action === 'deploy_triggered' ? '🚢' : a.action.startsWith('exception') ? '⚠️' : '📋';
+                const excInfo = a.approver ? `<br><span style="font-size:10px;color:#f59e0b">Approved by: ${a.approver} — ${a.reason || ''}</span>` : '';
+                return `<div class="audit-item" style="border-left-color:${a.action.startsWith('exception') ? '#f59e0b' : 'var(--accent)'}">
             <strong>${icon} ${a.action}</strong> ${a.service ? `<code>${a.service}</code>` : ''} ${a.version ? `→ ${a.version}` : ''} ${a.from_version ? `${a.from_version} → ${a.to_version}` : ''}
-            <br>by <strong>${a.by || '?'}</strong> at ${(a.at || '').replace('T', ' ').substring(0, 19)}
+            <br>by <strong>${a.by || '?'}</strong> at ${(a.at || '').replace('T', ' ').substring(0, 19)}${excInfo}
         </div>`;
             }).join('');
         }

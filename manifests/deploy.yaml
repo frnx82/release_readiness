@@ -29,11 +29,15 @@
 #
 #    kubectl create secret generic release-readiness-jira \
 #      --from-literal=mcp-url=https://jira-mcp.example.com \
-#      --from-literal=service-account=jira-svc-account \
+#      --from-literal=jira-email=your-email@company.com \
 #      --from-literal=pat-token=your_jira_pat_token \
 #      -n YOUR_NAMESPACE
 #
-# 5. Apply:
+# 5. (Optional) Create PVC for board data persistence:
+#
+#    kubectl apply -f pvc.yaml -n YOUR_NAMESPACE
+#
+# 6. Apply:
 #
 #    kubectl apply -f deploy.yaml -n YOUR_NAMESPACE
 #
@@ -154,6 +158,17 @@ spec:
         #   value: "mobile-app:Mobile App:iOS/Android mobile application,config-rules:Config:Business rules engine"
 
         # ════════════════════════════════════════════════════════════
+        # Storage Backend
+        # ════════════════════════════════════════════════════════════
+        # 'auto' = detect ConfigMap permissions at startup
+        # 'configmap' = force ConfigMap + file backup
+        # 'file' = force file-only (no ConfigMap writes)
+        - name: STORAGE_BACKEND
+          value: "auto"
+        - name: BOARD_DATA_DIR
+          value: "/data/boards"
+
+        # ════════════════════════════════════════════════════════════
         # Jira MCP Server (optional — enables Jira-enriched release notes)
         # ════════════════════════════════════════════════════════════
         - name: JIRA_MCP_URL
@@ -162,11 +177,11 @@ spec:
               name: release-readiness-jira
               key: mcp-url
               optional: true
-        - name: JIRA_SERVICE_ACCOUNT
+        - name: JIRA_EMAIL
           valueFrom:
             secretKeyRef:
               name: release-readiness-jira
-              key: service-account
+              key: jira-email
               optional: true
         - name: JIRA_PAT_TOKEN
           valueFrom:
@@ -199,6 +214,15 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 3
 
+        volumeMounts:
+        - name: board-data
+          mountPath: /data/boards
+
+      volumes:
+      - name: board-data
+        persistentVolumeClaim:
+          claimName: release-board-data
+
 ---
 apiVersion: v1
 kind: Service
@@ -222,7 +246,7 @@ spec:
 # ──────────────────────────────────────────────────────────────────
 # The app needs:
 #   - Read Deployments/StatefulSets/Pods/Events (for Board, UAT Env, AI Readiness)
-#   - Read/Write ConfigMaps (for board state persistence)
+#   - Read/Write ConfigMaps (for board state persistence — optional with file fallback)
 # ──────────────────────────────────────────────────────────────────
 
 apiVersion: v1
