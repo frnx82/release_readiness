@@ -1020,7 +1020,323 @@ From the side panel, you can also click:
 
 ---
 
-## 14. Summary
+## 14. Security Architecture — The 4 Core Principles
+
+> [!IMPORTANT]
+> These 4 principles were agreed upon by the development leads as the foundation for all service mesh security, mTLS, and authorization policies in our GDC environment.
+
+### The Problem Statement
+
+Our Google Distributed Cloud is a **multi-tenant** platform. Multiple teams share the same cluster. Without explicit security policies:
+- Other tenants could route traffic to our services
+- Service-to-service communication is plain HTTP (unencrypted, unrestricted)
+- There is no enforcement of who or what can call our services
+
+### The 4 Principles
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    4 SECURITY PRINCIPLES                                    │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  PRINCIPLE 1: Tenant Isolation                                      │    │
+│  │  GDC is open to other tenants → We need control.                    │    │
+│  │  Other tenants CANNOT set up routes to our services.                │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  PRINCIPLE 2: System-to-System → mTLS                               │    │
+│  │  All machine-to-machine communication must use mutual TLS.          │    │
+│  │  Both sides prove identity via SPIFFE certificates.                 │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  PRINCIPLE 3: User-to-System → CIDP (Cloud Identity)                │    │
+│  │  Human users authenticate via OIDC / Cloud Identity Provider.       │    │
+│  │  auth-type: oidc label enforces this at the mesh level.             │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  PRINCIPLE 4: Service-to-Service → HTTPS, Restricted                │    │
+│  │  Current: HTTP, unrestricted (any service can call any service)     │    │
+│  │  Target:  HTTPS (mTLS), restricted (explicit allow-lists only)      │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Current State vs Target State
+
+| Dimension | Current State ❌ | Target State ✅ |
+|-----------|-----------------|----------------|
+| **Tenant Isolation** | Other tenants can potentially route to our services | `AuthorizationPolicy` denies traffic from outside our namespace |
+| **System-to-System** | mTLS may be PERMISSIVE (allows plaintext) | `PeerAuthentication` set to STRICT — mTLS enforced |
+| **User-to-System** | CIDP enabled, `auth-type: oidc` label set | `RequestAuthentication` validates JWT tokens from CIDP |
+| **Service-to-Service** | HTTP, unrestricted — any service can call any other | HTTPS (via mTLS) + `AuthorizationPolicy` allow-lists per service |
+
+---
+
+### Principle 1: Tenant Isolation — Block Cross-Namespace Traffic
+
+Other tenants on GDC should **never** be able to route traffic into our namespace. This is enforced with a **deny-all default policy** for our namespace:
+
+```yaml
+# deny-all-default.yaml
+# Block ALL traffic into our namespace by default.
+# Only explicitly allowed sources (from our own namespace) can communicate.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all-default
+  namespace: uat    # your application namespace
+spec:
+  # Empty spec with no rules = DENY everything
+  {}
+```
+
+Then, **explicitly allow** only traffic from within our own namespace:
+
+```yaml
+# allow-same-namespace.yaml
+# Allow traffic ONLY from services within our own namespace.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-same-namespace
+  namespace: uat
+spec:
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces: ["uat"]   # Only our namespace
+```
+
+> [!WARNING]
+> The `deny-all-default` policy must be applied **first**. Without it, the mesh defaults to allowing all traffic. Once applied, only explicitly allowed sources can reach your services.
+
+**What this achieves:**
+- ✅ Other tenant namespaces → **BLOCKED**
+- ✅ Unknown external sources → **BLOCKED**
+- ✅ Our own services (uat namespace) → **ALLOWED**
+
+---
+
+### Principle 2: System-to-System → mTLS (STRICT)
+
+All machine-to-machine communication must be encrypted with mutual TLS. Both the calling service and the destination service prove their identity via SPIFFE certificates automatically managed by Istio.
+
+```yaml
+# peer-authentication-strict.yaml
+# Enforce STRICT mTLS — reject any plain-text (HTTP) traffic.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: uat
+spec:
+  mtls:
+    mode: STRICT
+```
+
+**What this achieves:**
+- ✅ All traffic between pods is encrypted (TLS 1.3)
+- ✅ Both sides present SPIFFE identity certificates
+- ✅ Plaintext HTTP connections are **rejected**
+- ✅ Certificate rotation is automatic (Istio CA handles it)
+
+> [!NOTE]
+> If you're migrating from PERMISSIVE mode, roll this out gradually. Set PERMISSIVE first, monitor for any plaintext traffic in Kiali, then switch to STRICT once all services are mesh-enabled.
+
+---
+
+### Principle 3: User-to-System → CIDP (OIDC Authentication)
+
+Human users must authenticate through the Cloud Identity Provider (CIDP). This is already enabled with the `auth-type: oidc` label on your services. The mesh can additionally validate JWT tokens:
+
+```yaml
+# request-authentication-oidc.yaml
+# Validate JWT tokens from your CIDP provider for user-facing services.
+apiVersion: security.istio.io/v1
+kind: RequestAuthentication
+metadata:
+  name: cidp-jwt-auth
+  namespace: uat
+spec:
+  selector:
+    matchLabels:
+      auth-type: oidc    # Only applies to services with this label
+  jwtRules:
+    - issuer: "https://your-cidp-provider.example.com"
+      jwksUri: "https://your-cidp-provider.example.com/.well-known/jwks.json"
+      # forwardOriginalToken: true  # Uncomment if your app needs the raw token
+```
+
+Combined with an `AuthorizationPolicy` to require valid tokens:
+
+```yaml
+# require-jwt-for-user-facing.yaml
+# Require a valid JWT for user-facing endpoints.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: require-jwt
+  namespace: uat
+spec:
+  selector:
+    matchLabels:
+      auth-type: oidc
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            requestPrincipals: ["*"]   # Must have a valid JWT
+```
+
+**What this achieves:**
+- ✅ User-facing services require OIDC tokens
+- ✅ Tokens are validated at the mesh level (before reaching your app)
+- ✅ Internal service-to-service calls are handled by mTLS (Principle 2), not JWT
+- ✅ `auth-type: oidc` label selectively applies this only where needed
+
+---
+
+### Principle 4: Service-to-Service → HTTPS, Restricted
+
+This is the **biggest change**. Currently, any service in the namespace can call any other service over plain HTTP. The target is:
+- **HTTPS** (achieved via mTLS from Principle 2)
+- **Restricted** (explicit allow-lists: service A can only call services B and C, not D or E)
+
+Example: Define which services can call which:
+
+```yaml
+# allow-billing-to-payment.yaml
+# billing-service is allowed to call payment-gateway
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-billing-to-payment
+  namespace: uat
+spec:
+  selector:
+    matchLabels:
+      app: payment-gateway         # This policy protects payment-gateway
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/uat/sa/billing-service"   # Only billing can call it
+      to:
+        - operation:
+            methods: ["GET", "POST"]
+            paths: ["/api/payments/*"]     # Only specific paths
+```
+
+```yaml
+# allow-gateway-to-all.yaml
+# API gateway is allowed to call any internal service
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-gateway-to-services
+  namespace: uat
+spec:
+  selector:
+    matchLabels:
+      app: gateway-api
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/uat/sa/gateway-api"
+```
+
+**What this achieves:**
+- ✅ HTTP → HTTPS (mTLS encrypts all traffic)
+- ✅ Unrestricted → Restricted (explicit allow-lists per service)
+- ✅ Blast radius is contained — a compromised service can only call what it's explicitly allowed to
+- ✅ All other traffic is denied (from Principle 1's deny-all default)
+
+---
+
+### Service Communication Matrix
+
+Define your allow-list as a matrix — this becomes your source of truth:
+
+| Caller (Source) | Can Call (Destination) | Allowed Methods | Allowed Paths |
+|-----------------|----------------------|----------------|---------------|
+| `gateway-api` | All internal services | GET, POST, PUT, DELETE | `/*` |
+| `billing-service` | `payment-gateway` | POST | `/api/payments/*` |
+| `billing-service` | `notification-svc` | POST | `/api/notify/*` |
+| `order-service` | `billing-service` | POST | `/api/invoices/*` |
+| `order-service` | `inventory-service` | GET, POST | `/api/stock/*` |
+| `auth-service` | `user-service` | GET | `/api/users/*` |
+| `report-engine` | `billing-service`, `order-service` | GET | `/api/reports/*` |
+
+> [!TIP]
+> Start by mapping your **actual** call patterns in Kiali (Section 13). The traffic graph shows you exactly which services call which — use that to build your initial allow-list matrix.
+
+---
+
+### Implementation Roadmap
+
+| Phase | What | Risk | Timeline |
+|-------|------|------|----------|
+| **Phase 1** | Apply `deny-all-default` + `allow-same-namespace` (Principle 1) | Low — same namespace traffic still allowed | Week 1 |
+| **Phase 2** | Switch `PeerAuthentication` to STRICT (Principle 2) | Medium — any non-mesh services will break | Week 2 |
+| **Phase 3** | Add `RequestAuthentication` for CIDP services (Principle 3) | Low — only user-facing services affected | Week 3 |
+| **Phase 4** | Per-service `AuthorizationPolicy` allow-lists (Principle 4) | High — must map all call patterns first | Week 4-6 |
+
+> [!CAUTION]
+> **Phase 4 is high risk.** If you miss a legitimate call pattern in your allow-list, that call will be blocked in production. Use Kiali traffic graphs and Envoy access logs to map all patterns **before** applying restrictive policies. Start in **dry-run / audit mode** if your Istio version supports it.
+
+---
+
+### Verification Checklist
+
+After implementing each principle, verify with these checks:
+
+**Principle 1 — Tenant Isolation:**
+```bash
+# From a pod in ANOTHER namespace, try calling your service — should FAIL
+kubectl exec -n other-tenant deploy/test-pod -- curl -s http://billing-service.uat.svc:8080/api/ping
+# Expected: RBAC: access denied (or connection refused)
+```
+
+**Principle 2 — mTLS STRICT:**
+```bash
+# Check that mTLS is enforced
+kubectl exec -n uat deploy/billing-service -c istio-proxy -- \
+  curl -s localhost:15000/stats | grep ssl.handshake
+# Expected: ssl.handshake > 0 (mTLS connections happening)
+```
+
+**Principle 3 — CIDP Validation:**
+```bash
+# Call a user-facing service WITHOUT a token — should FAIL
+kubectl exec -n uat deploy/test-pod -c istio-proxy -- \
+  curl -s -o /dev/null -w "%{http_code}" http://gateway-api:8080/api/user/me
+# Expected: 403 or 401
+```
+
+**Principle 4 — Restricted Service Calls:**
+```bash
+# Call payment-gateway from billing-service — should SUCCEED
+kubectl exec -n uat deploy/billing-service -- curl -s http://payment-gateway:8080/api/payments/status
+# Expected: 200 OK
+
+# Call payment-gateway from report-engine — should FAIL (not in allow-list)
+kubectl exec -n uat deploy/report-engine -- curl -s http://payment-gateway:8080/api/payments/status
+# Expected: RBAC: access denied
+```
+
+---
+
+## 15. Summary
 
 > [!IMPORTANT]
 > **The #1 takeaway for your development team:** The service mesh is an infrastructure concern, not an application concern. Developers should continue writing normal Python HTTP services. The mesh handles security, reliability, and observability transparently.
@@ -1032,6 +1348,12 @@ From the side panel, you can also click:
 - ✅ Traffic control (canary, A/B, blue/green)
 - ✅ Resilience patterns (retries, timeouts, circuit breaking)
 - ✅ Access control policies (who can call what)
+
+### The 4 Security Principles (Team Agreement):
+- 🔒 **Tenant Isolation** — deny-all default, allow only our namespace
+- 🔐 **System-to-System** — mTLS STRICT, no plaintext
+- 🪪 **User-to-System** — CIDP/OIDC JWT validation at the mesh
+- 🚫 **Service-to-Service** — HTTPS + explicit allow-lists (no unrestricted calls)
 
 ### The One Optional Enhancement:
 - ⚡ Propagate trace headers for end-to-end distributed tracing
