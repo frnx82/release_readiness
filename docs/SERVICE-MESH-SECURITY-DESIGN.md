@@ -217,17 +217,19 @@ Let's break each one down in simple terms:
 | How you debug | ⚠️ Slightly | New error types: `RBAC: access denied` means your service isn't in the allow-list |
 | Adding new dependencies | ⚠️ Yes | If your service needs to call a new service, the allow-list must be updated |
 
-### New Error You Might See
+### New Errors You Might See
 
-If Principle 4 (restricted calls) is active and your service tries to call something not in its allow-list:
+After each phase rolls out, there are specific errors your services might encounter. Here's what they look like and what they mean:
 
-```
-# Your service's response:
-HTTP 403 Forbidden
-Body: "RBAC: access denied"
-```
+| Error | When You'll See It | What It Means | What To Do |
+|---|---|---|---|
+| `HTTP 403 — RBAC: access denied` | Phase 1 or Phase 4 | Your service (or an external caller) isn't in the allow-list | Ask platform team to update the `AuthorizationPolicy` |
+| `HTTP 401 — Jwt issuer is not configured` | Phase 3 | The JWT token's issuer doesn't match the `RequestAuthentication` config | Verify your CIDP provider URL matches the `issuer` field in the policy |
+| `HTTP 403` on user-facing API (with valid token) | Phase 3 | Token is valid but the `requestPrincipals` policy isn't matching | Check that `jwtRules` issuer + audience match the token claims |
+| `HTTP 503 — upstream connect error` | Phase 2 | A service without a sidecar can't connect after STRICT mTLS | Ensure the calling pod has `istio-proxy` sidecar (should show `2/2` READY) |
+| `ssl.connection_error` in Envoy logs | Phase 2 | Certificate mismatch between services | Restart the pod to get fresh certificates |
 
-**What to do:** Ask the platform team to update the `AuthorizationPolicy` to allow your service to call the destination.
+> **Simple rule:** If a call that used to work suddenly returns `403`, check which phase was just deployed. The error is almost always a missing policy entry — not a code bug.
 
 ---
 
@@ -289,6 +291,154 @@ We're rolling this out in **4 phases** over 6 weeks. Each phase adds one securit
 
 ---
 
+## Part 5.1: How to Verify Each Phase is Working
+
+After each phase is rolled out, here's how you (or the platform team) can verify it's working correctly. These are simple `kubectl` commands you can run from your namespace.
+
+### Quick Policy Health Check
+
+Run this **one command** to see if all 4 principles have their policies in place:
+
+```bash
+echo "=== Principle 1: Tenant Isolation ==="
+kubectl get authorizationpolicy deny-all-default -n uat 2>/dev/null \
+  && echo "✅ deny-all-default exists" || echo "❌ MISSING"
+kubectl get authorizationpolicy allow-same-namespace -n uat 2>/dev/null \
+  && echo "✅ allow-same-namespace exists" || echo "❌ MISSING"
+
+echo "=== Principle 2: mTLS ==="
+kubectl get peerauthentication default -n uat \
+  -o jsonpath='{.spec.mtls.mode}' 2>/dev/null && echo " ← mode" || echo "❌ MISSING"
+
+echo "=== Principle 3: CIDP ==="
+kubectl get requestauthentication -n uat 2>/dev/null | grep -v NAME || echo "❌ MISSING"
+
+echo "=== Principle 4: Per-Service Rules ==="
+kubectl get authorizationpolicy -n uat 2>/dev/null \
+  | grep -v "deny-all\|allow-same" | grep -v NAME || echo "⚠️  Not yet (Phase 4)"
+```
+
+**How to read the output:**
+- ✅ = Policy exists and is active
+- ❌ = Policy is missing — that phase hasn't been applied yet
+- ⚠️ = Expected if that phase isn't deployed yet
+
+---
+
+### Phase 1 Verification: Tenant Isolation
+
+**Test: Can services WITHIN our namespace still talk?**
+```bash
+# This should SUCCEED (same namespace)
+kubectl exec -n uat deploy/order-service -c order-service -- \
+  curl -s -o /dev/null -w "HTTP %{http_code}\n" http://billing-service:8080/api/ping
+# ✅ Expected: HTTP 200
+```
+
+**Test: Are services from OTHER namespaces blocked?**
+```bash
+# Ask someone from another team to run this (should FAIL)
+kubectl exec -n other-team deploy/any-pod -- \
+  curl -s -o /dev/null -w "HTTP %{http_code}\n" http://billing-service.uat.svc:8080/api/ping
+# ✅ Expected: HTTP 403 (RBAC: access denied)
+```
+
+**Can't test cross-namespace?** Check your Envoy logs instead:
+```bash
+kubectl logs deploy/billing-service -n uat -c istio-proxy --tail=50 | grep -i "rbac"
+# Any "RBAC: access denied" from non-uat sources = ✅ isolation is working
+```
+
+---
+
+### Phase 2 Verification: mTLS STRICT
+
+**Test: Are all pods showing 2/2 containers? (prerequisite)**
+```bash
+kubectl get pods -n uat
+# ✅ Every pod should show 2/2 in the READY column
+# ❌ If any pod shows 1/1, it's missing its sidecar and will be blocked
+```
+
+**Test: Is mTLS actually encrypting traffic?**
+```bash
+# Check for successful TLS handshakes
+kubectl exec -n uat deploy/billing-service -c istio-proxy -- \
+  curl -s localhost:15000/stats | grep ssl.handshake
+# ✅ Expected: ssl.handshake > 0 (mTLS is working)
+# ❌ If ssl.handshake = 0, mTLS is not negotiating
+```
+
+**Test: Is the SPIFFE identity certificate present?**
+```bash
+kubectl exec -n uat deploy/billing-service -c istio-proxy -- \
+  curl -s localhost:15000/certs | grep -o 'spiffe://[^"]*' | head -1
+# ✅ Expected: spiffe://cluster.local/ns/uat/sa/billing-service
+```
+
+---
+
+### Phase 3 Verification: CIDP / OIDC
+
+**Test: Does a user-facing service reject calls WITHOUT a token?**
+```bash
+# Call a service with auth-type: oidc label — no token
+kubectl exec -n uat deploy/order-service -c order-service -- \
+  curl -s -o /dev/null -w "HTTP %{http_code}\n" http://gateway-api:8080/api/user/me
+# ✅ Expected: HTTP 401 or 403 (no valid token = rejected)
+```
+
+**Test: Do internal service-to-service calls still work WITHOUT a token?**
+```bash
+# Internal calls use mTLS, NOT JWT — should work without any token
+kubectl exec -n uat deploy/order-service -c order-service -- \
+  curl -s -o /dev/null -w "HTTP %{http_code}\n" http://billing-service:8080/api/invoices
+# ✅ Expected: HTTP 200 (mTLS handles auth for internal calls)
+```
+
+> This is a critical distinction: **user → system = needs OIDC token**, but **service → service = mTLS handles it automatically**.
+
+---
+
+### Phase 4 Verification: Service Allow-Lists
+
+**Test: Does an ALLOWED call succeed?**
+```bash
+# billing IS in payment-gateway's allow-list
+kubectl exec -n uat deploy/billing-service -c billing-service -- \
+  curl -s -o /dev/null -w "HTTP %{http_code}\n" http://payment-gateway:8080/api/payments/status
+# ✅ Expected: HTTP 200
+```
+
+**Test: Does a BLOCKED call get denied?**
+```bash
+# report-engine is NOT in payment-gateway's allow-list
+kubectl exec -n uat deploy/report-engine -c report-engine -- \
+  curl -s -o /dev/null -w "HTTP %{http_code}\n" http://payment-gateway:8080/api/payments/status
+# ✅ Expected: HTTP 403 (RBAC: access denied)
+```
+
+**Debugging: Why was my call blocked?**
+```bash
+# Check the DESTINATION service's proxy logs
+kubectl logs deploy/payment-gateway -n uat -c istio-proxy --tail=20 | grep "rbac"
+# Look for the policy name that blocked the call
+```
+
+---
+
+### Common Troubleshooting (Quick Reference)
+
+| Problem | Which Principle | What Happened | How to Fix |
+|---|---|---|---|
+| `403 RBAC: access denied` from another namespace | P1 Tenant Isolation | ✅ Working correctly — external traffic blocked | No action needed |
+| `403 RBAC: access denied` from same namespace | P4 Allow-Lists | Caller isn't in the destination's allow-list | Add caller to `AuthorizationPolicy` |
+| `401 Jwt issuer not configured` | P3 CIDP | Token issuer URL doesn't match policy | Fix `issuer` in `RequestAuthentication` |
+| `503 upstream connect error` after STRICT | P2 mTLS | Calling pod has no sidecar | Ensure pod shows `2/2` READY |
+| Service works in PERMISSIVE but fails in STRICT | P2 mTLS | A caller doesn't have Envoy sidecar | Add sidecar or keep PERMISSIVE temporarily |
+| Call worked yesterday, fails today | P4 Allow-Lists | A new policy was applied | Check `kubectl get authorizationpolicy -n uat` |
+| Everything broken after `deny-all-default` | P1 Tenant Isolation | `allow-same-namespace` wasn't applied | Apply the allow-same-namespace policy ASAP |
+
 ## Part 6: Summary — What to Remember
 
 ### For the Design Session
@@ -317,6 +467,8 @@ We're rolling this out in **4 phases** over 6 weeks. Each phase adds one securit
 | "What if we miss a call pattern in Phase 4?" | We run in audit mode first (1 week). Missed patterns show in logs as warnings before they block. |
 | "Does this affect performance?" | Minimal. mTLS adds ~1ms latency. The mesh is designed for this scale. |
 | "Can we roll back if something breaks?" | Yes. Each phase can be individually reverted by removing the Istio policy. |
+| "How do we verify it's working?" | Run the Quick Policy Health Check (see Part 5.1). Each phase has specific tests. |
+| "What errors should we watch for?" | `403 RBAC` (Principles 1 & 4), `401 JWT` (Principle 3), `503 upstream` (Principle 2). See the error table in Part 4. |
 
 ---
 

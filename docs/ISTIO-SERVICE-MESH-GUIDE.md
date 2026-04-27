@@ -678,15 +678,34 @@ kubectl exec deploy/order-service -n uat -c istio-proxy -- \
 You can view the mesh policies applied to your namespace:
 
 ```bash
-# mTLS enforcement policy
+# mTLS enforcement policy (Principle 2)
 kubectl get peerauthentication -n uat -o yaml
 
-# Authorization policies (who can call what)
+# Authorization policies — tenant isolation + per-service allow-lists (Principles 1 & 4)
 kubectl get authorizationpolicy -n uat -o yaml
+
+# JWT / OIDC token validation (Principle 3)
+kubectl get requestauthentication -n uat -o yaml 2>/dev/null || echo "None"
 
 # Traffic routing rules
 kubectl get virtualservice -n uat 2>/dev/null || echo "None"
 kubectl get destinationrule -n uat 2>/dev/null || echo "None"
+```
+
+**Checklist — verify all 4 principles have policies:**
+```bash
+echo "=== Principle 1: Tenant Isolation ==="
+kubectl get authorizationpolicy deny-all-default -n uat 2>/dev/null && echo "✅ deny-all-default exists" || echo "❌ MISSING: deny-all-default"
+kubectl get authorizationpolicy allow-same-namespace -n uat 2>/dev/null && echo "✅ allow-same-namespace exists" || echo "❌ MISSING: allow-same-namespace"
+
+echo "=== Principle 2: mTLS STRICT ==="
+kubectl get peerauthentication default -n uat -o jsonpath='{.spec.mtls.mode}' 2>/dev/null && echo " ← mode" || echo "❌ MISSING: PeerAuthentication"
+
+echo "=== Principle 3: CIDP/OIDC ==="
+kubectl get requestauthentication -n uat 2>/dev/null | grep -v NAME || echo "❌ MISSING: RequestAuthentication"
+
+echo "=== Principle 4: Per-Service Allow-Lists ==="
+kubectl get authorizationpolicy -n uat 2>/dev/null | grep -v "deny-all\|allow-same" | grep -v NAME || echo "⚠️  No per-service policies yet (Phase 4)"
 ```
 
 ---
@@ -751,11 +770,114 @@ If the test pod also shows `server: envoy`, it means:
 
 ---
 
+### Step 7.1: Principle 1 — Cross-Namespace Isolation Test
+
+> [!IMPORTANT]
+> This test verifies that the `deny-all-default` + `allow-same-namespace` policies are working. You'll need someone from another team's namespace to help, OR you can ask a platform admin to run the cross-namespace test.
+
+**Test A — Same namespace call (should SUCCEED):**
+```bash
+# From within your namespace — should work
+kubectl exec -n uat deploy/order-service -c order-service -- \
+  curl -s -o /dev/null -w "HTTP %{http_code}\n" http://billing-service:8080/api/ping
+# ✅ Expected: HTTP 200
+```
+
+**Test B — Cross-namespace call (should FAIL):**
+```bash
+# Ask a teammate or platform admin to run this from ANOTHER namespace:
+kubectl exec -n other-team deploy/any-pod -- \
+  curl -s -o /dev/null -w "HTTP %{http_code}\n" http://billing-service.uat.svc:8080/api/ping
+# ✅ Expected: HTTP 403 (RBAC: access denied)
+```
+
+**If you can't access another namespace,** check the Envoy logs for denied requests:
+```bash
+# Look for RBAC denials in your proxy logs
+kubectl logs deploy/billing-service -n uat -c istio-proxy --tail=50 | grep -i "rbac"
+# Any "RBAC: access denied" entries from non-uat sources = ✅ isolation working
+```
+
+---
+
+### Step 7.2: Principle 3 — CIDP / JWT Token Validation Test
+
+> [!NOTE]
+> This test only applies to services with the `auth-type: oidc` label.
+
+**Test A — Call WITHOUT a token (should FAIL if RequestAuthentication is active):**
+```bash
+# Call a user-facing service without any JWT — should be rejected
+kubectl exec -n uat deploy/order-service -c order-service -- \
+  curl -s -o /dev/null -w "HTTP %{http_code}\n" http://gateway-api:8080/api/user/me
+# ✅ Expected: HTTP 401 or 403 (no valid token)
+```
+
+**Test B — Call WITH a valid token (should SUCCEED):**
+```bash
+# Replace <YOUR_JWT_TOKEN> with a real token from your CIDP provider
+kubectl exec -n uat deploy/order-service -c order-service -- \
+  curl -s -o /dev/null -w "HTTP %{http_code}\n" \
+  -H "Authorization: Bearer <YOUR_JWT_TOKEN>" \
+  http://gateway-api:8080/api/user/me
+# ✅ Expected: HTTP 200
+```
+
+**Test C — Internal service call (should SUCCEED without JWT):**
+```bash
+# Internal calls use mTLS (Principle 2), NOT JWT — should work without a token
+kubectl exec -n uat deploy/order-service -c order-service -- \
+  curl -s -o /dev/null -w "HTTP %{http_code}\n" http://billing-service:8080/api/invoices
+# ✅ Expected: HTTP 200 (mTLS handles auth, no JWT needed)
+```
+
+---
+
+### Step 7.3: Principle 4 — Service Allow-List Positive/Negative Test
+
+> [!WARNING]
+> Only run these tests after Phase 4 (per-service AuthorizationPolicy) is deployed. Before that, all intra-namespace calls are allowed.
+
+**Test A — Allowed call (billing → payment):**
+```bash
+kubectl exec -n uat deploy/billing-service -c billing-service -- \
+  curl -s -o /dev/null -w "HTTP %{http_code}\n" http://payment-gateway:8080/api/payments/status
+# ✅ Expected: HTTP 200 (billing IS in payment-gateway's allow-list)
+```
+
+**Test B — Blocked call (report-engine → payment):**
+```bash
+kubectl exec -n uat deploy/report-engine -c report-engine -- \
+  curl -s -o /dev/null -w "HTTP %{http_code}\n" http://payment-gateway:8080/api/payments/status
+# ✅ Expected: HTTP 403 RBAC: access denied (report-engine is NOT in payment-gateway's allow-list)
+```
+
+**Test C — Verify all allowed paths for a specific service:**
+```bash
+# Test that billing-service can call its allowed paths
+for path in /api/payments/status /api/payments/charge /api/notify/send; do
+  SVC=$(echo $path | cut -d/ -f3)
+  STATUS=$(kubectl exec -n uat deploy/billing-service -c billing-service -- \
+    curl -s -o /dev/null -w "%{http_code}" http://${SVC}-service:8080${path} 2>/dev/null)
+  echo "billing → ${path}: HTTP ${STATUS}"
+done
+```
+
+**Debugging a blocked call:**
+```bash
+# Check the proxy logs on the DESTINATION service for the deny reason
+kubectl logs deploy/payment-gateway -n uat -c istio-proxy --tail=20 | grep "rbac"
+# Look for: "enforced_by" and the policy name that blocked it
+```
+
+---
+
 ### Quick Verification Script (App Namespace Only)
 
 ```bash
 #!/bin/bash
 # Works with app namespace admin access ONLY — no istio-system access needed
+# Updated to verify all 4 Security Principles
 NAMESPACE="uat"
 
 echo "═══ 1. Sidecar Injection Check ═══"
@@ -766,11 +888,38 @@ echo "═══ 2. Namespace Labels ═══"
 kubectl get namespace $NAMESPACE --show-labels 2>/dev/null | grep -o 'istio[^ ]*' || echo "  No istio labels found"
 
 echo ""
-echo "═══ 3. Istio Policies in Namespace ═══"
-echo "PeerAuthentication:"
-kubectl get peerauthentication -n $NAMESPACE 2>/dev/null || echo "  None"
-echo "AuthorizationPolicy:"
-kubectl get authorizationpolicy -n $NAMESPACE 2>/dev/null || echo "  None"
+echo "═══ 3. Security Policies — 4 Principles Check ═══"
+echo "--- Principle 1: Tenant Isolation ---"
+kubectl get authorizationpolicy deny-all-default -n $NAMESPACE 2>/dev/null && echo "  ✅ deny-all-default exists" || echo "  ❌ MISSING: deny-all-default"
+kubectl get authorizationpolicy allow-same-namespace -n $NAMESPACE 2>/dev/null && echo "  ✅ allow-same-namespace exists" || echo "  ❌ MISSING: allow-same-namespace"
+
+echo "--- Principle 2: mTLS STRICT ---"
+MTLS_MODE=$(kubectl get peerauthentication default -n $NAMESPACE -o jsonpath='{.spec.mtls.mode}' 2>/dev/null)
+if [ "$MTLS_MODE" = "STRICT" ]; then
+    echo "  ✅ PeerAuthentication mode: STRICT"
+elif [ -n "$MTLS_MODE" ]; then
+    echo "  ⚠️  PeerAuthentication mode: $MTLS_MODE (should be STRICT)"
+else
+    echo "  ❌ MISSING: PeerAuthentication"
+fi
+
+echo "--- Principle 3: CIDP / OIDC ---"
+REQ_AUTH_COUNT=$(kubectl get requestauthentication -n $NAMESPACE --no-headers 2>/dev/null | wc -l | tr -d ' ')
+if [ "$REQ_AUTH_COUNT" -gt 0 ]; then
+    echo "  ✅ RequestAuthentication policies: $REQ_AUTH_COUNT"
+    kubectl get requestauthentication -n $NAMESPACE --no-headers 2>/dev/null | awk '{print "    - " $1}'
+else
+    echo "  ❌ MISSING: No RequestAuthentication policies"
+fi
+
+echo "--- Principle 4: Per-Service Allow-Lists ---"
+ALLOW_POLICIES=$(kubectl get authorizationpolicy -n $NAMESPACE --no-headers 2>/dev/null | grep -v "deny-all\|allow-same" | wc -l | tr -d ' ')
+if [ "$ALLOW_POLICIES" -gt 0 ]; then
+    echo "  ✅ Per-service policies: $ALLOW_POLICIES"
+    kubectl get authorizationpolicy -n $NAMESPACE --no-headers 2>/dev/null | grep -v "deny-all\|allow-same" | awk '{print "    - " $1}'
+else
+    echo "  ⚠️  No per-service allow-list policies yet (Phase 4 pending)"
+fi
 
 echo ""
 echo "═══ 4. Service-to-Service Test ═══"
@@ -796,10 +945,19 @@ if [ -n "$SOURCE_POD" ]; then
     else
         echo "  ❌ No SPIFFE certificate found"
     fi
+
+    echo ""
+    echo "═══ 6. mTLS Connection Stats ═══"
+    HANDSHAKE=$(kubectl exec $SOURCE_POD -n $NAMESPACE -c istio-proxy -- \
+        curl -s http://localhost:15000/stats 2>/dev/null | grep "ssl.handshake" | head -3)
+    CONN_ERR=$(kubectl exec $SOURCE_POD -n $NAMESPACE -c istio-proxy -- \
+        curl -s http://localhost:15000/stats 2>/dev/null | grep "ssl.connection_error" | head -3)
+    echo "  Handshakes: $HANDSHAKE"
+    echo "  Errors:     $CONN_ERR"
 fi
 
 echo ""
-echo "═══ 6. Envoy Response Header Check ═══"
+echo "═══ 7. Envoy Response Header Check ═══"
 if [ -n "$SOURCE_POD" ] && [ -n "$TARGET_SVC" ]; then
     HEADERS=$(kubectl exec $SOURCE_POD -n $NAMESPACE -c $APP_CONTAINER -- \
         curl -s -D- -o /dev/null http://$TARGET_SVC:8080/health 2>/dev/null | grep -iE "server:|x-envoy")
@@ -812,9 +970,20 @@ if [ -n "$SOURCE_POD" ] && [ -n "$TARGET_SVC" ]; then
 fi
 
 echo ""
-echo "═══ 7. Recent Proxy Errors ═══"
+echo "═══ 8. RBAC Denials (Principle 1 & 4 activity) ═══"
 if [ -n "$SOURCE_POD" ]; then
-    kubectl logs $SOURCE_POD -n $NAMESPACE -c istio-proxy --tail=10 2>/dev/null | grep -E "(503|404|5xx|connection refused|upstream)" || echo "  No recent errors"
+    RBAC_DENY=$(kubectl logs $SOURCE_POD -n $NAMESPACE -c istio-proxy --tail=100 2>/dev/null | grep -ci "rbac")
+    echo "  RBAC denials in last 100 log lines: $RBAC_DENY"
+    if [ "$RBAC_DENY" -gt 0 ]; then
+        echo "  Recent denials:"
+        kubectl logs $SOURCE_POD -n $NAMESPACE -c istio-proxy --tail=100 2>/dev/null | grep -i "rbac" | tail -5 | awk '{print "    " $0}'
+    fi
+fi
+
+echo ""
+echo "═══ 9. Recent Proxy Errors ═══"
+if [ -n "$SOURCE_POD" ]; then
+    kubectl logs $SOURCE_POD -n $NAMESPACE -c istio-proxy --tail=10 2>/dev/null | grep -E "(503|404|401|403|5xx|connection refused|upstream)" || echo "  No recent errors"
 fi
 ```
 
@@ -822,16 +991,21 @@ fi
 
 ### Common Issues & Fixes
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| Pod shows `1/1` not `2/2` | Sidecar not injected | Check namespace label, restart deployment |
-| `server: gunicorn` in curl | Sidecar not intercepting | Verify `istio-init` ran, check iptables |
-| `503 UF` in proxy logs | Destination pod is down | Check destination pod health |
-| `503 UC` in proxy logs | Connection failure | Check service port, network policies |
-| `RBAC: access denied` in logs | AuthorizationPolicy blocking | Check policy rules in your namespace |
-| No SPIFFE cert in `/certs` | mTLS not configured | Ask platform team to check PeerAuthentication |
-| `ssl.handshake: 0` | mTLS not negotiating | Check PeerAuthentication mode (STRICT vs PERMISSIVE) |
-| `ssl.connection_error` > 0 | Cert mismatch | Restart pod to get fresh certificates |
+| Symptom | Principle | Cause | Fix |
+|---------|-----------|-------|-----|
+| Pod shows `1/1` not `2/2` | All | Sidecar not injected | Check namespace label, restart deployment |
+| `server: gunicorn` in curl | All | Sidecar not intercepting | Verify `istio-init` ran, check iptables |
+| `503 UF` in proxy logs | — | Destination pod is down | Check destination pod health |
+| `503 UC` in proxy logs | — | Connection failure | Check service port, network policies |
+| `RBAC: access denied` from other namespace | P1 | `deny-all-default` blocking external traffic | ✅ Working as intended — tenant isolation active |
+| `RBAC: access denied` from same namespace | P4 | Per-service `AuthorizationPolicy` missing caller | Add caller to the service's allow-list policy |
+| `401 Jwt issuer is not configured` | P3 | JWT token issuer doesn't match `RequestAuthentication` | Verify `issuer` field matches your CIDP provider URL |
+| `403` on user-facing API with valid token | P3 | `requestPrincipals` not matching | Check `jwtRules` issuer + audience match token claims |
+| `403` on internal service call after Phase 4 | P4 | Service not in destination's allow-list | Update `AuthorizationPolicy` to add the caller's principal |
+| No SPIFFE cert in `/certs` | P2 | mTLS not configured | Ask platform team to check PeerAuthentication |
+| `ssl.handshake: 0` | P2 | mTLS not negotiating | Check PeerAuthentication mode (STRICT vs PERMISSIVE) |
+| `ssl.connection_error` > 0 | P2 | Cert mismatch or non-mesh caller | Restart pod for fresh certs; check if caller has sidecar |
+| Service works in PERMISSIVE but fails in STRICT | P2 | A caller doesn't have sidecar | Ensure all pods have `istio-proxy` before switching to STRICT |
 
 ---
 
