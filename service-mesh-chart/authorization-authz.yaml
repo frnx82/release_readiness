@@ -1,0 +1,33 @@
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ template "application.name" . }}-service-allow-after-authz
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ $.Release.Name }}
+    chart: {{ $.Chart.Name }}
+    release: "{{ $.Release.Name }}"
+spec:
+  action: ALLOW
+  selector:
+    # Select all services that require OIDC authentication
+    matchLabels:
+      auth-type: oidc
+  # An empty 'rules' block here means it applies to all requests that reach it.
+  rules:
+    - to:
+        - operation:
+            hosts:
+              # Allow requests to the external gateway and all internal services
+              - {{ include "aarui.virtualservice_host" . }}
+      from:
+        # RULE 1: Allow requests from external traffic that have a valid end-user JWT.
+        - source:
+            requestPrincipals:
+              - "{{ .Values.virtualService.cidp_oauth2_base_url }}/*"
+    - from:
+        # RULE 2: Allow requests from any other service within the same namespace.
+        # This enables secure service-to-service communication.
+        - source:
+            principals:
+              - "cluster.local/ns/{{ .Values.namespace }}/sa/*"

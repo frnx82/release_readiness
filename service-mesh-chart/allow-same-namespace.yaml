@@ -1,0 +1,40 @@
+# =============================================================================
+# Principle 1 (Part B): Tenant Isolation — Allow Same Namespace
+# =============================================================================
+# This policy explicitly ALLOWS all traffic originating from within the
+# same namespace. Combined with deny-all-default.yaml, this creates a
+# "deny external, allow internal" security boundary.
+#
+# Risk Level: 🟢 LOW — Only allows traffic that was already working.
+# Phase: 1 (Week 1)
+# =============================================================================
+{{- if .Values.tenantIsolation.enabled }}
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-same-namespace
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app: {{ $.Release.Name }}
+    chart: {{ $.Chart.Name }}
+    release: "{{ $.Release.Name }}"
+    security-principle: "p1-tenant-isolation"
+spec:
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            # Allow any service account from the SAME namespace.
+            # The wildcard pattern matches all SAs in our namespace.
+            principals:
+              - "cluster.local/ns/{{ .Values.namespace }}/sa/*"
+    - from:
+        - source:
+            # Allow traffic from the ASM ingress gateway (for external user requests).
+            # This is required so that requests arriving via the Gateway → VirtualService
+            # path are not blocked by the deny-all policy.
+            namespaces:
+              - "asm-gateway"
+              - "istio-system"
+{{- end }}

@@ -1,0 +1,109 @@
+# =============================================================================
+# Service Mesh Chart — values.yaml
+# =============================================================================
+# This file provides configuration for all Istio service mesh resources
+# deployed as part of the application Helm chart.
+# =============================================================================
+
+# -- Application namespace (passed from parent chart or --set)
+namespace: uat
+
+# -- Global settings
+global:
+  isGDC: true   # Enable GDC-specific features (exportTo, ASM gateway)
+
+# -- Kubernetes Service
+service:
+  type: ClusterIP
+  targetPort: 8080
+
+# =============================================================================
+# VirtualService Configuration
+# =============================================================================
+virtualservice:
+  # -- ASM Gateway reference (namespace/name format for cross-namespace)
+  asmgateways: asm-gateway/asm-gateway
+
+  # -- External hostname served by this VirtualService
+  host: myapp.example.gdc.corp
+
+  # -- CIDP / OIDC provider URLs
+  cidp_oauth2_base_url: "https://cidp.example.gdc.corp/oauth2"
+
+  # -- API routes served by backend microservices
+  # Each route maps a URI prefix to a destination service.
+  # The VirtualService iterates over this list to generate route rules.
+  routes:
+    # ── REST API (v1) ──────────────────────────────────────────────
+    - name: "rest-api-v1"
+      match:
+        - uri:
+            prefix: /api/v1/
+      destination:
+        host: rest-api
+        port: 8080
+
+    # ── REST API (v2) ──────────────────────────────────────────────
+    - name: "rest-api-v2"
+      match:
+        - uri:
+            prefix: /api/v2/
+      destination:
+        host: rest-api-v2
+        port: 8080
+
+    # ── Executive Insights API ─────────────────────────────────────
+    - name: "executive-insights-api"
+      match:
+        - uri:
+            prefix: /api/insights/
+      destination:
+        host: executive-insights-api
+        port: 8080
+
+    # ── Reporting Service ──────────────────────────────────────────
+    - name: "reporting-service"
+      match:
+        - uri:
+            prefix: /api/reports/
+      destination:
+        host: reporting-service
+        port: 8080
+
+    # ── Notification Service ───────────────────────────────────────
+    - name: "notification-service"
+      match:
+        - uri:
+            prefix: /api/notifications/
+      destination:
+        host: notification-service
+        port: 8080
+
+# =============================================================================
+# Security Principles — Istio Policy Configuration
+# =============================================================================
+
+# -- Principle 1: Tenant Isolation
+# Blocks all traffic from outside this namespace by default,
+# then explicitly allows traffic from within the same namespace.
+tenantIsolation:
+  enabled: true
+
+# -- Principle 2: mTLS
+# Enforces mutual TLS for all service-to-service communication.
+# Modes: STRICT (production), PERMISSIVE (migration), DISABLE (not recommended)
+peerAuthentication:
+  enabled: true
+  mtlsMode: STRICT    # Change to PERMISSIVE during migration
+
+# -- Principle 3: CIDP / OIDC Token Validation
+# Validates JWT tokens from the Cloud Identity Provider on services
+# with label auth-type: oidc.
+requestAuthentication:
+  enabled: true
+
+# -- Principle 4: Service-to-Service Allow-Lists
+# Controls which services can call which. Uses JWT principals for
+# external traffic and ServiceAccount principals for internal traffic.
+serviceAllowLists:
+  enabled: true

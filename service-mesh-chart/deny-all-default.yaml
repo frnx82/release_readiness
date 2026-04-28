@@ -1,0 +1,28 @@
+# =============================================================================
+# Principle 1 (Part A): Tenant Isolation — Deny All Default
+# =============================================================================
+# This policy denies ALL traffic to the namespace by default.
+# It MUST be deployed together with allow-same-namespace.yaml to avoid
+# blocking legitimate internal traffic.
+#
+# Risk Level: 🟢 LOW — Only blocks external/cross-namespace traffic.
+# Phase: 1 (Week 1)
+# =============================================================================
+{{- if .Values.tenantIsolation.enabled }}
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all-default
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app: {{ $.Release.Name }}
+    chart: {{ $.Chart.Name }}
+    release: "{{ $.Release.Name }}"
+    security-principle: "p1-tenant-isolation"
+spec:
+  # An empty spec with no rules means: DENY everything by default.
+  # This is Istio's "deny-all" pattern — any traffic not explicitly
+  # allowed by another AuthorizationPolicy will be rejected with 403.
+  {}
+{{- end }}

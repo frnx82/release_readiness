@@ -1,0 +1,68 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ template "application.name" . }}-{{ .Values.namespace }}
+  labels:
+    nar-instance-id: "126157-1"
+spec:
+  hosts:
+    - {{ include "aarui.virtualservice_host" . }}
+  gateways:
+    - {{ .Values.virtualservice.asmgateways }}  # Reference the gateway in its correct namespace
+  http:
+    - name: "cors-preflight"
+      match:
+        - method:
+            exact: OPTIONS
+      route:
+        - destination:
+            host: {{ template "application.name" . }}.{{ .Values.namespace }}.svc.cluster.local
+            port:
+              number: 8080
+      headers:
+        response:
+          add:
+            Access-Control-Allow-Origin: "%REQ(Origin)%"
+            Access-Control-Allow-Methods: "GET, POST"
+            Access-Control-Allow-Headers: "Cache-Control, Content-Type, Expires, Pragma, Sleuth-Lang, Remote-User, X-On-Behalf-Of"
+            Access-Control-Allow-Credentials: "true"
+            Access-Control-Max-Age: "600"
+      fault:
+        # Abort the request and return a 200 OK directly, as this is a pre-flight request.
+        abort:
+          httpStatus: 200
+          percentage:
+            value: 100
+    {{- range .Values.virtualService.routes }}
+    - name: {{ .name }}
+      match:
+        {{- toYaml .match | nindent 8 }}
+      route:
+        - destination:
+            host: {{ .destination.host }}.{{ $.Values.namespace }}.svc.cluster.local
+            {{- if .destination.port }}
+            port:
+              number: {{ .destination.port }}
+            {{- end }}
+          {{- if .headers }}
+          headers:
+            {{- toYaml .headers | nindent 12 }}
+          {{- end }}
+          weight: 100
+      {{- if .rewrite }}
+      rewrite:
+        {{- toYaml .rewrite | nindent 8 }}
+      {{- end }}
+    {{- end }}
+    # The below ALWAYS needs to be at the end
+    - name: "ui-route"
+      match:
+        - uri:
+            prefix: /
+      route:
+        - destination:
+            host: {{ template "application.name" . }}.{{ .Values.namespace }}.svc.cluster.local
+            port:
+              number: 8080
+          weight: 100
+    # DO NOT ADD ANY ROUTES AFTER THE BASE ROUTE ABOVE

@@ -51,6 +51,12 @@ metadata:
     app: release-readiness
 spec:
   replicas: 1
+  # ⚠️ MUST use Recreate (not RollingUpdate) because the PVC is
+  # ReadWriteOnce — it can only be mounted by ONE pod at a time.
+  # RollingUpdate would start a new pod BEFORE killing the old one,
+  # causing the new pod to hang on "waiting for PVC to be released".
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: release-readiness
@@ -59,6 +65,8 @@ spec:
       labels:
         app: release-readiness
     spec:
+      # Ensure the old pod fully terminates before the new one starts
+      terminationGracePeriodSeconds: 30
       serviceAccountName: release-readiness    # ← needs RBAC for ConfigMaps + read Deployments
       containers:
       - name: release-readiness

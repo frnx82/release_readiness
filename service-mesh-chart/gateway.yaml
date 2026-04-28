@@ -1,0 +1,23 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ .Values.virtualservice.asmgateways }}
+  labels:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app: {{ $.Release.Name }}
+    chart: {{ $.Chart.Name }}
+    release: "{{ $.Release.Name }}"
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      tls:
+        mode: SIMPLE
+        credentialName: {{ template "application.name" . }}-asm
+      hosts:
+        - {{ include "aarui.virtualservice_host" . }}

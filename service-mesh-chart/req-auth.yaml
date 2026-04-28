@@ -1,0 +1,21 @@
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: {{ template "application.name" . }}-jwt-auth
+  namespace: {{ .Release.Namespace }}  # This MUST be the namespace of your ingress gateway
+  labels:
+    app: {{ $.Release.Name }}
+    chart: {{ $.Chart.Name }}
+    release: "{{ $.Release.Name }}"
+spec:
+  selector:
+    matchLabels:
+      # Apply to any workload with this label
+      auth-type: oidc
+  jwtRules:
+    - issuer: {{ .Values.virtualservice.cidp_oauth2_base_url }}
+      jwksUri: {{ .Values.virtualService.cidp_oauth2_base_url }}/connect/jwk_uri
+      forwardOriginalToken: true
+      outputClaimToHeaders:
+        - header: Remote-User
+          claim: email

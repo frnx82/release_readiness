@@ -5,8 +5,11 @@
 # Stores release board JSON files as a backup (or primary in file-only mode).
 # Data persists across pod restarts and app reinstalls.
 #
-# Apply BEFORE deploying the app:
+# ⚠️  IMPORTANT: Apply this file ONCE, SEPARATELY from the deployment:
 #   kubectl apply -f pvc.yaml -n YOUR_NAMESPACE
+#
+# Do NOT include this in a blanket `kubectl apply -f manifests/`
+# alongside deploy.yaml — it can cause PVC termination conflicts.
 # ──────────────────────────────────────────────────────────────────
 
 apiVersion: v1
@@ -16,6 +19,11 @@ metadata:
   labels:
     app: release-readiness
     component: board-storage
+  annotations:
+    # Prevents Helm and kubectl from deleting/recreating this PVC
+    # during upgrades or rollbacks. The PVC survives even if the
+    # Deployment is deleted.
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteOnce

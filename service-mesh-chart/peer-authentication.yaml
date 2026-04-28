@@ -1,0 +1,31 @@
+# =============================================================================
+# Principle 2: mTLS STRICT — PeerAuthentication
+# =============================================================================
+# Enforces mutual TLS for ALL service-to-service communication in the
+# namespace. After this policy is applied:
+#   - Only mTLS connections are accepted (plain HTTP is rejected)
+#   - All pods MUST have the istio-proxy sidecar (2/2 READY)
+#   - Certificates are managed automatically by istiod
+#
+# Risk Level: 🟡 MEDIUM — Services without sidecars will be blocked.
+# Phase: 2 (Week 2)
+#
+# Pre-requisite: Verify ALL pods show 2/2 READY before switching to STRICT:
+#   kubectl get pods -n <namespace> | grep -v "2/2"
+# =============================================================================
+{{- if .Values.peerAuthentication.enabled }}
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app: {{ $.Release.Name }}
+    chart: {{ $.Chart.Name }}
+    release: "{{ $.Release.Name }}"
+    security-principle: "p2-mtls"
+spec:
+  mtls:
+    mode: {{ .Values.peerAuthentication.mtlsMode | default "STRICT" }}
+{{- end }}

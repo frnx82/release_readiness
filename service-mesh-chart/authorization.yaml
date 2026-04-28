@@ -1,0 +1,23 @@
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ template "application.name" . }}-auth-ext-authz
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ $.Release.Name }}
+    chart: {{ $.Chart.Name }}
+    release: "{{ $.Release.Name }}"
+spec:
+  # This selector targets the application pods in this namespace.
+  selector:
+    # Select all services that require OIDC authentication
+    matchLabels:
+      auth-type: oidc
+  rules:
+    - to:
+        - operation:
+            hosts:
+              # Allow requests to the external gateway and all internal services
+              - {{ include "aarui.virtualservice_host" . }}
+              - rest.{{ .Values.namespace }}.svc.cluster.local
+              - executive-insights-api.{{ .Values.namespace }}.svc.cluster.local
