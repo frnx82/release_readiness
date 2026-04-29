@@ -125,14 +125,18 @@ echo -e "\n${BOLD}  Test: Same-namespace service call (should SUCCEED)${NC}"
 # Find a target service to curl
 TARGET_SVC=$(kubectl get svc -n "$NAMESPACE" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | grep -v "$APP_POD" | head -1 || echo "")
 if [ -n "$TARGET_SVC" ]; then
+  # Get port from service (default to 8080)
+  SVC_PORT=$(kubectl get svc "$TARGET_SVC" -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "8080")
   HTTP_CODE=$(kubectl exec "$APP_POD" -n "$NAMESPACE" -c "$APP_CONTAINER" -- \
-    curl -s -o /dev/null -w "%{http_code}" "http://${TARGET_SVC}:8080/health" --connect-timeout 5 2>/dev/null || echo "000")
+    curl -s -o /dev/null -w "%{http_code}" "http://${TARGET_SVC}:${SVC_PORT}/" --connect-timeout 5 2>&1 | tail -c 3 || echo "000")
   if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "404" ] || [ "$HTTP_CODE" = "503" ]; then
-    pass "Same-namespace call to $TARGET_SVC returned HTTP $HTTP_CODE (connection allowed)"
+    pass "Same-namespace call to $TARGET_SVC:$SVC_PORT returned HTTP $HTTP_CODE (connection allowed)"
   elif [ "$HTTP_CODE" = "403" ]; then
     fail "Same-namespace call to $TARGET_SVC returned 403 — allow-same-namespace may be missing"
+  elif [ "$HTTP_CODE" = "000" ]; then
+    warn "Same-namespace call to $TARGET_SVC:$SVC_PORT timed out (service may not be listening)"
   else
-    warn "Same-namespace call to $TARGET_SVC returned HTTP $HTTP_CODE"
+    pass "Same-namespace call to $TARGET_SVC:$SVC_PORT returned HTTP $HTTP_CODE (connection allowed)"
   fi
 else
   warn "No other services found in namespace to test same-namespace connectivity"
@@ -165,18 +169,41 @@ else
   warn "PeerAuthentication mode is '$PA_MODE'"
 fi
 
+# Detect which container name istio-proxy uses (traditional vs native sidecar)
+PROXY_CONTAINER="istio-proxy"
+if ! kubectl exec "$APP_POD" -n "$NAMESPACE" -c istio-proxy -- true 2>/dev/null; then
+  # Native sidecar: try to find the sidecar container name
+  PROXY_CONTAINER=$(kubectl get pod "$APP_POD" -n "$NAMESPACE" -o jsonpath='{.spec.initContainers[?(@.name=="istio-proxy")].name}' 2>/dev/null || echo "")
+  if [ -z "$PROXY_CONTAINER" ]; then
+    PROXY_CONTAINER="istio-proxy"  # fall back, will just warn
+  fi
+fi
+
 echo -e "\n${BOLD}  Check: SPIFFE identity certificate loaded${NC}"
-SPIFFE=$(kubectl exec "$APP_POD" -n "$NAMESPACE" -c istio-proxy -- \
+SPIFFE=$(kubectl exec "$APP_POD" -n "$NAMESPACE" -c "$PROXY_CONTAINER" -- \
   curl -s localhost:15000/certs 2>/dev/null | grep -o 'spiffe://[^"]*' | head -1 || echo "")
 if [ -n "$SPIFFE" ]; then
   pass "SPIFFE identity: $SPIFFE"
 else
-  warn "Could not retrieve SPIFFE identity from Envoy admin API"
+  # Try via pilot-agent (native sidecar alternative)
+  SPIFFE=$(kubectl exec "$APP_POD" -n "$NAMESPACE" -c "$PROXY_CONTAINER" -- \
+    pilot-agent request GET /certs 2>/dev/null | grep -o 'spiffe://[^"]*' | head -1 || echo "")
+  if [ -n "$SPIFFE" ]; then
+    pass "SPIFFE identity: $SPIFFE (via pilot-agent)"
+  else
+    warn "Could not retrieve SPIFFE identity — Envoy admin API may not be on port 15000"
+    info "Manual check: kubectl exec $APP_POD -n $NAMESPACE -c $PROXY_CONTAINER -- pilot-agent request GET /certs"
+  fi
 fi
 
 echo -e "\n${BOLD}  Check: TLS handshake stats (proof of mTLS traffic)${NC}"
-SSL_HANDSHAKE=$(kubectl exec "$APP_POD" -n "$NAMESPACE" -c istio-proxy -- \
+SSL_HANDSHAKE=$(kubectl exec "$APP_POD" -n "$NAMESPACE" -c "$PROXY_CONTAINER" -- \
   curl -s localhost:15000/stats 2>/dev/null | grep "ssl.handshake" | head -1 || echo "")
+if [ -z "$SSL_HANDSHAKE" ]; then
+  # Try via pilot-agent
+  SSL_HANDSHAKE=$(kubectl exec "$APP_POD" -n "$NAMESPACE" -c "$PROXY_CONTAINER" -- \
+    pilot-agent request GET /stats 2>/dev/null | grep "ssl.handshake" | head -1 || echo "")
+fi
 if [ -n "$SSL_HANDSHAKE" ]; then
   HS_COUNT=$(echo "$SSL_HANDSHAKE" | grep -o '[0-9]*$' || echo "0")
   if [ "$HS_COUNT" -gt 0 ]; then
@@ -185,7 +212,8 @@ if [ -n "$SSL_HANDSHAKE" ]; then
     warn "TLS handshake count is 0 — mTLS may not be negotiating yet"
   fi
 else
-  warn "Could not retrieve SSL stats from Envoy"
+  warn "Could not retrieve SSL stats from Envoy admin API"
+  info "Manual check: kubectl exec $APP_POD -n $NAMESPACE -c $PROXY_CONTAINER -- pilot-agent request GET /stats | grep ssl.handshake"
 fi
 
 echo -e "\n${BOLD}  Check: Envoy server header in service response${NC}"
@@ -230,16 +258,20 @@ echo -e "\n${BOLD}  Check: JWKS URI reachable${NC}"
 JWKS_URI=$(kubectl get requestauthentication -n "$NAMESPACE" -o jsonpath='{.items[0].spec.jwtRules[0].jwksUri}' 2>/dev/null || echo "")
 if [ -n "$JWKS_URI" ]; then
   info "JWKS URI: $JWKS_URI"
-  # Try to reach it from the pod
-  JWKS_CODE=$(kubectl exec "$APP_POD" -n "$NAMESPACE" -c istio-proxy -- \
-    curl -s -o /dev/null -w "%{http_code}" "$JWKS_URI" --connect-timeout 5 2>/dev/null || echo "000")
+  # Try to reach it from the proxy container (has curl)
+  JWKS_CODE=$(kubectl exec "$APP_POD" -n "$NAMESPACE" -c "$PROXY_CONTAINER" -- \
+    curl -s -o /dev/null -w "%{http_code}" "$JWKS_URI" --connect-timeout 5 2>&1 | tail -c 3 || echo "000")
   if [ "$JWKS_CODE" = "200" ]; then
     pass "JWKS endpoint reachable (HTTP 200)"
+  elif [ "$JWKS_CODE" = "000" ]; then
+    warn "JWKS endpoint unreachable — may need a ServiceEntry for external OIDC provider"
+    info "Fix: Create a ServiceEntry allowing egress to the JWKS host"
   else
-    warn "JWKS endpoint returned HTTP $JWKS_CODE (may need a ServiceEntry for external access)"
+    warn "JWKS endpoint returned HTTP $JWKS_CODE"
   fi
 else
-  warn "No JWKS URI found"
+  warn "No JWKS URI configured in RequestAuthentication"
+  info "This is OK if you use forwardOriginalToken and validate JWT at the app level"
 fi
 
 echo -e "\n${BOLD}  Test: Call without JWT token (should be rejected if enforced)${NC}"
