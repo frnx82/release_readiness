@@ -10,13 +10,13 @@
 #   ./test-mesh-policies.sh <namespace> [<app-pod-name>]
 #
 # Example:
-#   ./test-mesh-policies.sh uat rest-api
+#   ./test-mesh-policies.sh demo-dev rest-api
 # =============================================================================
 
 set -euo pipefail
 
 # ── Configuration ────────────────────────────────────────────────────────────
-NAMESPACE="${1:-uat}"
+NAMESPACE="${1:-demo-dev}"
 APP_POD="${2:-}"  # Optional: specific pod to test from. Auto-detected if empty.
 PASS=0
 FAIL=0
@@ -31,9 +31,9 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 BOLD='\033[1m'
 
-pass()  { ((PASS++)); echo -e "  ${GREEN}✅ PASS${NC}: $1"; }
-fail()  { ((FAIL++)); echo -e "  ${RED}❌ FAIL${NC}: $1"; }
-warn()  { ((WARN++)); echo -e "  ${YELLOW}⚠️  WARN${NC}: $1"; }
+pass()  { ((PASS++)) || true; echo -e "  ${GREEN}✅ PASS${NC}: $1"; }
+fail()  { ((FAIL++)) || true; echo -e "  ${RED}❌ FAIL${NC}: $1"; }
+warn()  { ((WARN++)) || true; echo -e "  ${YELLOW}⚠️  WARN${NC}: $1"; }
 info()  { echo -e "  ${BLUE}ℹ️  INFO${NC}: $1"; }
 header(){ echo -e "\n${BOLD}${CYAN}══════════════════════════════════════════════════════════════${NC}"; echo -e "${BOLD}${CYAN}  $1${NC}"; echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════════════════${NC}"; }
 
