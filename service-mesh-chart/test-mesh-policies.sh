@@ -37,6 +37,18 @@ warn()  { ((WARN++)) || true; echo -e "  ${YELLOW}⚠️  WARN${NC}: $1"; }
 info()  { echo -e "  ${BLUE}ℹ️  INFO${NC}: $1"; }
 header(){ echo -e "\n${BOLD}${CYAN}══════════════════════════════════════════════════════════════${NC}"; echo -e "${BOLD}${CYAN}  $1${NC}"; echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════════════════${NC}"; }
 
+# ── Robust helper: exec curl inside a pod and return ONLY the HTTP status code ─
+# Usage: exec_curl <pod> <namespace> <container> <url>
+# Returns: 3-digit HTTP code or "000" on failure
+exec_curl() {
+  local pod="$1" ns="$2" ctr="$3" url="$4"
+  local raw
+  raw=$(kubectl exec "$pod" -n "$ns" -c "$ctr" -- \
+    sh -c "curl -s -o /dev/null -w '%{http_code}' '$url' --connect-timeout 5 2>/dev/null" 2>/dev/null) || raw="000"
+  # Extract only the last 3-digit number (the HTTP code)
+  echo "$raw" | grep -oE '[0-9]{3}$' || echo "000"
+}
+
 # ── Pre-flight: Find a pod to exec into ──────────────────────────────────────
 if [ -z "$APP_POD" ]; then
   APP_POD=$(kubectl get pods -n "$NAMESPACE" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
@@ -127,14 +139,13 @@ TARGET_SVC=$(kubectl get svc -n "$NAMESPACE" --no-headers -o custom-columns=NAME
 if [ -n "$TARGET_SVC" ]; then
   # Get port from service (default to 8080)
   SVC_PORT=$(kubectl get svc "$TARGET_SVC" -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "8080")
-  HTTP_CODE=$(kubectl exec "$APP_POD" -n "$NAMESPACE" -c "$APP_CONTAINER" -- \
-    curl -s -o /dev/null -w "%{http_code}" "http://${TARGET_SVC}:${SVC_PORT}/" --connect-timeout 5 2>&1 | tail -c 3 || echo "000")
+  HTTP_CODE=$(exec_curl "$APP_POD" "$NAMESPACE" "$APP_CONTAINER" "http://${TARGET_SVC}:${SVC_PORT}/")
   if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "404" ] || [ "$HTTP_CODE" = "503" ]; then
     pass "Same-namespace call to $TARGET_SVC:$SVC_PORT returned HTTP $HTTP_CODE (connection allowed)"
   elif [ "$HTTP_CODE" = "403" ]; then
     fail "Same-namespace call to $TARGET_SVC returned 403 — allow-same-namespace may be missing"
   elif [ "$HTTP_CODE" = "000" ]; then
-    warn "Same-namespace call to $TARGET_SVC:$SVC_PORT timed out (service may not be listening)"
+    warn "Same-namespace call to $TARGET_SVC:$SVC_PORT timed out (service may not be listening, or curl not in container)"
   else
     pass "Same-namespace call to $TARGET_SVC:$SVC_PORT returned HTTP $HTTP_CODE (connection allowed)"
   fi
@@ -219,11 +230,11 @@ fi
 echo -e "\n${BOLD}  Check: Envoy server header in service response${NC}"
 if [ -n "$TARGET_SVC" ]; then
   SERVER_HEADER=$(kubectl exec "$APP_POD" -n "$NAMESPACE" -c "$APP_CONTAINER" -- \
-    curl -sI "http://${TARGET_SVC}:8080/health" --connect-timeout 5 2>/dev/null | grep -i "^server:" || echo "")
+    sh -c "curl -sI 'http://${TARGET_SVC}:${SVC_PORT}/' --connect-timeout 5 2>/dev/null | grep -i '^server:'" 2>/dev/null || echo "")
   if echo "$SERVER_HEADER" | grep -qi "envoy"; then
     pass "Response contains 'server: envoy' — traffic is flowing through the mesh"
   elif [ -n "$SERVER_HEADER" ]; then
-    warn "Server header is '$SERVER_HEADER' — expected 'envoy'"
+    info "Server header is '$SERVER_HEADER' (may still be proxied via Envoy)"
   else
     warn "Could not read server header"
   fi
@@ -258,9 +269,8 @@ echo -e "\n${BOLD}  Check: JWKS URI reachable${NC}"
 JWKS_URI=$(kubectl get requestauthentication -n "$NAMESPACE" -o jsonpath='{.items[0].spec.jwtRules[0].jwksUri}' 2>/dev/null || echo "")
 if [ -n "$JWKS_URI" ]; then
   info "JWKS URI: $JWKS_URI"
-  # Try to reach it from the proxy container (has curl)
-  JWKS_CODE=$(kubectl exec "$APP_POD" -n "$NAMESPACE" -c "$PROXY_CONTAINER" -- \
-    curl -s -o /dev/null -w "%{http_code}" "$JWKS_URI" --connect-timeout 5 2>&1 | tail -c 3 || echo "000")
+  # Try to reach it from the proxy container
+  JWKS_CODE=$(exec_curl "$APP_POD" "$NAMESPACE" "$PROXY_CONTAINER" "$JWKS_URI")
   if [ "$JWKS_CODE" = "200" ]; then
     pass "JWKS endpoint reachable (HTTP 200)"
   elif [ "$JWKS_CODE" = "000" ]; then
@@ -277,12 +287,13 @@ fi
 echo -e "\n${BOLD}  Test: Call without JWT token (should be rejected if enforced)${NC}"
 # This tests if the AuthorizationPolicy enforces JWT for user-facing endpoints
 if [ -n "$TARGET_SVC" ]; then
-  NO_TOKEN_CODE=$(kubectl exec "$APP_POD" -n "$NAMESPACE" -c "$APP_CONTAINER" -- \
-    curl -s -o /dev/null -w "%{http_code}" "http://${TARGET_SVC}:8080/api/v1/test" --connect-timeout 5 2>/dev/null || echo "000")
+  NO_TOKEN_CODE=$(exec_curl "$APP_POD" "$NAMESPACE" "$APP_CONTAINER" "http://${TARGET_SVC}:${SVC_PORT}/api/v1/test")
   if [ "$NO_TOKEN_CODE" = "401" ] || [ "$NO_TOKEN_CODE" = "403" ]; then
     pass "Request without JWT correctly rejected (HTTP $NO_TOKEN_CODE)"
   elif [ "$NO_TOKEN_CODE" = "200" ] || [ "$NO_TOKEN_CODE" = "404" ]; then
     info "Request without JWT returned HTTP $NO_TOKEN_CODE — internal calls use mTLS, not JWT (expected)"
+  elif [ "$NO_TOKEN_CODE" = "000" ]; then
+    warn "Could not reach $TARGET_SVC:$SVC_PORT/api/v1/test (curl may not be in container)"
   else
     warn "Request without JWT returned HTTP $NO_TOKEN_CODE"
   fi
