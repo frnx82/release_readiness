@@ -81,16 +81,21 @@ fi
 
 echo -e "\n${BOLD}  Check: istio-proxy container present in test pod${NC}"
 CONTAINERS=$(kubectl get pod "$APP_POD" -n "$NAMESPACE" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null)
+INIT_CONTAINERS=$(kubectl get pod "$APP_POD" -n "$NAMESPACE" -o jsonpath='{.spec.initContainers[*].name}' 2>/dev/null)
+ALL_CONTAINERS="$CONTAINERS $INIT_CONTAINERS"
 if echo "$CONTAINERS" | grep -q "istio-proxy"; then
-  pass "istio-proxy sidecar found in pod '$APP_POD'"
+  pass "istio-proxy sidecar found in pod '$APP_POD' (traditional injection)"
+elif echo "$INIT_CONTAINERS" | grep -q "istio-proxy"; then
+  pass "istio-proxy found as native sidecar in pod '$APP_POD' (K8s 1.28+ model)"
 else
-  fail "istio-proxy NOT found in pod '$APP_POD' (containers: $CONTAINERS)"
+  fail "istio-proxy NOT found in pod '$APP_POD' (containers: $CONTAINERS, initContainers: $INIT_CONTAINERS)"
 fi
 
 echo -e "\n${BOLD}  Check: istio-init init container ran${NC}"
-INIT_CONTAINERS=$(kubectl get pod "$APP_POD" -n "$NAMESPACE" -o jsonpath='{.spec.initContainers[*].name}' 2>/dev/null)
 if echo "$INIT_CONTAINERS" | grep -q "istio-init"; then
   pass "istio-init container found (iptables rules configured)"
+elif echo "$INIT_CONTAINERS" | grep -q "istio-proxy"; then
+  pass "Native sidecar mode — istio-proxy handles init (no separate istio-init needed)"
 else
   warn "istio-init NOT found — may use CNI-based interception instead"
 fi
