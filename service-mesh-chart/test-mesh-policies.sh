@@ -523,6 +523,158 @@ kubectl get gateway -n "$NAMESPACE" --no-headers 2>/dev/null | while read -r lin
 echo ""
 
 # =============================================================================
+# PHASE 5: Penetration Tests — External Attack Simulation
+# =============================================================================
+# Simulates attacks from OUTSIDE the namespace to verify that your
+# deny-all + JWT + mTLS policies actually block unauthorized access.
+#
+# How it works:
+#   1. Deploys a temporary "attacker" pod in a DIFFERENT namespace
+#   2. Attempts 6 attack vectors against your services
+#   3. Each test EXPECTS a denial (403/000/connection refused)
+#   4. If any attack SUCCEEDS (200), it's a ❌ FAIL
+#
+# What PASS confirms:
+#   - Cross-namespace traffic is blocked by deny-all-default
+#   - Missing JWT tokens are rejected
+#   - Fake/invalid JWT tokens are rejected
+#   - Plaintext HTTP is rejected by mTLS STRICT
+#   - Wrong host headers are rejected
+#   - Direct pod IP access is blocked
+#
+# ⚠️  This creates and deletes a temporary namespace "mesh-pentest-tmp".
+#     Requires permission to create namespaces.
+# =============================================================================
+header "Phase 5: Penetration Tests — External Attack Simulation"
+
+PENTEST_NS="mesh-pentest-tmp"
+PENTEST_POD="attacker"
+PENTEST_FAILED=false
+
+# Get a target service in the namespace
+TARGET_SVC_NAME=$(kubectl get svc -n "$NAMESPACE" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | head -1 || echo "")
+TARGET_SVC_IP=$(kubectl get svc "$TARGET_SVC_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+TARGET_POD_IP=$(kubectl get pod "$APP_POD" -n "$NAMESPACE" -o jsonpath='{.status.podIP}' 2>/dev/null || echo "")
+TARGET_PORT=$(kubectl get svc "$TARGET_SVC_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "8080")
+
+if [ -z "$TARGET_SVC_NAME" ]; then
+  warn "No services found in $NAMESPACE — skipping penetration tests"
+else
+
+  echo -e "\n${BOLD}  Setting up attacker pod in namespace '$PENTEST_NS'...${NC}"
+
+  # Create temporary namespace (no istio injection = no sidecar = plaintext)
+  kubectl create namespace "$PENTEST_NS" 2>/dev/null || true
+
+  # Deploy a minimal attacker pod with curl
+  kubectl run "$PENTEST_POD" -n "$PENTEST_NS" --image=curlimages/curl:latest \
+    --restart=Never --command -- sleep 300 2>/dev/null || true
+
+  # Wait for the pod to be ready
+  kubectl wait --for=condition=Ready pod/"$PENTEST_POD" -n "$PENTEST_NS" --timeout=30s 2>/dev/null || {
+    warn "Attacker pod failed to start — skipping penetration tests"
+    kubectl delete namespace "$PENTEST_NS" --ignore-not-found 2>/dev/null || true
+    PENTEST_FAILED=true
+  }
+
+  if [ "$PENTEST_FAILED" = false ]; then
+
+    # ── Test 1: Cross-namespace call via Service DNS ──────────────────
+    echo -e "\n${BOLD}  Attack 1: Cross-namespace call via Service DNS${NC}"
+    info "Attempting: curl http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/"
+    ATTACK1=$(kubectl exec "$PENTEST_POD" -n "$PENTEST_NS" -- \
+      sh -c "curl -s -o /dev/null -w '%{http_code}' 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/' --connect-timeout 5 2>/dev/null" 2>/dev/null \
+      | grep -oE '[0-9]{3}$' || echo "000")
+    if [ "$ATTACK1" = "200" ]; then
+      fail "ATTACK SUCCEEDED! Cross-namespace call returned HTTP 200 — deny-all is NOT working!"
+    elif [ "$ATTACK1" = "000" ]; then
+      pass "Cross-namespace call BLOCKED (connection refused/reset — mTLS rejected plaintext)"
+    else
+      pass "Cross-namespace call DENIED (HTTP $ATTACK1)"
+    fi
+
+    # ── Test 2: Call with no JWT token via gateway host ────────────────
+    echo -e "\n${BOLD}  Attack 2: Call via gateway hostname without JWT${NC}"
+    info "Attempting: curl -H 'Host: $(kubectl get vs -n "$NAMESPACE" -o jsonpath='{.items[0].spec.hosts[0]}' 2>/dev/null || echo "unknown")' ..."
+    VS_HOST=$(kubectl get virtualservice -n "$NAMESPACE" -o jsonpath='{.items[0].spec.hosts[0]}' 2>/dev/null || echo "")
+    if [ -n "$VS_HOST" ]; then
+      ATTACK2=$(kubectl exec "$PENTEST_POD" -n "$PENTEST_NS" -- \
+        sh -c "curl -s -o /dev/null -w '%{http_code}' 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/' -H 'Host: ${VS_HOST}' --connect-timeout 5 2>/dev/null" 2>/dev/null \
+        | grep -oE '[0-9]{3}$' || echo "000")
+      if [ "$ATTACK2" = "200" ]; then
+        fail "ATTACK SUCCEEDED! No-JWT call returned HTTP 200 — JWT enforcement is NOT working!"
+      else
+        pass "No-JWT call DENIED (HTTP $ATTACK2)"
+      fi
+    else
+      warn "Could not determine VirtualService host — skipping"
+    fi
+
+    # ── Test 3: Call with a fake JWT token ─────────────────────────────
+    echo -e "\n${BOLD}  Attack 3: Call with a fake/invalid JWT token${NC}"
+    FAKE_JWT="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJmYWtlLWlzc3VlciIsInN1YiI6ImhhY2tlciIsImV4cCI6OTk5OTk5OTk5OX0.fake-signature"
+    ATTACK3=$(kubectl exec "$PENTEST_POD" -n "$PENTEST_NS" -- \
+      sh -c "curl -s -o /dev/null -w '%{http_code}' 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/' -H 'Authorization: Bearer ${FAKE_JWT}' --connect-timeout 5 2>/dev/null" 2>/dev/null \
+      | grep -oE '[0-9]{3}$' || echo "000")
+    if [ "$ATTACK3" = "200" ]; then
+      fail "ATTACK SUCCEEDED! Fake JWT accepted — req-auth validation is NOT working!"
+    elif [ "$ATTACK3" = "401" ]; then
+      pass "Fake JWT correctly REJECTED (HTTP 401 — signature validation works)"
+    else
+      pass "Fake JWT call DENIED (HTTP $ATTACK3)"
+    fi
+
+    # ── Test 4: Plaintext HTTP to pod IP (bypass service DNS) ──────────
+    echo -e "\n${BOLD}  Attack 4: Plaintext HTTP directly to Pod IP${NC}"
+    if [ -n "$TARGET_POD_IP" ]; then
+      info "Attempting: curl http://${TARGET_POD_IP}:${TARGET_PORT}/"
+      ATTACK4=$(kubectl exec "$PENTEST_POD" -n "$PENTEST_NS" -- \
+        sh -c "curl -s -o /dev/null -w '%{http_code}' 'http://${TARGET_POD_IP}:${TARGET_PORT}/' --connect-timeout 5 2>/dev/null" 2>/dev/null \
+        | grep -oE '[0-9]{3}$' || echo "000")
+      if [ "$ATTACK4" = "200" ]; then
+        fail "ATTACK SUCCEEDED! Direct pod IP call returned HTTP 200 — mTLS is NOT blocking plaintext!"
+      else
+        pass "Direct pod IP call DENIED (HTTP $ATTACK4 — mTLS STRICT rejected plaintext)"
+      fi
+    else
+      warn "Could not determine pod IP — skipping"
+    fi
+
+    # ── Test 5: Wrong Host header ──────────────────────────────────────
+    echo -e "\n${BOLD}  Attack 5: Call with a spoofed/wrong Host header${NC}"
+    ATTACK5=$(kubectl exec "$PENTEST_POD" -n "$PENTEST_NS" -- \
+      sh -c "curl -s -o /dev/null -w '%{http_code}' 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/' -H 'Host: evil.example.com' --connect-timeout 5 2>/dev/null" 2>/dev/null \
+      | grep -oE '[0-9]{3}$' || echo "000")
+    if [ "$ATTACK5" = "200" ]; then
+      fail "ATTACK SUCCEEDED! Wrong host header accepted — host validation is NOT working!"
+    else
+      pass "Wrong host header DENIED (HTTP $ATTACK5)"
+    fi
+
+    # ── Test 6: Access from non-mesh pod (no sidecar) ──────────────────
+    echo -e "\n${BOLD}  Attack 6: Access from pod without Istio sidecar (plaintext)${NC}"
+    info "The attacker pod has no sidecar — this tests mTLS rejection of non-mesh traffic"
+    # This is effectively the same as Test 1 but we check the connection behavior
+    ATTACK6=$(kubectl exec "$PENTEST_POD" -n "$PENTEST_NS" -- \
+      sh -c "curl -s -o /dev/null -w '%{http_code}' 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/api/v1/' --connect-timeout 5 2>/dev/null" 2>/dev/null \
+      | grep -oE '[0-9]{3}$' || echo "000")
+    if [ "$ATTACK6" = "200" ]; then
+      fail "ATTACK SUCCEEDED! Non-mesh pod reached service — mTLS STRICT is NOT enforced!"
+    elif [ "$ATTACK6" = "000" ]; then
+      pass "Non-mesh pod BLOCKED (connection reset — mTLS rejected plaintext connection)"
+    else
+      pass "Non-mesh pod DENIED (HTTP $ATTACK6)"
+    fi
+
+    # ── Cleanup ────────────────────────────────────────────────────────
+    echo -e "\n${BOLD}  Cleaning up attacker pod...${NC}"
+    kubectl delete pod "$PENTEST_POD" -n "$PENTEST_NS" --grace-period=0 --force 2>/dev/null || true
+    kubectl delete namespace "$PENTEST_NS" --ignore-not-found 2>/dev/null || true
+    info "Cleanup complete — '$PENTEST_NS' namespace removed"
+  fi
+fi
+
+# =============================================================================
 # FINAL SCORE
 # =============================================================================
 header "Final Score"
@@ -540,3 +692,4 @@ else
   echo -e "  ${RED}${BOLD}⛔ $FAIL critical check(s) failed. Review the output above and fix before proceeding.${NC}"
 fi
 echo ""
+

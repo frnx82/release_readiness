@@ -29,12 +29,7 @@ spec:
             # The wildcard pattern matches all SAs in our namespace.
             principals:
               - "cluster.local/ns/{{ .Values.namespace }}/sa/*"
-    - from:
-        - source:
-            # Allow traffic from the ASM ingress gateway (for external user requests).
-            # This is required so that requests arriving via the Gateway → VirtualService
-            # path are not blocked by the deny-all policy.
-            namespaces:
-              - "asm-gateway"
-              - "istio-system"
+    # NOTE: Gateway traffic (from asm-gateway) is NOT allowed here.
+    # It is handled by authorization-authz.yaml which requires a valid
+    # CIDP JWT token. This ensures external requests MUST be authenticated.
 {{- end }}

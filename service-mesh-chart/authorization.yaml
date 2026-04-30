@@ -17,7 +17,9 @@ spec:
     - to:
         - operation:
             hosts:
-              # Allow requests to the external gateway and all internal services
+              # Allow requests via the external gateway (external traffic)
               - {{ include "aarui.virtualservice_host" . }}
-              - rest.{{ .Values.namespace }}.svc.cluster.local
-              - executive-insights-api.{{ .Values.namespace }}.svc.cluster.local
+              # Allow internal service-to-service calls (all mesh services)
+              {{- range .Values.virtualService.routes }}
+              - {{ .destination.host }}.{{ $.Values.namespace }}.svc.cluster.local
+              {{- end }}
