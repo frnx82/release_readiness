@@ -604,10 +604,17 @@ else
     warn "Attacker pod failed to start — showing diagnostics:"
     echo ""
     echo -e "  ${BOLD}  Pod Status:${NC}"
-    kubectl get pod "$PENTEST_POD" -n "$PENTEST_NS" -o wide 2>/dev/null | while read -r line; do echo -e "       $line"; done || true
+    kubectl get pod "$PENTEST_POD" -n "$PENTEST_NS" -o wide 2>&1 | sed 's/^/       /' || true
     echo ""
-    echo -e "  ${BOLD}  Pod Events:${NC}"
-    kubectl describe pod "$PENTEST_POD" -n "$PENTEST_NS" 2>/dev/null | grep -A20 "^Events:" | while read -r line; do echo -e "       $line"; done || true
+    echo -e "  ${BOLD}  Pod Events (last 15 lines):${NC}"
+    kubectl describe pod "$PENTEST_POD" -n "$PENTEST_NS" 2>&1 | tail -15 | sed 's/^/       /' || true
+    echo ""
+    # Also check if the secret was created correctly
+    echo -e "  ${BOLD}  ImagePullSecrets on pod:${NC}"
+    kubectl get pod "$PENTEST_POD" -n "$PENTEST_NS" -o jsonpath='{.spec.imagePullSecrets[*].name}' 2>&1 | sed 's/^/       /' || true
+    echo ""
+    echo -e "  ${BOLD}  Image being pulled:${NC}"
+    kubectl get pod "$PENTEST_POD" -n "$PENTEST_NS" -o jsonpath='{.spec.containers[0].image}' 2>&1 | sed 's/^/       /' || true
     echo ""
     info "Common causes:"
     info "  • ImagePullBackOff  → Wrong image path or registry credentials"
@@ -615,7 +622,9 @@ else
     info "  • Pending           → No nodes available or resource limits"
     info ""
     info "Verify your image path: $PENTEST_IMAGE"
-    info "Verify your registry:   $REGISTRY_URL"
+    info "Verify your registry:   ${REGISTRY_URL:-not set}"
+    info ""
+    info "Manual debug: kubectl describe pod $PENTEST_POD -n $PENTEST_NS"
     echo ""
     warn "Skipping penetration tests — cleaning up"
     kubectl delete namespace "$PENTEST_NS" --ignore-not-found 2>/dev/null || true
