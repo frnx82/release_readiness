@@ -65,6 +65,14 @@
 #   - kubectl configured with cluster access
 #   - Target namespace must have at least one running pod
 #   - Istio must be installed on the cluster
+#
+# ARTIFACTORY AUTH (for Phase 5 pen tests):
+#   If your busybox image is in a private Artifactory registry, set:
+#     export REGISTRY_URL=your-artifactory.example.com
+#     export REGISTRY_USER=your-username
+#     export REGISTRY_KEY=your-api-key
+#     export PENTEST_IMAGE=your-artifactory.example.com/docker-local/busybox:latest
+#   The script will create a temporary imagePullSecret automatically.
 # =============================================================================
 
 set -euo pipefail
@@ -72,6 +80,10 @@ set -euo pipefail
 # ── Configuration ────────────────────────────────────────────────────────────
 NAMESPACE="${1:-demo-dev}"
 APP_POD="${2:-}"  # Optional: specific pod to test from. Auto-detected if empty.
+PENTEST_IMAGE="${PENTEST_IMAGE:-busybox:latest}"  # Override: PENTEST_IMAGE=registry.example.com/busybox:latest
+REGISTRY_URL="${REGISTRY_URL:-}"     # Artifactory registry URL (e.g., artifactory.example.com)
+REGISTRY_USER="${REGISTRY_USER:-}"   # Artifactory username
+REGISTRY_KEY="${REGISTRY_KEY:-}"     # Artifactory API key or password
 PASS=0
 FAIL=0
 WARN=0
@@ -566,9 +578,26 @@ else
   # Create temporary namespace (no istio injection = no sidecar = plaintext)
   kubectl create namespace "$PENTEST_NS" 2>/dev/null || true
 
-  # Deploy a minimal attacker pod with curl
-  kubectl run "$PENTEST_POD" -n "$PENTEST_NS" --image=curlimages/curl:latest \
-    --restart=Never --command -- sleep 300 2>/dev/null || true
+  # If Artifactory credentials are provided, create an imagePullSecret
+  PULL_SECRET_NAME="artifactory-pull-secret"
+  if [ -n "$REGISTRY_URL" ] && [ -n "$REGISTRY_USER" ] && [ -n "$REGISTRY_KEY" ]; then
+    echo -e "  ${BLUE}ℹ️  INFO${NC}: Creating imagePullSecret for $REGISTRY_URL"
+    kubectl create secret docker-registry "$PULL_SECRET_NAME" \
+      -n "$PENTEST_NS" \
+      --docker-server="$REGISTRY_URL" \
+      --docker-username="$REGISTRY_USER" \
+      --docker-password="$REGISTRY_KEY" \
+      2>/dev/null || true
+
+    # Deploy attacker pod WITH imagePullSecret
+    kubectl run "$PENTEST_POD" -n "$PENTEST_NS" --image="$PENTEST_IMAGE" \
+      --overrides="{\"spec\":{\"imagePullSecrets\":[{\"name\":\"$PULL_SECRET_NAME\"}]}}" \
+      --restart=Never --command -- sleep 300 2>/dev/null || true
+  else
+    # Deploy attacker pod without imagePullSecret (public or pre-configured registry)
+    kubectl run "$PENTEST_POD" -n "$PENTEST_NS" --image="$PENTEST_IMAGE" \
+      --restart=Never --command -- sleep 300 2>/dev/null || true
+  fi
 
   # Wait for the pod to be ready
   kubectl wait --for=condition=Ready pod/"$PENTEST_POD" -n "$PENTEST_NS" --timeout=30s 2>/dev/null || {
@@ -581,10 +610,9 @@ else
 
     # ── Test 1: Cross-namespace call via Service DNS ──────────────────
     echo -e "\n${BOLD}  Attack 1: Cross-namespace call via Service DNS${NC}"
-    info "Attempting: curl http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/"
+    info "Attempting: http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/"
     ATTACK1=$(kubectl exec "$PENTEST_POD" -n "$PENTEST_NS" -- \
-      sh -c "curl -s -o /dev/null -w '%{http_code}' 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/' --connect-timeout 5 2>/dev/null" 2>/dev/null \
-      | grep -oE '[0-9]{3}$' || echo "000")
+      sh -c "wget -q -O /dev/null -S 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/' -T 5 2>&1 | grep 'HTTP/' | tail -1 | grep -oE '[0-9]{3}' || echo '000'" 2>/dev/null || echo "000")
     if [ "$ATTACK1" = "200" ]; then
       fail "ATTACK SUCCEEDED! Cross-namespace call returned HTTP 200 — deny-all is NOT working!"
     elif [ "$ATTACK1" = "000" ]; then
@@ -595,12 +623,11 @@ else
 
     # ── Test 2: Call with no JWT token via gateway host ────────────────
     echo -e "\n${BOLD}  Attack 2: Call via gateway hostname without JWT${NC}"
-    info "Attempting: curl -H 'Host: $(kubectl get vs -n "$NAMESPACE" -o jsonpath='{.items[0].spec.hosts[0]}' 2>/dev/null || echo "unknown")' ..."
     VS_HOST=$(kubectl get virtualservice -n "$NAMESPACE" -o jsonpath='{.items[0].spec.hosts[0]}' 2>/dev/null || echo "")
     if [ -n "$VS_HOST" ]; then
+      info "Attempting: wget with Host: ${VS_HOST}"
       ATTACK2=$(kubectl exec "$PENTEST_POD" -n "$PENTEST_NS" -- \
-        sh -c "curl -s -o /dev/null -w '%{http_code}' 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/' -H 'Host: ${VS_HOST}' --connect-timeout 5 2>/dev/null" 2>/dev/null \
-        | grep -oE '[0-9]{3}$' || echo "000")
+        sh -c "wget -q -O /dev/null -S --header='Host: ${VS_HOST}' 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/' -T 5 2>&1 | grep 'HTTP/' | tail -1 | grep -oE '[0-9]{3}' || echo '000'" 2>/dev/null || echo "000")
       if [ "$ATTACK2" = "200" ]; then
         fail "ATTACK SUCCEEDED! No-JWT call returned HTTP 200 — JWT enforcement is NOT working!"
       else
@@ -614,8 +641,7 @@ else
     echo -e "\n${BOLD}  Attack 3: Call with a fake/invalid JWT token${NC}"
     FAKE_JWT="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJmYWtlLWlzc3VlciIsInN1YiI6ImhhY2tlciIsImV4cCI6OTk5OTk5OTk5OX0.fake-signature"
     ATTACK3=$(kubectl exec "$PENTEST_POD" -n "$PENTEST_NS" -- \
-      sh -c "curl -s -o /dev/null -w '%{http_code}' 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/' -H 'Authorization: Bearer ${FAKE_JWT}' --connect-timeout 5 2>/dev/null" 2>/dev/null \
-      | grep -oE '[0-9]{3}$' || echo "000")
+      sh -c "wget -q -O /dev/null -S --header='Authorization: Bearer ${FAKE_JWT}' 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/' -T 5 2>&1 | grep 'HTTP/' | tail -1 | grep -oE '[0-9]{3}' || echo '000'" 2>/dev/null || echo "000")
     if [ "$ATTACK3" = "200" ]; then
       fail "ATTACK SUCCEEDED! Fake JWT accepted — req-auth validation is NOT working!"
     elif [ "$ATTACK3" = "401" ]; then
@@ -627,10 +653,9 @@ else
     # ── Test 4: Plaintext HTTP to pod IP (bypass service DNS) ──────────
     echo -e "\n${BOLD}  Attack 4: Plaintext HTTP directly to Pod IP${NC}"
     if [ -n "$TARGET_POD_IP" ]; then
-      info "Attempting: curl http://${TARGET_POD_IP}:${TARGET_PORT}/"
+      info "Attempting: wget http://${TARGET_POD_IP}:${TARGET_PORT}/"
       ATTACK4=$(kubectl exec "$PENTEST_POD" -n "$PENTEST_NS" -- \
-        sh -c "curl -s -o /dev/null -w '%{http_code}' 'http://${TARGET_POD_IP}:${TARGET_PORT}/' --connect-timeout 5 2>/dev/null" 2>/dev/null \
-        | grep -oE '[0-9]{3}$' || echo "000")
+        sh -c "wget -q -O /dev/null -S 'http://${TARGET_POD_IP}:${TARGET_PORT}/' -T 5 2>&1 | grep 'HTTP/' | tail -1 | grep -oE '[0-9]{3}' || echo '000'" 2>/dev/null || echo "000")
       if [ "$ATTACK4" = "200" ]; then
         fail "ATTACK SUCCEEDED! Direct pod IP call returned HTTP 200 — mTLS is NOT blocking plaintext!"
       else
@@ -643,8 +668,7 @@ else
     # ── Test 5: Wrong Host header ──────────────────────────────────────
     echo -e "\n${BOLD}  Attack 5: Call with a spoofed/wrong Host header${NC}"
     ATTACK5=$(kubectl exec "$PENTEST_POD" -n "$PENTEST_NS" -- \
-      sh -c "curl -s -o /dev/null -w '%{http_code}' 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/' -H 'Host: evil.example.com' --connect-timeout 5 2>/dev/null" 2>/dev/null \
-      | grep -oE '[0-9]{3}$' || echo "000")
+      sh -c "wget -q -O /dev/null -S --header='Host: evil.example.com' 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/' -T 5 2>&1 | grep 'HTTP/' | tail -1 | grep -oE '[0-9]{3}' || echo '000'" 2>/dev/null || echo "000")
     if [ "$ATTACK5" = "200" ]; then
       fail "ATTACK SUCCEEDED! Wrong host header accepted — host validation is NOT working!"
     else
@@ -654,10 +678,8 @@ else
     # ── Test 6: Access from non-mesh pod (no sidecar) ──────────────────
     echo -e "\n${BOLD}  Attack 6: Access from pod without Istio sidecar (plaintext)${NC}"
     info "The attacker pod has no sidecar — this tests mTLS rejection of non-mesh traffic"
-    # This is effectively the same as Test 1 but we check the connection behavior
     ATTACK6=$(kubectl exec "$PENTEST_POD" -n "$PENTEST_NS" -- \
-      sh -c "curl -s -o /dev/null -w '%{http_code}' 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/api/v1/' --connect-timeout 5 2>/dev/null" 2>/dev/null \
-      | grep -oE '[0-9]{3}$' || echo "000")
+      sh -c "wget -q -O /dev/null -S 'http://${TARGET_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${TARGET_PORT}/api/v1/' -T 5 2>&1 | grep 'HTTP/' | tail -1 | grep -oE '[0-9]{3}' || echo '000'" 2>/dev/null || echo "000")
     if [ "$ATTACK6" = "200" ]; then
       fail "ATTACK SUCCEEDED! Non-mesh pod reached service — mTLS STRICT is NOT enforced!"
     elif [ "$ATTACK6" = "000" ]; then
