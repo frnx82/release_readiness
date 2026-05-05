@@ -23,3 +23,10 @@ spec:
               {{- range .Values.virtualService.routes }}
               - {{ .destination.host }}.{{ $.Values.namespace }}.svc.cluster.local
               {{- end }}
+      from:
+        - source:
+            # Only allow traffic from service accounts within the SAME namespace.
+            # Without this constraint, ANY source (including cross-namespace pods)
+            # can bypass deny-all-default by matching the host list above.
+            principals:
+              - "cluster.local/ns/{{ .Values.namespace }}/sa/*"

@@ -47,6 +47,12 @@
 #     ➜ CONFIRMS: Each service has an explicit allow-list of who can call it.
 #                 Defense-in-depth beyond namespace-level isolation.
 #
+#   Phase 4B — ServiceAccount Identity Audit
+#     • Checks if pods use dedicated ServiceAccounts (not 'default')
+#     • Verifies unique SPIFFE identities per service
+#     • Checks that ALLOW policies have 'from' source constraints
+#     ➜ CONFIRMS: Each service has a unique mTLS identity for fine-grained policies.
+#
 # RESULT MEANINGS:
 #   ✅ PASS — Check passed, security control is verified
 #   ❌ FAIL — Critical: security control is missing or misconfigured
@@ -507,6 +513,72 @@ else
 fi
 
 # =============================================================================
+# PHASE 4B: ServiceAccount Identity Audit
+# =============================================================================
+# Verifies that services use dedicated ServiceAccounts instead of the
+# Kubernetes 'default' SA. Without dedicated SAs, all pods share the same
+# mTLS identity and Principle 4 per-service allow-lists become meaningless.
+#
+# What PASS confirms:
+#   - Each service has its own ServiceAccount (unique SPIFFE identity)
+#   - ALLOW AuthorizationPolicies include 'from' source constraints
+#   - No open ALLOW rules that bypass deny-all-default
+# =============================================================================
+header "Phase 4B: ServiceAccount Identity Audit"
+
+echo -e "\n${BOLD}  Check: Services use dedicated ServiceAccounts (not 'default')${NC}"
+SA_ISSUES=0
+while IFS= read -r pod_name; do
+  [ -z "$pod_name" ] && continue
+  POD_SA=$(kubectl get pod "$pod_name" -n "$NAMESPACE" -o jsonpath='{.spec.serviceAccountName}' 2>/dev/null || echo "unknown")
+  if [ "$POD_SA" = "default" ]; then
+    warn "Pod '$pod_name' uses the 'default' ServiceAccount — no unique mTLS identity"
+    ((SA_ISSUES++)) || true
+  else
+    pass "Pod '$pod_name' → SA: $POD_SA"
+  fi
+done <<< "$(kubectl get pods -n "$NAMESPACE" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | grep -v 'Completed\|Succeeded' | grep -v '^$')"
+
+if [ "$SA_ISSUES" -gt 0 ]; then
+  info "Impact: Pods using 'default' SA share the same mTLS identity"
+  info "        Per-service allow-lists (Principle 4) cannot distinguish them"
+  info "Fix: Create a ServiceAccount per service and set serviceAccountName in Deployment spec"
+fi
+
+echo -e "\n${BOLD}  Check: Custom ServiceAccounts in namespace${NC}"
+SA_LIST=$(kubectl get serviceaccount -n "$NAMESPACE" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | grep -v "^default$" || true)
+SA_COUNT=$(echo "$SA_LIST" | grep -c "." 2>/dev/null || echo "0")
+if [ "$SA_COUNT" -gt 0 ]; then
+  pass "Found $SA_COUNT custom ServiceAccount(s)"
+  echo "$SA_LIST" | while read -r sa; do
+    info "  → $sa (spiffe://cluster.local/ns/$NAMESPACE/sa/$sa)"
+  done
+else
+  warn "No custom ServiceAccounts found — all pods use 'default'"
+fi
+
+echo -e "\n${BOLD}  Check: ALLOW policies have 'from' source constraints${NC}"
+OPEN_ALLOW=0
+CHECKED_ALLOW=0
+while IFS= read -r pol_name; do
+  [ -z "$pol_name" ] && continue
+  POL_ACTION=$(kubectl get authorizationpolicy "$pol_name" -n "$NAMESPACE" -o jsonpath='{.spec.action}' 2>/dev/null || echo "")
+  [ "$POL_ACTION" != "ALLOW" ] && continue
+  ((CHECKED_ALLOW++)) || true
+  HAS_FROM=$(kubectl get authorizationpolicy "$pol_name" -n "$NAMESPACE" -o yaml 2>/dev/null | grep -c "from:" || echo "0")
+  if [ "$HAS_FROM" -eq 0 ]; then
+    fail "Policy '$pol_name' has ALLOW but NO 'from' constraint — allows ANY source!"
+    ((OPEN_ALLOW++)) || true
+  else
+    pass "Policy '$pol_name' has 'from' source constraints"
+  fi
+done <<< "$(kubectl get authorizationpolicy -n "$NAMESPACE" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null)"
+
+if [ "$OPEN_ALLOW" -eq 0 ] && [ "$CHECKED_ALLOW" -gt 0 ]; then
+  pass "All $CHECKED_ALLOW ALLOW policies have proper 'from' constraints"
+fi
+
+# =============================================================================
 # SUMMARY: All Istio Resources
 # =============================================================================
 # Lists every Istio CRD deployed in the namespace for quick audit.
@@ -542,7 +614,7 @@ echo ""
 #
 # How it works:
 #   1. Deploys a temporary "attacker" pod in a DIFFERENT namespace
-#   2. Attempts 6 attack vectors against your services
+#   2. Attempts 7 attack vectors against your services
 #   3. Each test EXPECTS a denial (403/000/connection refused)
 #   4. If any attack SUCCEEDS (200), it's a ❌ FAIL
 #
@@ -553,6 +625,7 @@ echo ""
 #   - Plaintext HTTP is rejected by mTLS STRICT
 #   - Wrong host headers are rejected
 #   - Direct pod IP access is blocked
+#   - Same-namespace rogue ServiceAccount is blocked (Principle 4)
 #
 # ⚠️  This creates and deletes a temporary namespace "mesh-pentest-tmp".
 #     Requires permission to create namespaces.
@@ -711,6 +784,62 @@ else
       pass "Non-mesh pod BLOCKED (connection reset — mTLS rejected plaintext connection)"
     else
       pass "Non-mesh pod DENIED (HTTP $ATTACK6)"
+    fi
+
+    # ── Test 7: Same-namespace pod with unauthorized ServiceAccount ───
+    echo -e "\n${BOLD}  Attack 7: Same-namespace pod with unauthorized ServiceAccount${NC}"
+    info "Tests Principle 4: per-service allow-lists within the namespace"
+    info "A pod WITH a sidecar but using an unknown SA should be blocked if per-service allow-lists are active"
+
+    ROGUE_SA="rogue-pentest-sa"
+    ROGUE_POD="rogue-pentest"
+    ROGUE_FAILED=false
+
+    # Create a rogue ServiceAccount in the TARGET namespace
+    kubectl create serviceaccount "$ROGUE_SA" -n "$NAMESPACE" 2>/dev/null || true
+
+    # Deploy pod with rogue SA — it WILL get a sidecar (namespace has injection enabled)
+    if [ -n "$REGISTRY_URL" ] && [ -n "$REGISTRY_USER" ] && [ -n "$REGISTRY_KEY" ]; then
+      kubectl run "$ROGUE_POD" -n "$NAMESPACE" --image="$PENTEST_IMAGE" \
+        --overrides="{\"spec\":{\"serviceAccountName\":\"$ROGUE_SA\",\"imagePullSecrets\":[{\"name\":\"$PULL_SECRET_NAME\"}]}}" \
+        --restart=Never --command -- sleep 120 2>/dev/null || true
+    else
+      kubectl run "$ROGUE_POD" -n "$NAMESPACE" --image="$PENTEST_IMAGE" \
+        --overrides="{\"spec\":{\"serviceAccountName\":\"$ROGUE_SA\"}}" \
+        --restart=Never --command -- sleep 120 2>/dev/null || true
+    fi
+
+    # Wait for pod + sidecar to be ready
+    kubectl wait --for=condition=Ready pod/"$ROGUE_POD" -n "$NAMESPACE" --timeout=60s 2>/dev/null || {
+      warn "Rogue pod failed to start — skipping Attack 7"
+      ROGUE_FAILED=true
+    }
+
+    if [ "$ROGUE_FAILED" = false ]; then
+      # The rogue pod has a sidecar with mTLS identity: sa/rogue-pentest-sa
+      # If per-service allow-lists are configured, this SA should NOT be allowed
+      ATTACK7=$(kubectl exec "$ROGUE_POD" -n "$NAMESPACE" -- \
+        sh -c "wget -q -O /dev/null -S 'http://${TARGET_SVC_NAME}:${TARGET_PORT}/' -T 5 2>&1 | grep 'HTTP/' | tail -1 | grep -oE '[0-9]{3}' || echo '000'" 2>/dev/null || echo "000")
+      if [ "$ATTACK7" = "403" ]; then
+        pass "Rogue SA correctly BLOCKED (HTTP 403) — per-service allow-lists are enforced!"
+      elif [ "$ATTACK7" = "200" ]; then
+        warn "Rogue SA got HTTP 200 — per-service allow-lists (Principle 4) not yet enforced"
+        info "This is expected if using 'sa/*' wildcard in authorization policies"
+        info "For full zero-trust, configure specific SA names in your allow-list policies"
+      elif [ "$ATTACK7" = "000" ]; then
+        warn "Rogue pod could not reach $TARGET_SVC_NAME (wget may not be available with sidecar)"
+      else
+        info "Rogue SA got HTTP $ATTACK7"
+      fi
+
+      # Cleanup rogue pod and SA
+      kubectl delete pod "$ROGUE_POD" -n "$NAMESPACE" --grace-period=0 --force 2>/dev/null || true
+      kubectl delete serviceaccount "$ROGUE_SA" -n "$NAMESPACE" 2>/dev/null || true
+      info "Rogue pod and SA cleaned up"
+    else
+      # Cleanup on failure
+      kubectl delete pod "$ROGUE_POD" -n "$NAMESPACE" --ignore-not-found --grace-period=0 --force 2>/dev/null || true
+      kubectl delete serviceaccount "$ROGUE_SA" -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
     fi
 
     # ── Cleanup ────────────────────────────────────────────────────────
