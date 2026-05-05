@@ -503,23 +503,23 @@ fi
 header "Summary: Deployed Istio Resources"
 
 echo -e "\n${BOLD}  PeerAuthentication:${NC}"
-kubectl get peerauthentication -n "$NAMESPACE" --no-headers 2>/dev/null | while read -r line; do echo -e "    $line"; done
+kubectl get peerauthentication -n "$NAMESPACE" --no-headers 2>/dev/null | while read -r line; do echo -e "    $line"; done || true
 echo ""
 
 echo -e "${BOLD}  AuthorizationPolicy:${NC}"
-kubectl get authorizationpolicy -n "$NAMESPACE" --no-headers 2>/dev/null | while read -r line; do echo -e "    $line"; done
+kubectl get authorizationpolicy -n "$NAMESPACE" --no-headers 2>/dev/null | while read -r line; do echo -e "    $line"; done || true
 echo ""
 
 echo -e "${BOLD}  RequestAuthentication:${NC}"
-kubectl get requestauthentication -n "$NAMESPACE" --no-headers 2>/dev/null | while read -r line; do echo -e "    $line"; done
+kubectl get requestauthentication -n "$NAMESPACE" --no-headers 2>/dev/null | while read -r line; do echo -e "    $line"; done || true
 echo ""
 
 echo -e "${BOLD}  VirtualService:${NC}"
-kubectl get virtualservice -n "$NAMESPACE" --no-headers 2>/dev/null | while read -r line; do echo -e "    $line"; done
+kubectl get virtualservice -n "$NAMESPACE" --no-headers 2>/dev/null | while read -r line; do echo -e "    $line"; done || true
 echo ""
 
 echo -e "${BOLD}  Gateway:${NC}"
-kubectl get gateway -n "$NAMESPACE" --no-headers 2>/dev/null | while read -r line; do echo -e "    $line"; done
+kubectl get gateway -n "$NAMESPACE" --no-headers 2>/dev/null | while read -r line; do echo -e "    $line"; done || true
 echo ""
 
 # =============================================================================
