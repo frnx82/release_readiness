@@ -607,28 +607,89 @@ kubectl get gateway -n "$NAMESPACE" --no-headers 2>/dev/null | while read -r lin
 echo ""
 
 # =============================================================================
-# PHASE 5: Penetration Tests — External Attack Simulation
+# PHASE 5: Penetration Tests — Attack Simulation
 # =============================================================================
-# Simulates attacks from OUTSIDE the namespace to verify that your
-# deny-all + JWT + mTLS policies actually block unauthorized access.
+# Simulates real-world attacks to verify that your deny-all + JWT + mTLS
+# policies actually block unauthorized access. Tests both cross-namespace
+# (external) and same-namespace (insider threat) attack vectors.
 #
-# How it works:
-#   1. Deploys a temporary "attacker" pod in a DIFFERENT namespace
-#   2. Attempts 7 attack vectors against your services
-#   3. Each test EXPECTS a denial (403/000/connection refused)
-#   4. If any attack SUCCEEDS (200), it's a ❌ FAIL
+# ── SETUP ────────────────────────────────────────────────────────────────
+#   1. Creates a temporary namespace "mesh-pentest-tmp" (NO istio-injection)
+#   2. Deploys an "attacker" pod (busybox) in that namespace — no sidecar,
+#      so all traffic from this pod is plaintext (simulates non-mesh traffic)
+#   3. Identifies a target service and pod in YOUR namespace
+#   4. Runs 7 attack vectors (Attacks 1-6 from external ns, Attack 7 from
+#      inside your namespace)
+#   5. Cleans up: deletes attacker pod, rogue pod/SA, and temp namespace
 #
-# What PASS confirms:
-#   - Cross-namespace traffic is blocked by deny-all-default
-#   - Missing JWT tokens are rejected
-#   - Fake/invalid JWT tokens are rejected
-#   - Plaintext HTTP is rejected by mTLS STRICT
-#   - Wrong host headers are rejected
-#   - Direct pod IP access is blocked
-#   - Same-namespace rogue ServiceAccount is blocked (Principle 4)
+# ── ATTACK VECTORS ───────────────────────────────────────────────────────
 #
-# ⚠️  This creates and deletes a temporary namespace "mesh-pentest-tmp".
-#     Requires permission to create namespaces.
+#   Attack 1: Cross-Namespace Call via Service DNS
+#     What:   Calls http://<svc>.<your-ns>.svc.cluster.local from mesh-pentest-tmp
+#     Tests:  Principle 1 (deny-all-default blocks cross-namespace traffic)
+#     Expect: 403 or 000 (connection refused) = PASS
+#             200 = FAIL — deny-all is not working!
+#
+#   Attack 2: Gateway Call Without JWT Token
+#     What:   Calls your service with the VirtualService Host header but no JWT
+#     Tests:  Principle 3 (JWT enforcement on external-facing routes)
+#     Expect: 401/403/000 = PASS
+#             200 = FAIL — JWT enforcement is missing!
+#
+#   Attack 3: Fake/Invalid JWT Token
+#     What:   Sends a request with a forged JWT (wrong issuer + fake signature)
+#     Tests:  Principle 3 (JWT signature and issuer validation via JWKS)
+#     Expect: 401 = PASS (signature validation caught the fake)
+#             200 = FAIL — JWT tokens are not being validated!
+#
+#   Attack 4: Plaintext HTTP Directly to Pod IP
+#     What:   Bypasses Service DNS and calls the pod IP directly with plain HTTP
+#     Tests:  Principle 2 (mTLS STRICT rejects non-TLS connections)
+#     Expect: 000 (connection reset) = PASS — Envoy rejected plaintext
+#             200 = FAIL — mTLS is not enforced, plaintext is accepted!
+#
+#   Attack 5: Spoofed/Wrong Host Header
+#     What:   Calls the service with Host: evil.example.com
+#     Tests:  VirtualService host-based routing validation
+#     Expect: 403/404/000 = PASS
+#             200 = FAIL — host header is not validated!
+#
+#   Attack 6: Non-Mesh Pod (No Sidecar) Access
+#     What:   The attacker pod has NO Istio sidecar — sends plaintext HTTP
+#     Tests:  Principle 2 (mTLS STRICT rejects connections from non-mesh pods)
+#     Expect: 000 (connection reset by Envoy) = PASS
+#             200 = FAIL — your services accept traffic from outside the mesh!
+#     Note:   This differs from Attack 4 by using Service DNS instead of Pod IP
+#
+#   Attack 7: Same-Namespace Rogue ServiceAccount ★ NEW
+#     What:   Deploys a pod INSIDE your namespace with an unknown ServiceAccount
+#             ("rogue-pentest-sa"). This pod GETS a sidecar and valid mTLS cert.
+#     Tests:  Principle 4 (per-service allow-lists with specific SA names)
+#     Expect: 403 = PASS — per-service allow-lists are enforced!
+#             200 = WARN — you're using sa/* wildcard (Principle 1 works,
+#                          but Principle 4 per-service isolation is not active)
+#     Why:    This simulates a compromised or rogue pod within your own
+#             namespace. If you use sa/* wildcard in your policies, this pod
+#             has full access. If you use specific SA names, it's blocked.
+#     Setup:  Creates ServiceAccount "rogue-pentest-sa" + pod "rogue-pentest"
+#             in YOUR namespace, then cleans up both after the test.
+#
+# ── RESULT INTERPRETATION ────────────────────────────────────────────────
+#   ✅ PASS — Attack was blocked (403/401/000/connection reset)
+#   ❌ FAIL — Attack succeeded (200) — security control is broken!
+#   ⚠️  WARN — Could not run test, or informational (Attack 7 with sa/*)
+#
+# ── REQUIREMENTS ─────────────────────────────────────────────────────────
+#   - Permission to create/delete namespaces (for mesh-pentest-tmp)
+#   - Permission to create/delete ServiceAccounts and pods in your namespace
+#     (for Attack 7 rogue SA test)
+#   - busybox image accessible (or set PENTEST_IMAGE + registry credentials)
+#
+# ⚠️  This creates and deletes:
+#     - Namespace: "mesh-pentest-tmp" (Attacks 1-6)
+#     - ServiceAccount: "rogue-pentest-sa" in YOUR namespace (Attack 7)
+#     - Pod: "rogue-pentest" in YOUR namespace (Attack 7)
+#     All resources are cleaned up automatically after tests complete.
 # =============================================================================
 header "Phase 5: Penetration Tests — External Attack Simulation"
 
