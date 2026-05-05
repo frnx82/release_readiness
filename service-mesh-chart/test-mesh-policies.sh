@@ -599,9 +599,25 @@ else
       --restart=Never --command -- sleep 300 2>/dev/null || true
   fi
 
-  # Wait for the pod to be ready
-  kubectl wait --for=condition=Ready pod/"$PENTEST_POD" -n "$PENTEST_NS" --timeout=30s 2>/dev/null || {
-    warn "Attacker pod failed to start — skipping penetration tests"
+  # Wait for the pod to be ready (60s to allow for Artifactory image pull)
+  kubectl wait --for=condition=Ready pod/"$PENTEST_POD" -n "$PENTEST_NS" --timeout=60s 2>/dev/null || {
+    warn "Attacker pod failed to start — showing diagnostics:"
+    echo ""
+    echo -e "  ${BOLD}  Pod Status:${NC}"
+    kubectl get pod "$PENTEST_POD" -n "$PENTEST_NS" -o wide 2>/dev/null | while read -r line; do echo -e "       $line"; done || true
+    echo ""
+    echo -e "  ${BOLD}  Pod Events:${NC}"
+    kubectl describe pod "$PENTEST_POD" -n "$PENTEST_NS" 2>/dev/null | grep -A20 "^Events:" | while read -r line; do echo -e "       $line"; done || true
+    echo ""
+    info "Common causes:"
+    info "  • ImagePullBackOff  → Wrong image path or registry credentials"
+    info "  • ErrImagePull      → REGISTRY_URL, REGISTRY_USER, or REGISTRY_KEY incorrect"
+    info "  • Pending           → No nodes available or resource limits"
+    info ""
+    info "Verify your image path: $PENTEST_IMAGE"
+    info "Verify your registry:   $REGISTRY_URL"
+    echo ""
+    warn "Skipping penetration tests — cleaning up"
     kubectl delete namespace "$PENTEST_NS" --ignore-not-found 2>/dev/null || true
     PENTEST_FAILED=true
   }
