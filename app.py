@@ -1571,7 +1571,14 @@ def generate_release_notes():
         lines.append("|---|---|---|---|")
         for svc_name, svc_data in board['services'].items():
             jira_col = svc_data.get('jira_ids', '') or '—'
-            lines.append(f"| {svc_name} | {svc_data.get('image_tag', '?')} | {jira_col} | {svc_data.get('notes', '')} |")
+            # Build version string: K8s = "image_tag (Helm: chart)" / Custom = manual version only
+            if svc_data.get('is_custom'):
+                ver_str = svc_data.get('image_tag', '?')
+            else:
+                tag = svc_data.get('image_tag', '?')
+                helm = svc_data.get('helm_version')
+                ver_str = f"{tag} (Helm: {helm})" if helm else tag
+            lines.append(f"| {svc_name} | {ver_str} | {jira_col} | {svc_data.get('notes', '')} |")
 
         # If we have Jira details, append a changes summary
         if jira_details:
@@ -1593,8 +1600,17 @@ def generate_release_notes():
     service_list = []
     exception_services = []
     for svc_name, svc_data in board['services'].items():
-        svc_line = (f"- {svc_name}: tag={svc_data.get('image_tag','?')}, "
-                    f"helm={svc_data.get('helm_version','N/A')}, "
+        # Build version info: K8s services get both tag + helm, custom gets only manual version
+        is_custom = svc_data.get('is_custom', False)
+        tag = svc_data.get('image_tag', '?')
+        helm = svc_data.get('helm_version')
+        if is_custom:
+            version_info = f"version={tag}, component_type={svc_data.get('kind', 'Custom')}"
+        else:
+            version_info = f"image_tag={tag}, helm_chart_version={helm or 'N/A'}"
+
+        svc_line = (f"- {svc_name} [{('CUSTOM COMPONENT' if is_custom else 'K8S SERVICE')}]: "
+                    f"{version_info}, "
                     f"readiness={svc_data.get('readiness','?')}, "
                     f"notes=\"{svc_data.get('notes','')}\"")
 
@@ -1633,11 +1649,12 @@ descriptions to explain WHAT actually changed in each service. Organize changes 
     whats_changed_instruction = (
         'A detailed "What\'s Changed" section organized by change type '
         '(Features, Bug Fixes, Improvements, Maintenance). For each Jira ticket, '
-        'provide a DETAILED explanation using the full Jira description — not just '
-        'the summary. Include what was changed, why it was changed, and any technical '
-        'details from the ticket description.'
+        'write EXACTLY 2-3 sentences per ticket explaining: what was changed, why '
+        'it was changed, and any technical details from the ticket description. '
+        'Be consistent — every ticket gets the same level of detail.'
         if jira_details else
-        'A brief summary of upcoming changes based on service notes'
+        'A brief summary of upcoming changes based on service notes '
+        '(1-2 sentences per service)'
     )
 
     exception_instruction = ""
@@ -1659,13 +1676,25 @@ Status: {board.get('status', 'open')}
 Nominated services:
 {newline.join(service_list)}
 {jira_instruction}{exception_instruction}
-Format the output as markdown with:
-1. An executive summary of the release (2-3 sentences)
-2. A table with columns: Service | Version | Jira Tickets | Change Summary | Risk Level. The Change Summary column should be 2-3 sentences describing the key changes from the Jira tickets — not just a few words.
+STRICT FORMAT RULES — follow these exactly:
+
+1. Executive Summary: EXACTLY 2-3 sentences summarising the release scope and impact.
+
+2. Service table with columns: Service | Version | Jira Tickets | Change Summary | Risk Level
+   VERSION COLUMN RULES:
+   - For K8S SERVICE entries: ALWAYS show BOTH values as "<image_tag> (Helm: <helm_chart_version>)"
+     Example: "v3.2.1 (Helm: 2.5.0)". If helm is N/A, show "<image_tag> (Helm: N/A)".
+   - For CUSTOM COMPONENT entries: show ONLY the version value as-is (no Helm).
+     Example: "v1.4.0"
+   CHANGE SUMMARY COLUMN: EXACTLY 2-3 sentences per service. Not less, not more.
+   RISK LEVEL: One of: 🟢 Low | 🟡 Medium | 🔴 High
+
 3. {whats_changed_instruction}
-4. An AI Risk Assessment summary at the end
+
+4. AI Risk Assessment: A brief risk summary paragraph.
+
 {'5. A ⚠️ Post-Cutoff Exception Nominations section listing each exception, who requested it, who approved it, and the reason.' if exception_services else ''}
-Return ONLY the markdown text, no JSON wrapping.
+Return ONLY the markdown text, no JSON wrapping. Do NOT wrap in ```markdown``` code fences.
 """
 
     try:

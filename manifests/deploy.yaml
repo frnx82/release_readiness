@@ -162,8 +162,8 @@ spec:
         # Custom Components (optional)
         # ════════════════════════════════════════════════════════════
         # Format: name1:Type1:Description,name2:Type2:Description
-        # - name: CUSTOM_COMPONENTS
-        #   value: "mobile-app:Mobile App:iOS/Android mobile application,config-rules:Config:Business rules engine"
+        - name: CUSTOM_COMPONENTS
+          value: "ingestion-pipeline:Spark:Main data ingestion from source systems,etl-transformer:PySpark:Data transformation and enrichment,data-validator:PySpark:Data quality validation rules,report-aggregator:Spark:Aggregation jobs for reporting,mobile-app:Mobile:iOS/Android mobile application"
 
         # ════════════════════════════════════════════════════════════
         # Storage Backend
