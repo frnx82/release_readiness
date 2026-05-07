@@ -761,8 +761,10 @@
                     <button class="btn btn-primary" onclick="exportManifest('json')">📋 Export JSON</button>
                     <button class="btn btn-primary" onclick="exportManifest('yaml')">📄 Export YAML</button>
                     <button class="btn btn-primary" onclick="generateReleaseNotes()">🤖 AI Release Notes</button>
-                    <button class="btn" onclick="finalizeBoard()">🔒 Lock Board (Cutoff)</button>
-                    <button class="btn btn-danger" onclick="completeRelease()">✅ Mark Released</button>
+                    <button id="btn-lock-board" class="btn" onclick="finalizeBoard()">🔒 Lock Board (Cutoff)</button>
+                    <button id="btn-unlock-board" class="btn" onclick="unlockBoard()" style="display:none">🔓 Unlock Board</button>
+                    <button id="btn-mark-released" class="btn btn-danger" onclick="completeRelease()">✅ Mark Released</button>
+                    <button id="btn-new-cycle" class="btn btn-primary" onclick="startNewCycle()" style="display:none">🔄 Start New Cycle</button>
                 </div>
                 <div id="export-output"></div>
             </div>
@@ -1742,6 +1744,21 @@
         </div>
     </div>
 
+    <!-- Confirm Action Modal (replaces native confirm() which can be dismissed by background activity) -->
+    <div class="deploy-modal-overlay" id="confirm-modal" onclick="if(event.target===this)closeConfirmModal()">
+        <div class="deploy-modal" style="width:440px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                <h3 id="confirm-modal-title" style="margin:0;font-size:16px">⚠️ Confirm</h3>
+                <button class="btn btn-sm" onclick="closeConfirmModal()">✕ Close</button>
+            </div>
+            <div id="confirm-modal-message" style="font-size:13px;color:var(--text);line-height:1.6;margin-bottom:20px"></div>
+            <div style="display:flex;gap:10px;justify-content:flex-end">
+                <button class="btn" onclick="closeConfirmModal()" style="min-width:80px">Cancel</button>
+                <button id="confirm-modal-ok" class="btn btn-primary" style="min-width:80px">Confirm</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal -->
     <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
         <div class="modal">
@@ -1923,6 +1940,9 @@
             </div>`;
                 }).join('');
             }
+
+            // Sync export tab buttons with board status
+            updateExportButtons();
         }
 
         function updateCountdown() {
@@ -2104,7 +2124,11 @@
         }
 
         async function removeNomination(name) {
-            if (!confirm(`Remove ${name} from this release?`)) return;
+            const ok = await showConfirmModal(
+                '❌ Remove Nomination',
+                `Remove <strong>${name}</strong> from this release?<br><br>This action can be undone by re-nominating the service.`
+            );
+            if (!ok) return;
             const by = document.getElementById('nom-by').value || 'anonymous';
             try {
                 const r = await fetch('/api/release/remove', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ service_name: name, removed_by: by }) });
@@ -2255,23 +2279,144 @@
             }
         }
 
+        // ═══ Custom Confirm Modal (replaces native confirm()) ══════════════════
+        let _confirmResolve = null;
+
+        function showConfirmModal(title, message) {
+            return new Promise((resolve) => {
+                _confirmResolve = resolve;
+                document.getElementById('confirm-modal-title').textContent = title;
+                document.getElementById('confirm-modal-message').innerHTML = message;
+                const okBtn = document.getElementById('confirm-modal-ok');
+                // Clone to remove old listeners
+                const newOk = okBtn.cloneNode(true);
+                okBtn.parentNode.replaceChild(newOk, okBtn);
+                newOk.addEventListener('click', () => {
+                    // Grab resolve before clearing so closeConfirmModal won't double-fire
+                    const fn = _confirmResolve;
+                    _confirmResolve = null;
+                    document.getElementById('confirm-modal').classList.remove('open');
+                    if (fn) fn(true);
+                });
+                document.getElementById('confirm-modal').classList.add('open');
+            });
+        }
+
+        function closeConfirmModal() {
+            document.getElementById('confirm-modal').classList.remove('open');
+            if (_confirmResolve) {
+                const fn = _confirmResolve;
+                _confirmResolve = null;
+                fn(false);
+            }
+        }
+
+        // ═══ Export Tab — Board Lifecycle Buttons ═════════════════════════════════
+        function updateExportButtons() {
+            const status = (_board && _board.status) || 'open';
+            const lockBtn = document.getElementById('btn-lock-board');
+            const unlockBtn = document.getElementById('btn-unlock-board');
+            const releaseBtn = document.getElementById('btn-mark-released');
+            const newCycleBtn = document.getElementById('btn-new-cycle');
+
+            if (status === 'open') {
+                lockBtn.style.display = '';
+                lockBtn.disabled = false;
+                lockBtn.innerHTML = '🔒 Lock Board (Cutoff)';
+                lockBtn.style.opacity = '1';
+                lockBtn.style.cursor = 'pointer';
+                unlockBtn.style.display = 'none';
+                releaseBtn.style.display = '';
+                releaseBtn.disabled = false;
+                releaseBtn.innerHTML = '✅ Mark Released';
+                releaseBtn.style.opacity = '1';
+                releaseBtn.style.cursor = 'pointer';
+                newCycleBtn.style.display = 'none';
+            } else if (status === 'locked') {
+                lockBtn.style.display = '';
+                lockBtn.disabled = true;
+                lockBtn.innerHTML = '🔒 Board Locked';
+                lockBtn.style.opacity = '0.5';
+                lockBtn.style.cursor = 'not-allowed';
+                unlockBtn.style.display = '';
+                releaseBtn.style.display = '';
+                releaseBtn.disabled = false;
+                releaseBtn.innerHTML = '✅ Mark Released';
+                releaseBtn.style.opacity = '1';
+                releaseBtn.style.cursor = 'pointer';
+                newCycleBtn.style.display = 'none';
+            } else if (status === 'released') {
+                lockBtn.style.display = '';
+                lockBtn.disabled = true;
+                lockBtn.innerHTML = '🔒 Board Locked';
+                lockBtn.style.opacity = '0.5';
+                lockBtn.style.cursor = 'not-allowed';
+                unlockBtn.style.display = 'none';
+                releaseBtn.style.display = '';
+                releaseBtn.disabled = true;
+                releaseBtn.innerHTML = '✅ Released';
+                releaseBtn.style.opacity = '0.5';
+                releaseBtn.style.cursor = 'not-allowed';
+                newCycleBtn.style.display = '';
+            }
+        }
+
         async function finalizeBoard() {
-            if (!confirm('Lock the release board? Only Release Manager can modify after this.')) return;
+            const ok = await showConfirmModal(
+                '🔒 Lock Release Board',
+                'Are you sure you want to lock the board?<br><br>Regular nominations will be <strong>blocked</strong>. Only <strong style="color:#f59e0b">exception nominations</strong> (with approver + reason) will be allowed.'
+            );
+            if (!ok) return;
             const by = document.getElementById('nom-by').value || 'release-manager';
             try {
                 const r = await fetch('/api/release/finalize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ finalized_by: by }) });
-                if (r.ok) { showToast('Board locked'); refreshAll(); }
-                else { const d = await r.json(); showToast(d.error || 'Failed', 'error'); }
+                const d = await r.json();
+                if (r.ok) { showToast('🔒 Board locked'); refreshAll(); }
+                else { showToast(d.error || 'Failed', 'error'); }
+            } catch (e) { showToast('Error', 'error'); }
+        }
+
+        async function unlockBoard() {
+            const ok = await showConfirmModal(
+                '🔓 Unlock Board',
+                'Unlock the board?<br><br>This will allow <strong>regular nominations</strong> again. QA and team members can edit nominations.'
+            );
+            if (!ok) return;
+            const by = document.getElementById('nom-by').value || 'release-manager';
+            try {
+                const r = await fetch('/api/release/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unlocked_by: by }) });
+                const d = await r.json();
+                if (r.ok) { showToast('🔓 Board unlocked'); refreshAll(); }
+                else { showToast(d.error || 'Failed', 'error'); }
             } catch (e) { showToast('Error', 'error'); }
         }
 
         async function completeRelease() {
-            if (!confirm('Mark this release as COMPLETED? The board will become read-only.')) return;
+            const ok = await showConfirmModal(
+                '✅ Mark Release as Completed',
+                'Mark this release as <strong>COMPLETED</strong>?<br><br>The board will become <strong>read-only</strong>. You can start a new cycle after this.'
+            );
+            if (!ok) return;
             const by = document.getElementById('nom-by').value || 'release-manager';
             try {
                 const r = await fetch('/api/release/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ completed_by: by }) });
-                if (r.ok) { showToast('Release completed! 🎉'); refreshAll(); }
-                else { const d = await r.json(); showToast(d.error || 'Failed', 'error'); }
+                const d = await r.json();
+                if (r.ok) { showToast('🎉 Release completed!'); refreshAll(); }
+                else { showToast(d.error || 'Failed', 'error'); }
+            } catch (e) { showToast('Error', 'error'); }
+        }
+
+        async function startNewCycle() {
+            const ok = await showConfirmModal(
+                '🔄 Start New Release Cycle',
+                'Create a fresh board for the <strong>next release date</strong>?<br><br>The current released board will be archived.'
+            );
+            if (!ok) return;
+            try {
+                const r = await fetch('/api/release/new_cycle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+                const d = await r.json();
+                if (r.ok) { showToast(`🔄 New cycle started for ${d.release_date}`); refreshAll(); }
+                else { showToast(d.error || 'Failed', 'error'); }
             } catch (e) { showToast('Error', 'error'); }
         }
 
@@ -2350,7 +2495,7 @@
             const container = document.getElementById('audit-list');
             if (!trail.length) { container.innerHTML = '<div class="empty-state"><p>No actions recorded yet</p></div>'; return; }
             container.innerHTML = trail.map(a => {
-                const icon = a.action === 'nominate' ? '➕' : a.action === 're-nominate' ? '🔄' : a.action === 'remove' ? '❌' : a.action === 'finalize' ? '🔒' : a.action === 'release' ? '🚀' : a.action === 'deploy_triggered' ? '🚢' : a.action.startsWith('exception') ? '⚠️' : '📋';
+                const icon = a.action === 'nominate' ? '➕' : a.action === 're-nominate' ? '🔄' : a.action === 'remove' ? '❌' : a.action === 'finalize' ? '🔒' : a.action === 'unlock' ? '🔓' : a.action === 'release' ? '🚀' : a.action === 'deploy_triggered' ? '🚢' : a.action.startsWith('exception') ? '⚠️' : '📋';
                 const excInfo = a.approver ? `<br><span style="font-size:10px;color:#f59e0b">Approved by: ${a.approver} — ${a.reason || ''}</span>` : '';
                 return `<div class="audit-item" style="border-left-color:${a.action.startsWith('exception') ? '#f59e0b' : 'var(--accent)'}">
             <strong>${icon} ${a.action}</strong> ${a.service ? `<code>${a.service}</code>` : ''} ${a.version ? `→ ${a.version}` : ''} ${a.from_version ? `${a.from_version} → ${a.to_version}` : ''}
@@ -2470,7 +2615,11 @@
 
         async function rollbackVersion(serviceName, targetTag) {
             const by = document.getElementById('nom-by').value.trim() || 'anonymous';
-            if (!confirm(`Rollback ${serviceName} to version ${targetTag}?`)) return;
+            const ok = await showConfirmModal(
+                '🔄 Rollback Version',
+                `Rollback <strong>${serviceName}</strong> to version <strong>${targetTag}</strong>?<br><br>The current version will be replaced.`
+            );
+            if (!ok) return;
             try {
                 const r = await fetch('/api/release/rollback', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -2483,9 +2632,9 @@
                     // Reopen to show updated history
                     showVersionHistory(serviceName);
                 } else {
-                    alert(d.error || 'Rollback failed');
+                    showToast(d.error || 'Rollback failed', 'error');
                 }
-            } catch(e) { alert('Rollback failed: ' + e.message); }
+            } catch(e) { showToast('Rollback failed: ' + e.message, 'error'); }
         }
 
         // ═══ Deploy Tab — Workflow Browser ═══════════════════════════════════════════
@@ -2747,6 +2896,18 @@
             }
         }
         setInterval(updateCountdown, 60000);
+
+        // Auto-archive check: every 5 minutes, if board is released and past release date,
+        // refresh to pick up the auto-created new cycle from the backend.
+        setInterval(async () => {
+            if (_board && _board.status === 'released' && _board.release_date) {
+                const releaseDate = new Date(_board.release_date + 'T23:59:59');
+                if (new Date() > releaseDate) {
+                    console.log('[auto-archive] Release date passed, refreshing for new cycle...');
+                    await refreshAll();
+                }
+            }
+        }, 5 * 60 * 1000);  // check every 5 minutes
 
         // CIDP keepalive
         let _lastActivity = Date.now();

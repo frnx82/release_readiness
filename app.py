@@ -919,6 +919,30 @@ def get_current_release():
         except Exception as e:
             print(f"[release] Could not create board: {e}")
 
+    # Auto-archival: if board is released and we're past the release date (11:59 PM),
+    # automatically start a new cycle so the dashboard is fresh on Monday morning.
+    if board.get('status') == 'released' and board.get('release_date'):
+        try:
+            release_date = datetime.date.fromisoformat(board['release_date'])
+            # Archive after 11:59 PM on release day (i.e. the next calendar day)
+            archive_threshold = datetime.datetime.combine(
+                release_date + datetime.timedelta(days=1),
+                datetime.time(0, 0)
+            )
+            if datetime.datetime.utcnow() >= archive_threshold:
+                print(f"[release] Auto-archiving released board for {board['release_date']}, starting new cycle")
+                board['audit_trail'].append({
+                    'action': 'auto_archive',
+                    'by': 'system',
+                    'at': datetime.datetime.utcnow().isoformat(),
+                    'note': f"Board auto-archived after release date {board['release_date']}"
+                })
+                _write_board(board)  # Save the audit entry to the old board
+                board = _new_board()
+                _write_board(board)
+        except (ValueError, TypeError) as e:
+            print(f"[release] Auto-archive date parse error: {e}")
+
     # Enrich with live metadata
     board['is_past_cutoff'] = datetime.datetime.utcnow().isoformat() > board.get('cutoff', '')
     board['nominated_count'] = len(board.get('services', {}))
@@ -949,7 +973,13 @@ def nominate_service():
     exception_reason = data.get('exception_reason', '').strip()
     exception_approver = data.get('exception_approver', '').strip()
 
-    if board.get('status') == 'locked':
+    # Determine if board is effectively locked:
+    # 1. Manually locked by Release Manager (status == 'locked'), OR
+    # 2. Past the cutoff time (even if nobody clicked Lock Board yet)
+    is_past_cutoff = datetime.datetime.utcnow().isoformat() > board.get('cutoff', '')
+    board_is_locked = board.get('status') == 'locked' or is_past_cutoff
+
+    if board_is_locked:
         if not is_exception:
             return jsonify({
                 'error': 'Release board is locked (past cutoff). Use exception nomination.',
@@ -1198,7 +1228,10 @@ def finalize_release():
         return jsonify({'error': 'No active release board'}), 404
 
     if board.get('status') == 'released':
-        return jsonify({'error': 'Already released'}), 400
+        return jsonify({'error': 'Already released. Cannot lock a completed release.', 'board_status': 'released'}), 400
+
+    if board.get('status') == 'locked':
+        return jsonify({'error': 'Board is already locked.', 'board_status': 'locked'}), 400
 
     now = datetime.datetime.utcnow().isoformat()
     board['status'] = 'locked'
@@ -1214,15 +1247,47 @@ def finalize_release():
     return jsonify({'status': 'locked', 'finalized_by': finalized_by})
 
 
+@app.route('/api/release/unlock', methods=['POST'])
+def unlock_release():
+    """Unlock a locked board so QA/RM can edit nominations."""
+    data = request.json or {}
+    unlocked_by = data.get('unlocked_by', 'release-manager')
+
+    board = _read_board()
+    if not board:
+        return jsonify({'error': 'No active release board'}), 404
+
+    if board.get('status') == 'released':
+        return jsonify({'error': 'Cannot unlock a completed release.', 'board_status': 'released'}), 400
+
+    if board.get('status') != 'locked':
+        return jsonify({'error': 'Board is not locked.', 'board_status': board.get('status')}), 400
+
+    now = datetime.datetime.utcnow().isoformat()
+    board['status'] = 'open'
+    board['audit_trail'].append({
+        'action': 'unlock',
+        'by': unlocked_by,
+        'at': now,
+        'note': 'Board unlocked for editing'
+    })
+
+    _write_board(board)
+    return jsonify({'status': 'open', 'unlocked_by': unlocked_by})
+
+
 @app.route('/api/release/complete', methods=['POST'])
 def complete_release():
-    """Mark the release as completed."""
+    """Mark the release as completed and archive it."""
     data = request.json or {}
     completed_by = data.get('completed_by', 'release-manager')
 
     board = _read_board()
     if not board:
         return jsonify({'error': 'No active release board'}), 404
+
+    if board.get('status') == 'released':
+        return jsonify({'error': 'Already released.', 'board_status': 'released'}), 400
 
     now = datetime.datetime.utcnow().isoformat()
     board['status'] = 'released'
@@ -1237,6 +1302,24 @@ def complete_release():
     _write_board(board)
     return jsonify({'status': 'released'})
 
+
+@app.route('/api/release/new_cycle', methods=['POST'])
+def start_new_cycle():
+    """Start a new release cycle (creates a fresh board)."""
+    board = _read_board()
+    if board and board.get('status') != 'released':
+        return jsonify({
+            'error': 'Current board is not released yet. Complete the current release first.',
+            'board_status': board.get('status')
+        }), 400
+
+    new_board = _new_board()
+    _write_board(new_board)
+    return jsonify({
+        'status': 'ok',
+        'release_date': new_board['release_date'],
+        'message': f"New release cycle started for {new_board['release_date']}"
+    })
 
 @app.route('/api/release/exceptions')
 def get_exception_stats():
