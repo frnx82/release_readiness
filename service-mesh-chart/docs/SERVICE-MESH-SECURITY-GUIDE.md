@@ -121,10 +121,9 @@ Rule 2 — Internal service from same namespace:
 
 ### What Is CIDP?
 
-Think of CIDP as the **corporate ID badge system**:
-- Users log in through CIDP → receive a JWT token (their digital badge)
-- The token contains: who they are (email), what they can access (scopes), and when it expires
-- Our mesh verifies this token at the gateway — if it's valid, the request gets through
+**CIDP (Cloud Identity Provider)** is our organization's OAuth2/OIDC identity server. It issues JWT tokens that prove who a user or service is.
+
+**Simple analogy:** Think of CIDP like a badge office — users authenticate with CIDP, receive a JWT token (their digital badge), and present that badge to access our services. The mesh checks the badge at the door.
 
 ### The Authentication Flow — Step by Step
 
