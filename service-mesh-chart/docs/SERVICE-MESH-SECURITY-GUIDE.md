@@ -115,6 +115,148 @@ Rule 2 — Internal service from same namespace:
 
 ---
 
+## CIDP Integration — How Authentication Works End-to-End
+
+**CIDP** (Cloud Identity Provider) is our organization's OAuth2/OIDC identity server. It issues JWT tokens that prove who a user or service is. Here's how it connects to the service mesh.
+
+### What Is CIDP?
+
+Think of CIDP as the **corporate ID badge system**:
+- Users log in through CIDP → receive a JWT token (their digital badge)
+- The token contains: who they are (email), what they can access (scopes), and when it expires
+- Our mesh verifies this token at the gateway — if it's valid, the request gets through
+
+### The Authentication Flow — Step by Step
+
+```
+Step 1: User logs in
+┌──────────┐                    ┌──────────────┐
+│  User /  │ ── credentials ──→ │    CIDP       │
+│  Client  │ ←── JWT token ──── │  (OAuth2)     │
+└──────────┘                    └──────────────┘
+                Token contains:
+                • iss: https://cidp.example.gdc.corp/oauth2
+                • sub: user@company.com
+                • exp: 1716312000 (expiry time)
+                • scopes: [api.read, api.write]
+
+Step 2: User makes API call with token
+┌──────────┐                    ┌──────────────┐
+│  User    │ ── Bearer token ─→ │ ASM Gateway  │
+└──────────┘                    └──────┬───────┘
+                                       │
+Step 3: Istio validates the token       ▼
+                                ┌──────────────┐
+                                │ req-auth.yaml│ ← RequestAuthentication
+                                │              │
+                                │ 1. Is issuer  │
+                                │    = CIDP? ✅ │
+                                │ 2. Download   │
+                                │    JWKS keys  │
+                                │ 3. Verify     │
+                                │    signature ✅│
+                                │ 4. Check      │
+                                │    expiry   ✅ │
+                                └──────┬───────┘
+                                       │
+Step 4: Authorization check             ▼
+                                ┌──────────────┐
+                                │ authz.yaml   │ ← AuthorizationPolicy
+                                │              │
+                                │ requestPrin- │
+                                │ cipals match │
+                                │ CIDP issuer? │
+                                │          ✅  │
+                                └──────┬───────┘
+                                       │
+Step 5: Request reaches service         ▼
+                                ┌──────────────┐
+                                │ billing-     │
+                                │ service      │
+                                │              │
+                                │ Gets headers:│
+                                │ Remote-User: │
+                                │ user@co.com  │
+                                └──────────────┘
+```
+
+### How CIDP Connects to Principles 3 and 4
+
+| Principle | CIDP Role | Config File |
+|-----------|----------|-------------|
+| **P3: JWT Validation** | Istio trusts CIDP as the JWT issuer, downloads CIDP's public keys (JWKS) to verify token signatures | `req-auth.yaml` |
+| **P4: Allow-Lists** | `requestPrincipals` rule checks that the JWT issuer matches our CIDP URL — only tokens from OUR CIDP are accepted | `authorization-authz.yaml` |
+
+### The Three Config Points for CIDP
+
+**1. `values.yaml` — Set the CIDP URL (one place, used everywhere)**
+```yaml
+virtualservice:
+  cidp_oauth2_base_url: "https://cidp.example.gdc.corp/oauth2"
+```
+
+**2. `req-auth.yaml` — Tell Istio to trust CIDP tokens**
+```yaml
+spec:
+  jwtRules:
+    - issuer: https://cidp.example.gdc.corp/oauth2         # Trust tokens from CIDP
+      jwksUri: https://cidp.example.gdc.corp/oauth2/connect/jwk_uri  # Download signing keys
+      forwardOriginalToken: true                            # Pass token to the app
+      outputClaimToHeaders:
+        - header: Remote-User      # Extract email from token
+          claim: email             # and put it in this header
+```
+
+**3. `authorization-authz.yaml` — Only allow requests with valid CIDP tokens**
+```yaml
+rules:
+  - from:
+      - source:
+          requestPrincipals:
+            - "https://cidp.example.gdc.corp/oauth2/*"   # Must be from our CIDP
+```
+
+### What the Application Receives
+
+After Istio validates the CIDP token, your application gets:
+
+| Header | Value | How It Got There |
+|--------|-------|-----------------|
+| `Authorization` | `Bearer eyJhbG...` | Original token forwarded (`forwardOriginalToken: true`) |
+| `Remote-User` | `user@company.com` | Extracted from JWT `email` claim by `outputClaimToHeaders` |
+
+Your app **never needs to validate the JWT itself** — Istio already did it. The app can just read `Remote-User` to know who's calling.
+
+### For External Teams Connecting to Our APIs
+
+External teams that need to call our services must:
+
+1. **Get CIDP credentials** — Request a Client ID + Secret from the IAM team
+2. **Call CIDP token endpoint** — Use OAuth2 Client Credentials Grant:
+   ```bash
+   curl -X POST https://cidp.example.gdc.corp/oauth2/connect/token \
+     -d "client_id=THEIR_CLIENT_ID" \
+     -d "client_secret=THEIR_SECRET" \
+     -d "grant_type=client_credentials" \
+     -d "scope=api.read"
+   ```
+3. **Include token in API calls** — Add `Authorization: Bearer <token>` header
+4. **Handle token refresh** — Tokens expire; refresh before expiry
+
+### Internal Service-to-Service Calls — No CIDP Needed
+
+> **Important:** Services calling other services within the mesh do **NOT** use CIDP tokens. They use **mTLS identity** (Principle 2) instead.
+
+| Caller | Authentication Method | Why |
+|--------|---------------------|-----|
+| External user / browser | CIDP JWT token | User identity via OIDC |
+| External team / API client | CIDP JWT token (client credentials) | Service identity via OAuth2 |
+| Internal service (same namespace) | mTLS (SPIFFE certificate) | Automatic, no tokens needed |
+
+This is by design — internal services don't need to manage tokens. Istio handles identity via mTLS certificates automatically.
+
+---
+
 ## How Traffic Flows
 
 ![Traffic Flow Diagram](docs/traffic-flow-diagram.png)
