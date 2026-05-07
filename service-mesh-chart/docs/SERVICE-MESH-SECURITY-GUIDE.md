@@ -14,7 +14,7 @@ We use **Istio service mesh** to secure our Kubernetes services. Think of it as 
 
 **After the mesh:** Every service has its own identity, all traffic is encrypted, and only authorized callers are allowed in.
 
-![Service Mesh Overview](docs/mesh-overview-diagram.png)
+![Service Mesh Overview](service-mesh-chart/docs/mesh-overview-diagram.png)
 
 ---
 
