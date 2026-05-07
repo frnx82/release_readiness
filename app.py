@@ -731,12 +731,23 @@ def _write_board(board_data, release_date=None):
             print(f"[storage] ⚠️  ConfigMap write failed (file backup exists): {e}")
 
 
+def _generate_fix_version(release_date_str):
+    """Generate Jira fix version from release date.
+    Format: P<YY>.<MM>.<DD> e.g. P26.05.09"""
+    try:
+        d = datetime.date.fromisoformat(release_date_str)
+        return f"P{d.strftime('%y.%m.%d')}"
+    except (ValueError, TypeError):
+        return ''
+
+
 def _new_board():
     """Create an empty release board template."""
     release_date = _get_current_release_date()
     return {
         'release_date': release_date,
         'cutoff': _get_cutoff_datetime(),
+        'fix_version': _generate_fix_version(release_date),
         'status': 'open',
         'services': {},
         'audit_trail': [],
@@ -1217,6 +1228,80 @@ def remove_nomination():
     return jsonify({'status': 'ok', 'removed': service_name})
 
 
+@app.route('/api/release/fix_version', methods=['POST'])
+def update_fix_version():
+    """Update the fix version on the board."""
+    data = request.json or {}
+    fix_version = data.get('fix_version', '').strip()
+    if not fix_version:
+        return jsonify({'error': 'fix_version is required'}), 400
+    board = _read_board()
+    if not board:
+        return jsonify({'error': 'No active board'}), 404
+    board['fix_version'] = fix_version
+    board['audit_trail'].append({
+        'action': 'update_fix_version', 'by': data.get('updated_by', 'unknown'),
+        'at': datetime.datetime.utcnow().isoformat(),
+        'note': f'Fix version changed to {fix_version}'
+    })
+    _write_board(board)
+    return jsonify({'status': 'ok', 'fix_version': fix_version})
+
+
+@app.route('/api/release/jira_by_fix_version', methods=['POST'])
+def jira_by_fix_version():
+    """Fetch all Jira tickets for a given fix version via Jira API."""
+    data = request.json or {}
+    fix_version = data.get('fix_version', '').strip()
+    if not fix_version:
+        return jsonify({'error': 'fix_version is required'}), 400
+
+    # Build JQL query for fix version
+    jql = f'fixVersion = "{fix_version}" ORDER BY issuetype ASC'
+    # Use the existing Jira MCP infrastructure to fetch tickets
+    # For now, return the JQL for the frontend; actual Jira API call
+    # requires JIRA_BASE_URL and JIRA_AUTH_TOKEN configuration
+    try:
+        # Attempt to fetch from Jira if configured
+        jira_base = os.environ.get('JIRA_BASE_URL', '')
+        jira_token = os.environ.get('JIRA_AUTH_TOKEN', '')
+        if jira_base and jira_token:
+            import requests as req
+            headers = {
+                'Authorization': f'Bearer {jira_token}',
+                'Content-Type': 'application/json'
+            }
+            resp = req.post(
+                f'{jira_base}/rest/api/2/search',
+                headers=headers,
+                json={'jql': jql, 'maxResults': 200,
+                      'fields': ['summary', 'description', 'issuetype', 'status', 'priority', 'components']},
+                timeout=15
+            )
+            if resp.ok:
+                data = resp.json()
+                issues = []
+                for item in data.get('issues', []):
+                    fields = item.get('fields', {})
+                    issues.append({
+                        'id': item['key'],
+                        'summary': fields.get('summary', ''),
+                        'description': (fields.get('description') or '')[:500],
+                        'type': (fields.get('issuetype') or {}).get('name', 'Task'),
+                        'status': (fields.get('status') or {}).get('name', '?'),
+                        'priority': (fields.get('priority') or {}).get('name', 'Medium'),
+                        'components': [c.get('name', '') for c in (fields.get('components') or [])]
+                    })
+                return jsonify({'fix_version': fix_version, 'total': len(issues), 'issues': issues})
+        # Jira not configured — return empty with guidance
+        return jsonify({
+            'fix_version': fix_version, 'total': 0, 'issues': [],
+            'info': 'Jira not configured. Set JIRA_BASE_URL and JIRA_AUTH_TOKEN env vars.'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'fix_version': fix_version, 'total': 0, 'issues': []}), 500
+
+
 @app.route('/api/release/finalize', methods=['POST'])
 def finalize_release():
     """Lock the release board (cutoff)."""
@@ -1625,15 +1710,48 @@ def fetch_jira_details():
 def generate_release_notes():
     """Generate AI-powered release notes for Teams/Jira.
 
-    When Jira IDs are associated with nominated services, fetches ticket
-    details via the Jira MCP server and includes them in the AI prompt
-    for richer, change-aware release notes.
+    When a fix version is set, fetches ALL Jira tickets for that fix version
+    and includes their descriptions in the release notes. When Jira IDs are
+    also associated per-service, those are merged in.
     """
     board = _read_board()
     if not board or not board.get('services'):
         return jsonify({'error': 'No nominations to generate notes for'}), 400
 
-    # ── Collect and fetch Jira ticket details ──
+    fix_version = board.get('fix_version', '')
+
+    # ── Step 1: Fetch Jira tickets by fix version ──
+    fix_version_issues = []
+    if fix_version:
+        jira_base = os.environ.get('JIRA_BASE_URL', '')
+        jira_token = os.environ.get('JIRA_AUTH_TOKEN', '')
+        if jira_base and jira_token:
+            try:
+                import requests as req
+                headers = {'Authorization': f'Bearer {jira_token}', 'Content-Type': 'application/json'}
+                resp = req.post(
+                    f'{jira_base}/rest/api/2/search',
+                    headers=headers,
+                    json={'jql': f'fixVersion = "{fix_version}"', 'maxResults': 200,
+                          'fields': ['summary', 'description', 'issuetype', 'status', 'priority', 'components']},
+                    timeout=15
+                )
+                if resp.ok:
+                    for item in resp.json().get('issues', []):
+                        fields = item.get('fields', {})
+                        fix_version_issues.append({
+                            'id': item['key'],
+                            'summary': fields.get('summary', ''),
+                            'description': (fields.get('description') or '')[:500],
+                            'type': (fields.get('issuetype') or {}).get('name', 'Task'),
+                            'status': (fields.get('status') or {}).get('name', '?'),
+                            'priority': (fields.get('priority') or {}).get('name', 'Medium'),
+                            'components': [c.get('name', '') for c in (fields.get('components') or [])]
+                        })
+            except Exception as e:
+                print(f'[jira] Fix version fetch error: {e}')
+
+    # ── Step 2: Collect per-nomination Jira IDs (manual entries) ──
     all_jira_ids = []
     svc_jira_map = {}  # service_name → [jira_ids]
     for svc_name, svc_data in board['services'].items():
@@ -1646,38 +1764,79 @@ def generate_release_notes():
     if all_jira_ids:
         jira_details = _fetch_jira_issues(list(set(all_jira_ids)))
 
+    # ── Merge all issues ──
+    all_issues = {}
+    for issue in fix_version_issues:
+        all_issues[issue['id']] = issue
+    for jid, issue in jira_details.items():
+        all_issues[jid] = issue
+
+    total_jira = len(all_issues)
+
     if not get_model():
-        # Deterministic fallback
-        lines = [f"## Release Notes — {board.get('release_date', 'Unknown')}\n"]
-        lines.append(f"**{len(board['services'])} services updated:**\n")
-        lines.append("| Service | Version | Jira Tickets | Notes |")
-        lines.append("|---|---|---|---|")
+        # Deterministic fallback (no Gemini)
+        lines = [f"## Release Notes — {board.get('release_date', 'Unknown')}"]
+        if fix_version:
+            lines.append(f"**Fix Version:** `{fix_version}`\n")
+        lines.append(f"**{len(board['services'])} services nominated for release:**\n")
+        lines.append("| Service | Version | Jira Tickets | Helm Chart | Notes |")
+        lines.append("|---|---|---|---|---|")
         for svc_name, svc_data in board['services'].items():
             jira_col = svc_data.get('jira_ids', '') or '—'
-            # Build version string: K8s = "image_tag (Helm: chart)" / Custom = manual version only
             if svc_data.get('is_custom'):
                 ver_str = svc_data.get('image_tag', '?')
             else:
                 tag = svc_data.get('image_tag', '?')
                 helm = svc_data.get('helm_version')
                 ver_str = f"{tag} (Helm: {helm})" if helm else tag
-            lines.append(f"| {svc_name} | {ver_str} | {jira_col} | {svc_data.get('notes', '')} |")
+            lines.append(f"| {svc_name} | {ver_str} | {jira_col} | {svc_data.get('helm_version', 'N/A')} | {svc_data.get('notes', '')} |")
 
-        # If we have Jira details, append a changes summary
-        if jira_details:
-            lines.append(f"\n## Changes Detail\n")
-            for svc_name, ids in svc_jira_map.items():
-                lines.append(f"\n### {svc_name}")
-                for jid in ids:
-                    issue = jira_details.get(jid, {})
-                    if issue:
-                        lines.append(f"- **{jid}** ({issue.get('type', 'Task')}): "
-                                    f"{issue.get('summary', 'No summary')} [{issue.get('status', '?')}]")
-                    else:
-                        lines.append(f"- **{jid}**: (details unavailable)")
+        # "What's Changed" from fix version + manual Jira tickets
+        if all_issues:
+            lines.append("\n## What's Changed\n")
+            if fix_version and fix_version_issues:
+                lines.append(f"*Jira tickets from fix version `{fix_version}` ({len(fix_version_issues)} tickets):*\n")
+            features, bugs, improvements, tasks = [], [], [], []
+            for jid, issue in all_issues.items():
+                desc_preview = (issue.get('description', '') or '')[:120]
+                if len(issue.get('description', '')) > 120:
+                    desc_preview += '...'
+                entry = f"- **{jid}**: {issue.get('summary', '?')} [{issue.get('status', '?')}]\n  > {desc_preview}"
+                itype = issue.get('type', 'Task')
+                if itype in ('Story', 'Feature'):
+                    features.append(entry)
+                elif itype == 'Bug':
+                    bugs.append(entry)
+                elif itype == 'Improvement':
+                    improvements.append(entry)
+                else:
+                    tasks.append(entry)
+            if features:
+                lines.append("### 🆕 New Features")
+                lines.extend(features)
+            if bugs:
+                lines.append("\n### 🐛 Bug Fixes")
+                lines.extend(bugs)
+            if improvements:
+                lines.append("\n### ⚡ Improvements")
+                lines.extend(improvements)
+            if tasks:
+                lines.append("\n### 🔧 Maintenance")
+                lines.extend(tasks)
+
+        # Post-cutoff exception warning
+        exc_services = [n for n, s in board['services'].items() if s.get('is_exception')]
+        if exc_services:
+            lines.append("\n## ⚠️ Post-Cutoff Changes\n")
+            lines.append("> The following services were nominated **after the cutoff deadline** as exceptions.\n")
+            for n in exc_services:
+                s = board['services'][n]
+                lines.append(f"- **{n}** (`{s.get('image_tag', '?')}`) — Approved by: {s.get('exception_approver', '?')}, Reason: {s.get('exception_reason', '?')}")
 
         return jsonify({'notes': '\n'.join(lines), 'gemini_powered': False,
-                       'jira_enriched': bool(jira_details)})
+                       'jira_enriched': total_jira > 0, 'jira_count': total_jira,
+                       'fix_version': fix_version,
+                       'release_date': board.get('release_date')})
 
     # ── Build AI prompt with Jira context ──
     service_list = []
@@ -1751,13 +1910,24 @@ descriptions to explain WHAT actually changed in each service. Organize changes 
         )
 
     newline = '\n'
+    # Include fix version issues context for AI
+    fix_version_context = ''
+    if fix_version_issues:
+        fv_lines = [f'\nFix Version: {fix_version} ({len(fix_version_issues)} Jira tickets):']
+        for issue in fix_version_issues:
+            desc = (issue.get('description', '') or '')[:300]
+            fv_lines.append(f"  - {issue['id']} ({issue.get('type','Task')}): {issue.get('summary', '?')} [{issue.get('status','?')}] — {desc}")
+        fix_version_context = '\n'.join(fv_lines)
+
     prompt = f"""Generate professional release notes for the operations team.
 
 Release Date: {board.get('release_date', 'Unknown')}
+Fix Version: {fix_version or 'Not set'}
 Status: {board.get('status', 'open')}
 
 Nominated services:
 {newline.join(service_list)}
+{fix_version_context}
 {jira_instruction}{exception_instruction}
 STRICT FORMAT RULES — follow these exactly:
 
@@ -1784,8 +1954,9 @@ Return ONLY the markdown text, no JSON wrapping. Do NOT wrap in ```markdown``` c
         response = gemini_generate_with_retry(prompt)
         notes = response.text if response else 'AI unavailable'
         return jsonify({'notes': notes, 'gemini_powered': True,
-                       'jira_enriched': bool(jira_details),
-                       'jira_count': len(jira_details),
+                       'jira_enriched': total_jira > 0,
+                       'jira_count': total_jira,
+                       'fix_version': fix_version,
                        'release_date': board.get('release_date')})
     except Exception as e:
         return jsonify({'error': str(e), 'notes': '', 'gemini_powered': False}), 500

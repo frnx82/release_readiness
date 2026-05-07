@@ -757,10 +757,27 @@
 
             <!-- Export Tab -->
             <div class="tab-content" id="tab-export">
+                <!-- Fix Version Field -->
+                <div style="display:flex;gap:12px;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap">
+                    <div style="flex:0 0 auto">
+                        <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Jira Fix Version</label>
+                        <div style="display:flex;gap:6px;align-items:center">
+                            <input type="text" id="fix-version-input" placeholder="P26.05.09"
+                                   style="width:140px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;font-family:monospace">
+                            <button class="btn btn-sm" onclick="saveFixVersion()" title="Save fix version to board">💾</button>
+                        </div>
+                    </div>
+                    <div style="flex:0 0 auto">
+                        <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Release Date</label>
+                        <span id="fix-version-release-date" style="font-size:13px;color:var(--text);padding:6px 0;display:inline-block">—</span>
+                    </div>
+                    <div style="flex:1"></div>
+                    <button class="btn btn-primary" onclick="generateReleaseNotes()" title="Fetches Jira tickets from the fix version and generates release notes">🤖 AI Release Notes</button>
+                </div>
+                <!-- Action Buttons -->
                 <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
                     <button class="btn btn-primary" onclick="exportManifest('json')">📋 Export JSON</button>
                     <button class="btn btn-primary" onclick="exportManifest('yaml')">📄 Export YAML</button>
-                    <button class="btn btn-primary" onclick="generateReleaseNotes()">🤖 AI Release Notes</button>
                     <button id="btn-lock-board" class="btn" onclick="finalizeBoard()">🔒 Lock Board (Cutoff)</button>
                     <button id="btn-unlock-board" class="btn" onclick="unlockBoard()" style="display:none">🔓 Unlock Board</button>
                     <button id="btn-mark-released" class="btn btn-danger" onclick="completeRelease()">✅ Mark Released</button>
@@ -1818,6 +1835,15 @@
                 renderBoard();
                 renderAudit();
                 updateSidebar();
+                // Populate fix version field
+                const fvInput = document.getElementById('fix-version-input');
+                if (fvInput && _board.fix_version) {
+                    fvInput.value = _board.fix_version;
+                }
+                const fvDate = document.getElementById('fix-version-release-date');
+                if (fvDate && _board.release_date) {
+                    fvDate.textContent = _board.release_date;
+                }
             } catch (e) { console.error('fetchBoard:', e); }
         }
 
@@ -2223,6 +2249,29 @@
 
         // Store last release notes text for safe clipboard copy (avoids HTML attribute escaping issues)
         let _lastReleaseNotesText = '';
+
+        async function saveFixVersion() {
+            const input = document.getElementById('fix-version-input');
+            const fv = (input.value || '').trim();
+            if (!fv) { showToast('Enter a fix version first', 'error'); return; }
+            try {
+                const r = await fetch('/api/release/fix_version', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        fix_version: fv,
+                        updated_by: document.getElementById('nom-by').value || 'anonymous'
+                    })
+                });
+                const d = await r.json();
+                if (r.ok) {
+                    showToast(`Fix version saved: ${fv}`);
+                    if (_board) _board.fix_version = fv;
+                } else {
+                    showToast(d.error || 'Failed to save', 'error');
+                }
+            } catch (e) { showToast('Network error', 'error'); }
+        }
 
         async function generateReleaseNotes() {
             const container = document.getElementById('export-output');
