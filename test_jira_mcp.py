@@ -266,7 +266,44 @@ def main():
     if not test_connectivity():
         sys.exit(1)
 
-    # Test 2: List projects (quick sanity check)
+    # Test 2: Discover available tools (tools/list)
+    header("🔍 Tool Discovery (tools/list)")
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+    }
+    if PAT_TOKEN:
+        headers['Jira-Token'] = PAT_TOKEN
+        headers['Authorization'] = f'Bearer {PAT_TOKEN}'
+
+    list_payload = {
+        'jsonrpc': '2.0',
+        'id': str(uuid.uuid4()),
+        'method': 'tools/list',
+        'params': {}
+    }
+    try:
+        resp = requests.post(MCP_URL, json=list_payload, headers=headers,
+                             timeout=10, verify=SSL_VERIFY)
+        print(f"  HTTP {resp.status_code}")
+        if resp.ok:
+            data = resp.json()
+            tools = data.get('result', {}).get('tools', data.get('tools', []))
+            if tools:
+                ok(f"Found {len(tools)} tools:")
+                for t in tools:
+                    name = t.get('name', '?')
+                    desc = t.get('description', '')[:60]
+                    print(f"     • {GREEN}{name}{RESET}  {DIM}{desc}{RESET}")
+            else:
+                warn(f"No tools found in response. Raw keys: {list(data.keys())}")
+                print(f"     {DIM}{json.dumps(data, indent=2)[:500]}{RESET}")
+        else:
+            warn(f"tools/list returned {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        warn(f"tools/list failed: {e}")
+
+    # Test 3: Tool Tests
     header("📋 Tool Tests")
 
     if args.all:
