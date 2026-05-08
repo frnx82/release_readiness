@@ -598,20 +598,16 @@ def _fetch_jira_by_fix_version(fix_version):
         import base64
         headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
 
-        # Auth: prefer Basic auth (email:PAT) for Jira Server/Data Center
-        if JIRA_EMAIL and JIRA_PAT_TOKEN:
+        # Auth: prefer Bearer (Jira Data Center PAT), then Basic as fallback
+        if JIRA_PAT_TOKEN:
+            headers['Authorization'] = f'Bearer {JIRA_PAT_TOKEN}'
+            print(f'[jira] Using Bearer token auth')
+        elif JIRA_EMAIL and JIRA_PAT_TOKEN:
             cred = base64.b64encode(f'{JIRA_EMAIL}:{JIRA_PAT_TOKEN}'.encode()).decode()
             headers['Authorization'] = f'Basic {cred}'
             print(f'[jira] Using Basic auth: {JIRA_EMAIL}')
-        elif JIRA_PAT_TOKEN:
-            headers['Authorization'] = f'Bearer {JIRA_PAT_TOKEN}'
-            print('[jira] Using Bearer token auth')
         else:
-            jira_auth_token = os.environ.get('JIRA_AUTH_TOKEN', '')
-            if jira_auth_token:
-                headers['Authorization'] = f'Bearer {jira_auth_token}'
-            else:
-                print('[jira] No auth credentials available for REST API')
+            print('[jira] No auth credentials available for REST API')
 
         if 'Authorization' in headers:
             search_url = f'{jira_base}/rest/api/2/search'
