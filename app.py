@@ -45,9 +45,10 @@ DEPLOY_WORKFLOW      = os.getenv('DEPLOY_WORKFLOW', 'deploy.yml')
 BASE_URL             = os.getenv('BASE_URL', '').rstrip('/')  # external URL for OAuth
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Jira MCP Server Configuration
+# Jira Configuration
 # ══════════════════════════════════════════════════════════════════════════════
 JIRA_MCP_URL          = os.getenv('JIRA_MCP_URL', '')            # MCP server endpoint URL
+JIRA_BASE_URL         = os.getenv('JIRA_BASE_URL', '')           # Jira instance URL (e.g. https://jira.company.com)
 JIRA_EMAIL            = os.getenv('JIRA_EMAIL',
                         os.getenv('JIRA_SERVICE_ACCOUNT', ''))   # Jira email / service account
 JIRA_PAT_TOKEN        = os.getenv('JIRA_PAT_TOKEN', '')          # Jira PAT token
@@ -160,7 +161,7 @@ else:
     print("[Release Readiness] ⚠️  No GitHub auth configured. Deploy features will be unavailable.")
     print("    Set GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET for OAuth mode")
 
-# Print Jira MCP config status at startup
+# Print Jira config status at startup
 if JIRA_MCP_URL:
     print(f"[Release Readiness] ✅ Jira MCP server configured — URL: {JIRA_MCP_URL}")
     if JIRA_EMAIL:
@@ -169,9 +170,16 @@ if JIRA_MCP_URL:
         print(f"    PAT token: {'*' * 8}...configured")
     auth_mode = 'Basic Auth' if (JIRA_EMAIL and JIRA_PAT_TOKEN) else 'Bearer' if JIRA_PAT_TOKEN else 'None'
     print(f"    Auth mode: {auth_mode}")
-else:
-    print("[Release Readiness] ℹ️  No Jira MCP server configured. Jira integration disabled.")
-    print("    Set JIRA_MCP_URL + JIRA_EMAIL + JIRA_PAT_TOKEN to enable.")
+if JIRA_BASE_URL:
+    print(f"[Release Readiness] ✅ Jira REST API configured — URL: {JIRA_BASE_URL}")
+    print("    Fix version JQL search will use direct REST API")
+elif JIRA_MCP_URL:
+    print("[Release Readiness] ⚠️  JIRA_BASE_URL not set. Fix version search will try MCP search tools.")
+    print("    If MCP search fails, set JIRA_BASE_URL to your Jira instance (e.g. https://jira.company.com)")
+if not JIRA_MCP_URL and not JIRA_BASE_URL:
+    print("[Release Readiness] ℹ️  No Jira configured. Jira integration disabled.")
+    print("    Set JIRA_MCP_URL + JIRA_EMAIL + JIRA_PAT_TOKEN for MCP mode")
+    print("    Set JIRA_BASE_URL + JIRA_EMAIL + JIRA_PAT_TOKEN for direct REST API mode")
 
 # ── Gemini SDK setup ─────────────────────────────────────────────────────────
 GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash')
@@ -337,11 +345,12 @@ def _jira_mcp_call(tool_name, arguments, timeout=10):
             'Accept': 'application/json, text/event-stream',
         }
 
-        # Auth: X-Jira-User-Email header + Bearer PAT token
+        # Auth: Jira-Token header (per MCP server docs) + fallback to Authorization
+        if JIRA_PAT_TOKEN:
+            headers['Jira-Token'] = JIRA_PAT_TOKEN
+            headers['Authorization'] = f'Bearer {JIRA_PAT_TOKEN}'  # fallback
         if JIRA_EMAIL:
             headers['X-Jira-User-Email'] = JIRA_EMAIL
-        if JIRA_PAT_TOKEN:
-            headers['Authorization'] = f'Bearer {JIRA_PAT_TOKEN}'
 
         payload = {
             'jsonrpc': '2.0',
@@ -548,7 +557,7 @@ def _fetch_jira_by_fix_version(fix_version):
     # ── Method 1: Try MCP server's search tool ──
     if JIRA_MCP_URL:
         print(f'[jira] Trying MCP search for fix version: {fix_version}')
-        for tool_name in ['jira_search_issues', 'search_issues', 'jira_search']:
+        for tool_name in ['search_jira_issues', 'jira_search_issues', 'search_issues', 'jira_search']:
             raw = _jira_mcp_call(tool_name, {'jql': jql, 'max_results': 200}, timeout=20)
             if raw:
                 try:
@@ -582,44 +591,61 @@ def _fetch_jira_by_fix_version(fix_version):
                     continue
 
     # ── Method 2: Direct Jira REST API ──
-    jira_base = os.environ.get('JIRA_BASE_URL', '')
-    if not jira_base and JIRA_MCP_URL:
-        # Try to derive base URL from MCP URL (e.g. https://jira-mcp.example.com -> https://jira.example.com)
-        # This is a heuristic — may not always work
-        pass
+    jira_base = JIRA_BASE_URL
 
     if jira_base:
-        print(f'[jira] Trying direct REST API for fix version: {fix_version}')
-        headers = {'Content-Type': 'application/json'}
+        print(f'[jira] Trying direct REST API for fix version: {fix_version} at {jira_base}')
+        import base64
+        headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
 
-        # Auth: try Bearer token first, then Basic auth
-        jira_token = os.environ.get('JIRA_AUTH_TOKEN', '') or JIRA_PAT_TOKEN
-        if jira_token:
-            headers['Authorization'] = f'Bearer {jira_token}'
-        elif JIRA_EMAIL and JIRA_PAT_TOKEN:
-            import base64
+        # Auth: prefer Basic auth (email:PAT) for Jira Server/Data Center
+        if JIRA_EMAIL and JIRA_PAT_TOKEN:
             cred = base64.b64encode(f'{JIRA_EMAIL}:{JIRA_PAT_TOKEN}'.encode()).decode()
             headers['Authorization'] = f'Basic {cred}'
+            print(f'[jira] Using Basic auth: {JIRA_EMAIL}')
+        elif JIRA_PAT_TOKEN:
+            headers['Authorization'] = f'Bearer {JIRA_PAT_TOKEN}'
+            print('[jira] Using Bearer token auth')
+        else:
+            jira_auth_token = os.environ.get('JIRA_AUTH_TOKEN', '')
+            if jira_auth_token:
+                headers['Authorization'] = f'Bearer {jira_auth_token}'
+            else:
+                print('[jira] No auth credentials available for REST API')
 
         if 'Authorization' in headers:
-            try:
-                if PROXY_URL:
-                    resp = gh_http.post(
-                        f'{jira_base}/rest/api/2/search',
-                        headers=headers,
-                        json={'jql': jql, 'maxResults': 200,
-                              'fields': ['summary', 'description', 'issuetype', 'status', 'priority', 'components']},
-                        timeout=15
-                    )
-                else:
-                    resp = requests.post(
-                        f'{jira_base}/rest/api/2/search',
-                        headers=headers,
-                        json={'jql': jql, 'maxResults': 200,
-                              'fields': ['summary', 'description', 'issuetype', 'status', 'priority', 'components']},
-                        timeout=15, verify=SSL_VERIFY
-                    )
-                if resp.ok:
+            search_url = f'{jira_base}/rest/api/2/search'
+            search_params = {
+                'jql': jql,
+                'maxResults': 200,
+                'fields': 'summary,description,issuetype,status,priority,components'
+            }
+            search_body = {
+                'jql': jql, 'maxResults': 200,
+                'fields': ['summary', 'description', 'issuetype', 'status', 'priority', 'components']
+            }
+            http_session = gh_http if PROXY_URL else requests
+
+            # Try GET first (Jira Server/Data Center), then POST (Jira Cloud)
+            resp = None
+            for method in ['GET', 'POST']:
+                try:
+                    if method == 'GET':
+                        resp = http_session.get(search_url, headers=headers, params=search_params,
+                                                timeout=20, verify=SSL_VERIFY)
+                    else:
+                        resp = http_session.post(search_url, headers=headers, json=search_body,
+                                                 timeout=20, verify=SSL_VERIFY)
+                    if resp.ok:
+                        print(f'[jira] REST API {method} succeeded ({resp.status_code})')
+                        break
+                    else:
+                        print(f'[jira] REST API {method} returned {resp.status_code}: {resp.text[:200]}')
+                except Exception as e:
+                    print(f'[jira] REST API {method} error: {e}')
+
+            if resp and resp.ok:
+                try:
                     for item in resp.json().get('issues', []):
                         fields = item.get('fields', {})
                         issues.append({
@@ -632,14 +658,14 @@ def _fetch_jira_by_fix_version(fix_version):
                             'components': [c.get('name', '') for c in (fields.get('components') or [])]
                         })
                     print(f'[jira] REST API returned {len(issues)} issues for fix version {fix_version}')
-                else:
-                    print(f'[jira] REST API returned {resp.status_code}: {resp.text[:200]}')
-            except Exception as e:
-                print(f'[jira] REST API error: {e}')
+                except Exception as e:
+                    print(f'[jira] REST API response parse error: {e}')
 
     if not issues:
-        print(f'[jira] No Jira issues found for fix version {fix_version}. '
-              f'Ensure JIRA_MCP_URL or JIRA_BASE_URL + JIRA_PAT_TOKEN are configured.')
+        print(f'[jira] ❌ No Jira issues found for fix version {fix_version}.')
+        if not JIRA_BASE_URL:
+            print(f'[jira]    💡 Set JIRA_BASE_URL to your Jira instance URL (e.g. https://jira.company.com)')
+            print(f'[jira]    Your JIRA_EMAIL and JIRA_PAT_TOKEN will be used for Basic auth automatically.')
 
     return issues
 
