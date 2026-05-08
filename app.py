@@ -1072,8 +1072,10 @@ def _get_prod_api_client():
     """Create a Kubernetes API client for the remote production cluster."""
     prod_api = os.environ.get('PROD_CLUSTER_API', '')
     prod_token = os.environ.get('PROD_CLUSTER_TOKEN', '')
+    print(f'[prod] PROD_CLUSTER_API = {"SET (" + prod_api[:20] + "...)" if prod_api else "EMPTY"}')
+    print(f'[prod] PROD_CLUSTER_TOKEN = {"SET (" + str(len(prod_token)) + " chars)" if prod_token else "EMPTY"}')
     if not prod_api or not prod_token:
-        return None, 'PROD_CLUSTER_API and PROD_CLUSTER_TOKEN env vars are required'
+        return None, f'PROD_CLUSTER_API {"✅" if prod_api else "❌ EMPTY"} and PROD_CLUSTER_TOKEN {"✅" if prod_token else "❌ EMPTY"} — both are required'
 
     prod_config = client.Configuration()
     prod_config.host = prod_api
@@ -3180,4 +3182,26 @@ def ai_converse_reset():
 
 # ██████████████████████████████████████████████████████████████████████████████
 if __name__ == '__main__':
+    # Startup: log critical env var status
+    print('=' * 60)
+    print('  Release Readiness Dashboard — Startup Config')
+    print('=' * 60)
+    _vars = {
+        'PROD_CLUSTER_API': os.environ.get('PROD_CLUSTER_API', ''),
+        'PROD_CLUSTER_TOKEN': os.environ.get('PROD_CLUSTER_TOKEN', ''),
+        'PROD_NAMESPACE': os.environ.get('PROD_NAMESPACE', 'default'),
+        'PROD_CLUSTER_VERIFY_SSL': os.environ.get('PROD_CLUSTER_VERIFY_SSL', 'true'),
+        'JIRA_MCP_URL': os.environ.get('JIRA_MCP_URL', ''),
+        'JIRA_PAT_TOKEN': os.environ.get('JIRA_PAT_TOKEN', ''),
+        'JIRA_BASE_URL': os.environ.get('JIRA_BASE_URL', ''),
+        'GEMINI_API_KEY': os.environ.get('GEMINI_API_KEY', ''),
+        'GCP_PROJECT_ID': os.environ.get('GCP_PROJECT_ID', ''),
+    }
+    for k, v in _vars.items():
+        if v:
+            masked = v[:8] + '...' if len(v) > 12 else '***'
+            print(f'  ✅ {k} = {masked}')
+        else:
+            print(f'  ⚠️  {k} = (not set)')
+    print('=' * 60)
     socketio.run(app, host='0.0.0.0', port=int(os.getenv('PORT', 8080)), debug=True)

@@ -197,6 +197,42 @@ spec:
               name: release-readiness-jira
               key: pat-token
               optional: true
+        - name: JIRA_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-jira
+              key: jira-base-url
+              optional: true
+
+        # ════════════════════════════════════════════════════════════
+        # Production Cluster — Remote OpenShift/K8s (Prod Env tab)
+        # ════════════════════════════════════════════════════════════
+        # Create secret:
+        #   kubectl create secret generic release-readiness-prod \
+        #     --from-literal=api-url=https://api.openshift-prod.example.com:6443 \
+        #     --from-literal=token=eyJhbGciOiJSUzI1NiIs... \
+        #     --from-literal=namespace=prod-namespace \
+        #     -n YOUR_NAMESPACE
+        - name: PROD_CLUSTER_API
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-prod
+              key: api-url
+              optional: true
+        - name: PROD_CLUSTER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-prod
+              key: token
+              optional: true
+        - name: PROD_NAMESPACE
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-prod
+              key: namespace
+              optional: true
+        - name: PROD_CLUSTER_VERIFY_SSL
+          value: "false"                                      # ← Set to 'true' in production with proper CA certs
 
         resources:
           requests:
