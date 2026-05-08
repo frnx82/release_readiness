@@ -281,6 +281,7 @@ def test_tool(tool_name, arguments, description=""):
 
 
 def main():
+    global MCP_URL
     parser = argparse.ArgumentParser(
         description='Test Jira MCP Server connectivity and tools',
         formatter_class=argparse.RawDescriptionHelpFormatter,
