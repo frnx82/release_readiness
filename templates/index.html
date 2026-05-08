@@ -2380,14 +2380,14 @@
 
         async function generateReleaseNotes() {
             const container = document.getElementById('export-output');
-            container.innerHTML = '<div class="loading"><div class="spinner"></div>Generating AI release notes...</div>';
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Starting AI release notes generation...</div>';
             try {
+                // Step 1: Start async generation
                 const r = await fetch('/api/ai/release_notes', {
                     method: 'POST',
                     headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }
                 });
 
-                // Guard against non-JSON responses (e.g. auth redirect returning HTML)
                 const contentType = r.headers.get('content-type') || '';
                 if (!contentType.includes('application/json')) {
                     const rawText = await r.text();
@@ -2399,35 +2399,81 @@
                     return;
                 }
 
-                const data = await r.json();
+                const startData = await r.json();
                 if (!r.ok) {
-                    container.innerHTML = `<div class="empty-state"><h3>⚠️ ${data.error || 'Failed to generate notes'}</h3><p>${r.status === 400 ? 'Make sure you have services nominated on the board first.' : 'Please try again.'}</p></div>`;
+                    container.innerHTML = `<div class="empty-state"><h3>⚠️ ${startData.error || 'Failed'}</h3><p>${r.status === 400 ? 'Make sure you have services nominated first.' : 'Please try again.'}</p></div>`;
                     return;
                 }
 
-                // Clean up AI response: strip markdown code fences if the AI wrapped its output
-                let notesText = data.notes || 'No notes generated';
-                notesText = notesText.replace(/^```(?:markdown)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+                // If backend returned notes directly (no Gemini / deterministic fallback)
+                if (startData.notes) {
+                    _showReleaseNotes(startData, container);
+                    return;
+                }
 
-                // Store for safe clipboard access
-                _lastReleaseNotesText = notesText;
+                // Step 2: Poll for completion
+                const jobId = startData.job_id;
+                if (!jobId) {
+                    container.innerHTML = '<div class="empty-state"><h3>⚠️ No job ID returned</h3></div>';
+                    return;
+                }
 
-                const geminiTag = data.gemini_powered
-                    ? '<span style="font-size:10px;padding:2px 8px;background:rgba(99,102,241,.15);color:var(--accent);border-radius:4px;margin-left:8px">✨ Gemini Powered</span>'
-                    : '<span style="font-size:10px;padding:2px 8px;background:var(--surface2);color:var(--text2);border-radius:4px;margin-left:8px">📄 Template</span>';
-                const jiraTag = data.jira_enriched
-                    ? `<span style="font-size:10px;padding:2px 8px;background:rgba(16,185,129,.12);color:#10b981;border-radius:4px;margin-left:4px">🎫 Jira Enriched (${data.jira_count || '?'} tickets)</span>`
-                    : '';
-                const rendered = simpleMarkdownToHtml(notesText);
-                container.innerHTML = `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:20px">
-                    <div style="display:flex;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:4px"><span style="font-size:14px;font-weight:600">📋 Release Notes</span>${geminiTag}${jiraTag}</div>
-                    <div style="font-size:13px;line-height:1.7">${rendered}</div>
-                </div>
-                <div style="margin-top:10px;display:flex;gap:8px">
-                    <button class="btn btn-sm" onclick="copyReleaseNotes('md')">📋 Copy Markdown</button>
-                    <button class="btn btn-sm" onclick="copyReleaseNotes('html')">📄 Copy as HTML</button>
-                </div>`;
+                let elapsed = 0;
+                const pollInterval = 3000;
+                const maxWait = 180000; // 3 minutes max
+                container.innerHTML = '<div class="loading"><div class="spinner"></div>🤖 AI is generating release notes<br><span id="ai-timer" style="font-size:12px;color:var(--text2)">0s elapsed...</span></div>';
+
+                const timer = setInterval(() => {
+                    elapsed += 1000;
+                    const el = document.getElementById('ai-timer');
+                    if (el) el.textContent = `${Math.floor(elapsed/1000)}s elapsed...`;
+                }, 1000);
+
+                while (elapsed < maxWait) {
+                    await new Promise(ok => setTimeout(ok, pollInterval));
+                    elapsed += pollInterval;
+                    try {
+                        const poll = await fetch(`/api/ai/release_notes/${jobId}`);
+                        const pData = await poll.json();
+                        if (pData.status === 'done') {
+                            clearInterval(timer);
+                            _showReleaseNotes(pData, container);
+                            return;
+                        } else if (pData.status === 'error') {
+                            clearInterval(timer);
+                            container.innerHTML = `<div class="empty-state"><h3>⚠️ AI Error</h3><p>${pData.error || 'Unknown error'}</p></div>`;
+                            return;
+                        }
+                        // still running, continue polling
+                    } catch (pe) {
+                        console.warn('Poll error:', pe);
+                    }
+                }
+                clearInterval(timer);
+                container.innerHTML = '<div class="empty-state"><h3>⏱️ Generation timed out</h3><p>The AI took too long. Try again or reduce the number of Jira tickets.</p></div>';
             } catch (e) { container.innerHTML = '<div class="empty-state"><h3>❌ Error</h3><p>' + e.message + '</p></div>'; }
+        }
+
+        function _showReleaseNotes(data, container) {
+            let notesText = data.notes || 'No notes generated';
+            notesText = notesText.replace(/^```(?:markdown)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+            _lastReleaseNotesText = notesText;
+
+            const geminiTag = data.gemini_powered
+                ? '<span style="font-size:10px;padding:2px 8px;background:rgba(99,102,241,.15);color:var(--accent);border-radius:4px;margin-left:8px">✨ Gemini Powered</span>'
+                : '<span style="font-size:10px;padding:2px 8px;background:var(--surface2);color:var(--text2);border-radius:4px;margin-left:8px">📄 Template</span>';
+            const jiraTag = data.jira_enriched
+                ? `<span style="font-size:10px;padding:2px 8px;background:rgba(16,185,129,.12);color:#10b981;border-radius:4px;margin-left:4px">🎫 Jira Enriched (${data.jira_count || '?'} tickets)</span>`
+                : '';
+            const rendered = simpleMarkdownToHtml(notesText);
+            container.innerHTML = `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:20px">
+                <div style="display:flex;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:4px"><span style="font-size:14px;font-weight:600">📋 Release Notes</span>${geminiTag}${jiraTag}</div>
+                <div style="font-size:13px;line-height:1.7">${rendered}</div>
+            </div>
+            <div style="margin-top:10px;display:flex;gap:8px">
+                <button class="btn btn-sm" onclick="copyReleaseNotes('md')">📋 Copy Markdown</button>
+                <button class="btn btn-sm" onclick="copyReleaseNotes('html')">📄 Copy as HTML</button>
+            </div>`;
         }
 
         function copyReleaseNotes(format) {

@@ -2207,23 +2207,58 @@ STRICT FORMAT RULES — follow these exactly:
 Return ONLY the markdown text, no JSON wrapping. Do NOT wrap in ```markdown``` code fences.
 """
 
-        try:
-            response = gemini_generate_with_retry(prompt)
-            notes = response.text if response else 'AI unavailable'
-            return jsonify({'notes': notes, 'gemini_powered': True,
-                           'jira_enriched': total_jira > 0,
-                           'jira_count': total_jira,
-                           'fix_version': fix_version,
-                           'release_date': board.get('release_date')})
-        except Exception as e:
-            print(f'[release-notes] Gemini error: {e}')
-            return jsonify({'error': str(e), 'notes': '', 'gemini_powered': False}), 500
+        # ── Async generation: return job_id immediately, generate in background ──
+        job_id = str(uuid.uuid4())[:8]
+        _release_notes_jobs[job_id] = {'status': 'running', 'notes': '', 'error': None,
+                                        'gemini_powered': True, 'jira_enriched': total_jira > 0,
+                                        'jira_count': total_jira, 'fix_version': fix_version,
+                                        'release_date': board.get('release_date')}
+
+        def _generate_in_background(jid, p):
+            try:
+                print(f'[release-notes] Job {jid}: calling Gemini...')
+                response = gemini_generate_with_retry(p)
+                notes = response.text if response else 'AI unavailable'
+                _release_notes_jobs[jid]['notes'] = notes
+                _release_notes_jobs[jid]['status'] = 'done'
+                print(f'[release-notes] Job {jid}: done ({len(notes)} chars)')
+            except Exception as e:
+                print(f'[release-notes] Job {jid}: Gemini error: {e}')
+                _release_notes_jobs[jid]['error'] = str(e)
+                _release_notes_jobs[jid]['status'] = 'error'
+
+        t = threading.Thread(target=_generate_in_background, args=(job_id, prompt), daemon=True)
+        t.start()
+        print(f'[release-notes] Started async job {job_id} with {total_jira} Jira issues')
+        return jsonify({'job_id': job_id, 'status': 'running'})
 
     except Exception as outer_e:
         import traceback
         tb = traceback.format_exc()
         print(f'[release-notes] FATAL ERROR: {outer_e}\n{tb}')
         return jsonify({'error': f'Internal error: {str(outer_e)}', 'notes': '', 'gemini_powered': False}), 500
+
+# In-memory job store for async release notes generation
+_release_notes_jobs = {}
+
+@app.route('/api/ai/release_notes/<job_id>')
+def release_notes_status(job_id):
+    """Poll for async release notes generation status."""
+    job = _release_notes_jobs.get(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    if job['status'] == 'running':
+        return jsonify({'status': 'running'})
+    elif job['status'] == 'error':
+        return jsonify({'status': 'error', 'error': job['error']}), 500
+    else:
+        result = {k: v for k, v in job.items() if k != 'status'}
+        result['status'] = 'done'
+        # Clean up old job after retrieval
+        if len(_release_notes_jobs) > 20:
+            oldest = list(_release_notes_jobs.keys())[0]
+            _release_notes_jobs.pop(oldest, None)
+        return jsonify(result)
 
 
 # ── Release History ───────────────────────────────────────────────────────────
