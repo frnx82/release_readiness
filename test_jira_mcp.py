@@ -31,10 +31,11 @@ import textwrap
 import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MCP_URL    = os.environ.get('JIRA_MCP_URL', '')
-PAT_TOKEN  = os.environ.get('JIRA_PAT_TOKEN', '')
-JIRA_EMAIL = os.environ.get('JIRA_EMAIL', '')
-SSL_VERIFY = os.environ.get('SSL_VERIFY', 'true').lower() not in ('false', '0', 'no')
+MCP_URL      = os.environ.get('JIRA_MCP_URL', '')
+PAT_TOKEN    = os.environ.get('JIRA_PAT_TOKEN', '')
+JIRA_EMAIL   = os.environ.get('JIRA_EMAIL', '')
+JIRA_BASE_URL = os.environ.get('JIRA_BASE_URL', '')  # e.g. https://jira.company.com/jira02
+SSL_VERIFY   = os.environ.get('SSL_VERIFY', 'true').lower() not in ('false', '0', 'no')
 
 if not SSL_VERIFY:
     import urllib3
@@ -305,8 +306,13 @@ def main():
     parser.add_argument('--issue', help='Test fetching a specific Jira issue (e.g. PROJ-123)')
     parser.add_argument('--project', help='Test fetching a specific project (e.g. PROJ)')
     parser.add_argument('--jql', help='Test custom JQL query')
+    parser.add_argument('--jira-url', help='Jira instance URL for direct REST API test (e.g. https://jira.company.com/jira02)')
     parser.add_argument('--all', action='store_true', help='Run all tests')
     args = parser.parse_args()
+
+    if args.jira_url:
+        global JIRA_BASE_URL
+        JIRA_BASE_URL = args.jira_url
 
     print(f"\n{BOLD}{'═'*60}")
     print(f"  🧪 Jira MCP Server Connectivity Test")
@@ -414,33 +420,88 @@ def main():
         header(f"🏷️ Fix Version Search: {fix_version}")
         jql = f'fixVersion = "{fix_version}" ORDER BY issuetype ASC'
         print(f"  JQL: {CYAN}{jql}{RESET}")
+
+        # Method 1: Try MCP
+        print(f"\n  {BOLD}Method 1: MCP Server{RESET}")
         result = test_tool('search_jira_issues', {'jql': jql, 'max_results': 50},
                           f'Search by fix version {fix_version}')
 
+        mcp_worked = False
         if result:
-            # Try to extract and display issue details
             issues = []
             if isinstance(result, dict):
                 issues = result.get('issues', [])
-            elif isinstance(result, list):
-                issues = result
-
+                if result.get('isError') or 'Unknown tool' in str(result.get('content', '')):
+                    issues = []
             if issues:
-                print(f"\n  {BOLD}📝 Fix Version Issues Detail:{RESET}")
-                for i, issue in enumerate(issues[:10]):
-                    if isinstance(issue, dict):
-                        key = issue.get('key', issue.get('id', '?'))
-                        fields = issue.get('fields', issue)
-                        summary = fields.get('summary', '?')
-                        desc = (fields.get('description') or '')[:150]
-                        itype = fields.get('issuetype', {})
-                        type_name = itype.get('name', '?') if isinstance(itype, dict) else str(itype)
-                        status = fields.get('status', {})
-                        status_name = status.get('name', '?') if isinstance(status, dict) else str(status)
-                        print(f"\n  {CYAN}{key}{RESET} [{type_name}] — {status_name}")
-                        print(f"    Summary: {summary}")
-                        if desc:
-                            print(f"    Description: {DIM}{desc}...{RESET}")
+                mcp_worked = True
+
+        # Method 2: Direct Jira REST API (fallback)
+        if not mcp_worked:
+            print(f"\n  {BOLD}Method 2: Direct Jira REST API{RESET}")
+            jira_url = JIRA_BASE_URL
+            if not jira_url:
+                warn("JIRA_BASE_URL not set. Use --jira-url or export JIRA_BASE_URL")
+                info("Example: python test_jira_mcp.py --fix-version P26.04.24 --jira-url https://jira.company.com/jira02")
+            else:
+                import base64
+                print(f"  Jira URL: {CYAN}{jira_url}{RESET}")
+                api_headers = {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                }
+                # Basic auth: email:PAT
+                if JIRA_EMAIL and PAT_TOKEN:
+                    cred = base64.b64encode(f'{JIRA_EMAIL}:{PAT_TOKEN}'.encode()).decode()
+                    api_headers['Authorization'] = f'Basic {cred}'
+                    print(f"  Auth: Basic ({JIRA_EMAIL})")
+                elif PAT_TOKEN:
+                    api_headers['Authorization'] = f'Bearer {PAT_TOKEN}'
+                    print(f"  Auth: Bearer token")
+
+                search_url = f'{jira_url}/rest/api/2/search'
+                params = {
+                    'jql': jql,
+                    'maxResults': 50,
+                    'fields': 'summary,description,issuetype,status,priority,components'
+                }
+
+                # Try GET first (Jira Server), then POST (Jira Cloud)
+                for method in ['GET', 'POST']:
+                    try:
+                        print(f"\n  Trying {method} {search_url}")
+                        if method == 'GET':
+                            resp = requests.get(search_url, headers=api_headers, params=params,
+                                                timeout=20, verify=SSL_VERIFY)
+                        else:
+                            resp = requests.post(search_url, headers=api_headers,
+                                                 json={'jql': jql, 'maxResults': 50,
+                                                       'fields': ['summary', 'description', 'issuetype', 'status', 'priority', 'components']},
+                                                 timeout=20, verify=SSL_VERIFY)
+
+                        print(f"  HTTP {resp.status_code}")
+                        if resp.ok:
+                            data = resp.json()
+                            issues = data.get('issues', [])
+                            ok(f"{method} returned {len(issues)} issues!")
+                            for issue in issues[:10]:
+                                fields = issue.get('fields', {})
+                                key = issue.get('key', '?')
+                                summary = fields.get('summary', '?')
+                                itype = (fields.get('issuetype') or {}).get('name', '?')
+                                status = (fields.get('status') or {}).get('name', '?')
+                                desc = (fields.get('description') or '')[:150]
+                                print(f"\n  {CYAN}{key}{RESET} [{itype}] — {status}")
+                                print(f"    Summary: {summary}")
+                                if desc:
+                                    print(f"    Description: {DIM}{desc}...{RESET}")
+                            if issues:
+                                print(f"\n  {GREEN}{BOLD}✅ Direct REST API works! Set JIRA_BASE_URL={jira_url} in your app.{RESET}")
+                            break
+                        else:
+                            print(f"  Response: {resp.text[:300]}")
+                    except Exception as e:
+                        fail(f"{method} failed: {e}")
 
     # Test 6: Custom JQL
     if args.jql:
