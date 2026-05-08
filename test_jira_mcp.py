@@ -57,7 +57,7 @@ def info(msg):  print(f"  {CYAN}ℹ️  {msg}{RESET}")
 def header(msg): print(f"\n{BOLD}{'─'*60}\n  {msg}\n{'─'*60}{RESET}")
 
 
-def mcp_call(tool_name, arguments, timeout=15):
+def mcp_call(tool_name, arguments, timeout=15, endpoint_url=None):
     """Call an MCP tool via HTTP JSON-RPC.
 
     The Jira MCP server expects:
@@ -89,12 +89,64 @@ def mcp_call(tool_name, arguments, timeout=15):
         }
     }
 
+    url = endpoint_url or MCP_URL
     try:
-        resp = requests.post(MCP_URL, json=payload, headers=headers,
+        resp = requests.post(url, json=payload, headers=headers,
                              timeout=timeout, verify=SSL_VERIFY)
         return resp
     except Exception as e:
         return e
+
+
+def discover_endpoint():
+    """Try multiple endpoint paths to find the working MCP endpoint."""
+    base = MCP_URL.rstrip('/')
+    # Try: base URL as-is, /mcp, /messages, /rpc
+    candidates = [base, f'{base}/mcp', f'{base}/messages', f'{base}/rpc']
+
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+    }
+    if PAT_TOKEN:
+        headers['Jira-Token'] = PAT_TOKEN
+        headers['Authorization'] = f'Bearer {PAT_TOKEN}'
+
+    payload = {
+        'jsonrpc': '2.0',
+        'id': str(uuid.uuid4()),
+        'method': 'tools/list',
+        'params': {}
+    }
+
+    for url in candidates:
+        try:
+            resp = requests.post(url, json=payload, headers=headers,
+                                 timeout=10, verify=SSL_VERIFY)
+            print(f"  {url}")
+            print(f"     HTTP {resp.status_code} | Content-Type: {resp.headers.get('Content-Type', '?')}")
+            print(f"     Response (first 300 chars): {resp.text[:300]}")
+
+            if resp.ok:
+                try:
+                    data = resp.json()
+                    tools = data.get('result', {}).get('tools', data.get('tools', []))
+                    if tools:
+                        ok(f"Found {len(tools)} tools at {url}")
+                        for t in tools:
+                            name = t.get('name', '?')
+                            desc = t.get('description', '')[:60]
+                            print(f"       • {GREEN}{name}{RESET}  {DIM}{desc}{RESET}")
+                        return url, [t.get('name', '') for t in tools]
+                except json.JSONDecodeError:
+                    pass
+            print()
+        except requests.ConnectionError:
+            print(f"  {url}  → {RED}Connection refused{RESET}")
+        except Exception as e:
+            print(f"  {url}  → {RED}{e}{RESET}")
+
+    return None, []
 
 
 def parse_mcp_response(resp):
@@ -266,42 +318,19 @@ def main():
     if not test_connectivity():
         sys.exit(1)
 
-    # Test 2: Discover available tools (tools/list)
-    header("🔍 Tool Discovery (tools/list)")
-    headers = {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, text/event-stream',
-    }
-    if PAT_TOKEN:
-        headers['Jira-Token'] = PAT_TOKEN
-        headers['Authorization'] = f'Bearer {PAT_TOKEN}'
+    # Test 2: Discover endpoint + available tools
+    header("🔍 Endpoint & Tool Discovery")
+    info(f"Base URL: {MCP_URL}")
+    info("Trying: base, /mcp, /messages, /rpc")
+    print()
+    working_url, tool_names = discover_endpoint()
 
-    list_payload = {
-        'jsonrpc': '2.0',
-        'id': str(uuid.uuid4()),
-        'method': 'tools/list',
-        'params': {}
-    }
-    try:
-        resp = requests.post(MCP_URL, json=list_payload, headers=headers,
-                             timeout=10, verify=SSL_VERIFY)
-        print(f"  HTTP {resp.status_code}")
-        if resp.ok:
-            data = resp.json()
-            tools = data.get('result', {}).get('tools', data.get('tools', []))
-            if tools:
-                ok(f"Found {len(tools)} tools:")
-                for t in tools:
-                    name = t.get('name', '?')
-                    desc = t.get('description', '')[:60]
-                    print(f"     • {GREEN}{name}{RESET}  {DIM}{desc}{RESET}")
-            else:
-                warn(f"No tools found in response. Raw keys: {list(data.keys())}")
-                print(f"     {DIM}{json.dumps(data, indent=2)[:500]}{RESET}")
-        else:
-            warn(f"tools/list returned {resp.status_code}: {resp.text[:200]}")
-    except Exception as e:
-        warn(f"tools/list failed: {e}")
+    if working_url:
+        ok(f"Working endpoint: {working_url}")
+        MCP_URL = working_url
+    else:
+        warn("Could not discover tools via tools/list")
+        info("Will try tool calls directly against base URL")
 
     # Test 3: Tool Tests
     header("📋 Tool Tests")
