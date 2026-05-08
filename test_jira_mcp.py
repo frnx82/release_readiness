@@ -57,14 +57,8 @@ def info(msg):  print(f"  {CYAN}ℹ️  {msg}{RESET}")
 def header(msg): print(f"\n{BOLD}{'─'*60}\n  {msg}\n{'─'*60}{RESET}")
 
 
-def mcp_call(tool_name, arguments, timeout=15, endpoint_url=None):
-    """Call an MCP tool via HTTP JSON-RPC.
-
-    The Jira MCP server expects:
-      - Content-Type: application/json
-      - Jira-Token: <PAT>  (per-request auth header)
-      - JSON-RPC 2.0 payload with tools/call method
-    """
+def mcp_call(tool_name, arguments, timeout=15, endpoint_url=None, verbose=False):
+    """Call an MCP tool via HTTP JSON-RPC."""
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json, text/event-stream',
@@ -90,9 +84,22 @@ def mcp_call(tool_name, arguments, timeout=15, endpoint_url=None):
     }
 
     url = endpoint_url or MCP_URL
+
+    if verbose:
+        print(f"\n     {DIM}── DEBUG REQUEST ──{RESET}")
+        print(f"     {DIM}URL: {url}{RESET}")
+        safe_headers = {k: (v[:8] + '...' if k in ('Jira-Token', 'Authorization') else v) for k, v in headers.items()}
+        print(f"     {DIM}Headers: {json.dumps(safe_headers, indent=2)}{RESET}")
+        print(f"     {DIM}Payload: {json.dumps(payload)[:200]}{RESET}")
+
     try:
         resp = requests.post(url, json=payload, headers=headers,
                              timeout=timeout, verify=SSL_VERIFY)
+        if verbose:
+            print(f"     {DIM}── DEBUG RESPONSE ──{RESET}")
+            print(f"     {DIM}Status: {resp.status_code}{RESET}")
+            print(f"     {DIM}Resp Headers: {dict(resp.headers)}{RESET}")
+            print(f"     {DIM}Body: {resp.text[:500]}{RESET}")
         return resp
     except Exception as e:
         return e
@@ -229,7 +236,7 @@ def test_tool(tool_name, arguments, description=""):
         print()
     print(f"     Args: {json.dumps(arguments)}")
 
-    resp = mcp_call(tool_name, arguments)
+    resp = mcp_call(tool_name, arguments, verbose=True)
 
     if isinstance(resp, Exception):
         fail(f"Request failed: {resp}")
