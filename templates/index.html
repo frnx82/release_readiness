@@ -2382,12 +2382,20 @@
             const container = document.getElementById('export-output');
             container.innerHTML = '<div class="loading"><div class="spinner"></div>Generating AI release notes...</div>';
             try {
-                const r = await fetch('/api/ai/release_notes', { method: 'POST' });
+                const r = await fetch('/api/ai/release_notes', {
+                    method: 'POST',
+                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }
+                });
 
                 // Guard against non-JSON responses (e.g. auth redirect returning HTML)
                 const contentType = r.headers.get('content-type') || '';
                 if (!contentType.includes('application/json')) {
-                    container.innerHTML = '<div class="empty-state"><h3>⚠️ Unexpected response</h3><p>The server returned a non-JSON response (possibly an auth redirect). Please refresh and try again.</p></div>';
+                    const rawText = await r.text();
+                    console.error('Non-JSON response:', r.status, contentType, rawText.substring(0, 500));
+                    container.innerHTML = `<div class="empty-state"><h3>⚠️ Unexpected response (HTTP ${r.status})</h3>`
+                        + `<p>Content-Type: <code>${contentType || 'none'}</code></p>`
+                        + `<p style="font-size:0.85em;color:#aaa;word-break:break-all;">${rawText.substring(0, 200).replace(/</g, '&lt;')}</p>`
+                        + `<p>The request may not have reached the app. Check gateway/proxy logs.</p></div>`;
                     return;
                 }
 

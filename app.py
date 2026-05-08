@@ -1996,145 +1996,147 @@ def generate_release_notes():
     and includes their descriptions in the release notes. When Jira IDs are
     also associated per-service, those are merged in.
     """
-    board = _read_board()
-    if not board or not board.get('services'):
-        return jsonify({'error': 'No nominations to generate notes for'}), 400
+    try:
+        print('[release-notes] Starting AI release notes generation...')
+        board = _read_board()
+        if not board or not board.get('services'):
+            return jsonify({'error': 'No nominations to generate notes for'}), 400
 
-    fix_version = board.get('fix_version', '')
+        fix_version = board.get('fix_version', '')
 
-    # ── Step 1: Fetch Jira tickets by fix version ──
-    fix_version_issues = _fetch_jira_by_fix_version(fix_version)
+        # ── Step 1: Fetch Jira tickets by fix version ──
+        fix_version_issues = _fetch_jira_by_fix_version(fix_version)
 
-    # ── Step 2: Collect per-nomination Jira IDs (manual entries) ──
-    all_jira_ids = []
-    svc_jira_map = {}  # service_name → [jira_ids]
-    for svc_name, svc_data in board['services'].items():
-        ids = _parse_jira_ids(svc_data.get('jira_ids', ''))
-        if ids:
-            svc_jira_map[svc_name] = ids
-            all_jira_ids.extend(ids)
-
-    jira_details = {}
-    if all_jira_ids:
-        jira_details = _fetch_jira_issues(list(set(all_jira_ids)))
-
-    # ── Merge all issues ──
-    all_issues = {}
-    for issue in fix_version_issues:
-        all_issues[issue['id']] = issue
-    for jid, issue in jira_details.items():
-        all_issues[jid] = issue
-
-    total_jira = len(all_issues)
-
-    if not get_model():
-        # Deterministic fallback (no Gemini)
-        lines = [f"## Release Notes — {board.get('release_date', 'Unknown')}"]
-        if fix_version:
-            lines.append(f"**Fix Version:** `{fix_version}`\n")
-        lines.append(f"**{len(board['services'])} services nominated for release:**\n")
-        lines.append("| Service | Version | Jira Tickets | Helm Chart | Notes |")
-        lines.append("|---|---|---|---|---|")
+        # ── Step 2: Collect per-nomination Jira IDs (manual entries) ──
+        all_jira_ids = []
+        svc_jira_map = {}  # service_name → [jira_ids]
         for svc_name, svc_data in board['services'].items():
-            jira_col = svc_data.get('jira_ids', '') or '—'
-            if svc_data.get('is_custom'):
-                ver_str = svc_data.get('image_tag', '?')
-            else:
-                tag = svc_data.get('image_tag', '?')
-                helm = svc_data.get('helm_version')
-                ver_str = f"{tag} (Helm: {helm})" if helm else tag
-            lines.append(f"| {svc_name} | {ver_str} | {jira_col} | {svc_data.get('helm_version', 'N/A')} | {svc_data.get('notes', '')} |")
+            ids = _parse_jira_ids(svc_data.get('jira_ids', ''))
+            if ids:
+                svc_jira_map[svc_name] = ids
+                all_jira_ids.extend(ids)
 
-        # "What's Changed" from fix version + manual Jira tickets
-        if all_issues:
-            lines.append("\n## What's Changed\n")
-            if fix_version and fix_version_issues:
-                lines.append(f"*Jira tickets from fix version `{fix_version}` ({len(fix_version_issues)} tickets):*\n")
-            features, bugs, improvements, tasks = [], [], [], []
-            for jid, issue in all_issues.items():
-                desc_preview = (issue.get('description', '') or '')[:120]
-                if len(issue.get('description', '')) > 120:
-                    desc_preview += '...'
-                entry = f"- **{jid}**: {issue.get('summary', '?')} [{issue.get('status', '?')}]\n  > {desc_preview}"
-                itype = issue.get('type', 'Task')
-                if itype in ('Story', 'Feature'):
-                    features.append(entry)
-                elif itype == 'Bug':
-                    bugs.append(entry)
-                elif itype == 'Improvement':
-                    improvements.append(entry)
+        jira_details = {}
+        if all_jira_ids:
+            jira_details = _fetch_jira_issues(list(set(all_jira_ids)))
+
+        # ── Merge all issues ──
+        all_issues = {}
+        for issue in fix_version_issues:
+            all_issues[issue['id']] = issue
+        for jid, issue in jira_details.items():
+            all_issues[jid] = issue
+
+        total_jira = len(all_issues)
+
+        if not get_model():
+            # Deterministic fallback (no Gemini)
+            lines = [f"## Release Notes — {board.get('release_date', 'Unknown')}"]
+            if fix_version:
+                lines.append(f"**Fix Version:** `{fix_version}`\n")
+            lines.append(f"**{len(board['services'])} services nominated for release:**\n")
+            lines.append("| Service | Version | Jira Tickets | Helm Chart | Notes |")
+            lines.append("|---|---|---|---|---|")
+            for svc_name, svc_data in board['services'].items():
+                jira_col = svc_data.get('jira_ids', '') or '—'
+                if svc_data.get('is_custom'):
+                    ver_str = svc_data.get('image_tag', '?')
                 else:
-                    tasks.append(entry)
-            if features:
-                lines.append("### 🆕 New Features")
-                lines.extend(features)
-            if bugs:
-                lines.append("\n### 🐛 Bug Fixes")
-                lines.extend(bugs)
-            if improvements:
-                lines.append("\n### ⚡ Improvements")
-                lines.extend(improvements)
-            if tasks:
-                lines.append("\n### 🔧 Maintenance")
-                lines.extend(tasks)
+                    tag = svc_data.get('image_tag', '?')
+                    helm = svc_data.get('helm_version')
+                    ver_str = f"{tag} (Helm: {helm})" if helm else tag
+                lines.append(f"| {svc_name} | {ver_str} | {jira_col} | {svc_data.get('helm_version', 'N/A')} | {svc_data.get('notes', '')} |")
 
-        # Post-cutoff exception warning
-        exc_services = [n for n, s in board['services'].items() if s.get('is_exception')]
-        if exc_services:
-            lines.append("\n## ⚠️ Post-Cutoff Changes\n")
-            lines.append("> The following services were nominated **after the cutoff deadline** as exceptions.\n")
-            for n in exc_services:
-                s = board['services'][n]
-                lines.append(f"- **{n}** (`{s.get('image_tag', '?')}`) — Approved by: {s.get('exception_approver', '?')}, Reason: {s.get('exception_reason', '?')}")
+            # "What's Changed" from fix version + manual Jira tickets
+            if all_issues:
+                lines.append("\n## What's Changed\n")
+                if fix_version and fix_version_issues:
+                    lines.append(f"*Jira tickets from fix version `{fix_version}` ({len(fix_version_issues)} tickets):*\n")
+                features, bugs, improvements, tasks = [], [], [], []
+                for jid, issue in all_issues.items():
+                    desc_preview = (issue.get('description', '') or '')[:120]
+                    if len(issue.get('description', '')) > 120:
+                        desc_preview += '...'
+                    entry = f"- **{jid}**: {issue.get('summary', '?')} [{issue.get('status', '?')}]\n  > {desc_preview}"
+                    itype = issue.get('type', 'Task')
+                    if itype in ('Story', 'Feature'):
+                        features.append(entry)
+                    elif itype == 'Bug':
+                        bugs.append(entry)
+                    elif itype == 'Improvement':
+                        improvements.append(entry)
+                    else:
+                        tasks.append(entry)
+                if features:
+                    lines.append("### 🆕 New Features")
+                    lines.extend(features)
+                if bugs:
+                    lines.append("\n### 🐛 Bug Fixes")
+                    lines.extend(bugs)
+                if improvements:
+                    lines.append("\n### ⚡ Improvements")
+                    lines.extend(improvements)
+                if tasks:
+                    lines.append("\n### 🔧 Maintenance")
+                    lines.extend(tasks)
 
-        return jsonify({'notes': '\n'.join(lines), 'gemini_powered': False,
-                       'jira_enriched': total_jira > 0, 'jira_count': total_jira,
-                       'fix_version': fix_version,
-                       'release_date': board.get('release_date')})
+            # Post-cutoff exception warning
+            exc_services = [n for n, s in board['services'].items() if s.get('is_exception')]
+            if exc_services:
+                lines.append("\n## ⚠️ Post-Cutoff Changes\n")
+                lines.append("> The following services were nominated **after the cutoff deadline** as exceptions.\n")
+                for n in exc_services:
+                    s = board['services'][n]
+                    lines.append(f"- **{n}** (`{s.get('image_tag', '?')}`) — Approved by: {s.get('exception_approver', '?')}, Reason: {s.get('exception_reason', '?')}")
 
-    # ── Build AI prompt with Jira context ──
-    service_list = []
-    exception_services = []
-    for svc_name, svc_data in board['services'].items():
-        # Build version info: K8s services get both tag + helm, custom gets only manual version
-        is_custom = svc_data.get('is_custom', False)
-        tag = svc_data.get('image_tag', '?')
-        helm = svc_data.get('helm_version')
-        if is_custom:
-            version_info = f"version={tag}, component_type={svc_data.get('kind', 'Custom')}"
-        else:
-            version_info = f"image_tag={tag}, helm_chart_version={helm or 'N/A'}"
+            return jsonify({'notes': '\n'.join(lines), 'gemini_powered': False,
+                           'jira_enriched': total_jira > 0, 'jira_count': total_jira,
+                           'fix_version': fix_version,
+                           'release_date': board.get('release_date')})
 
-        svc_line = (f"- {svc_name} [{('CUSTOM COMPONENT' if is_custom else 'K8S SERVICE')}]: "
-                    f"{version_info}, "
-                    f"readiness={svc_data.get('readiness','?')}, "
-                    f"notes=\"{svc_data.get('notes','')}\"")
+        # ── Build AI prompt with Jira context ──
+        service_list = []
+        exception_services = []
+        for svc_name, svc_data in board['services'].items():
+            # Build version info: K8s services get both tag + helm, custom gets only manual version
+            is_custom = svc_data.get('is_custom', False)
+            tag = svc_data.get('image_tag', '?')
+            helm = svc_data.get('helm_version')
+            if is_custom:
+                version_info = f"version={tag}, component_type={svc_data.get('kind', 'Custom')}"
+            else:
+                version_info = f"image_tag={tag}, helm_chart_version={helm or 'N/A'}"
 
-        # Flag exception nominations
-        if svc_data.get('is_exception'):
-            svc_line += (f", EXCEPTION_NOMINATION=true, "
-                        f"exception_reason=\"{svc_data.get('exception_reason', '')}\", "
-                        f"exception_approver=\"{svc_data.get('exception_approver', '')}\"")
-            exception_services.append(svc_name)
+            svc_line = (f"- {svc_name} [{('CUSTOM COMPONENT' if is_custom else 'K8S SERVICE')}]: "
+                        f"{version_info}, "
+                        f"readiness={svc_data.get('readiness','?')}, "
+                        f"notes=\"{svc_data.get('notes','')}\"")
 
-        # Append Jira ticket details for this service
-        svc_ids = svc_jira_map.get(svc_name, [])
-        if svc_ids:
-            svc_line += f", jira_tickets=[{', '.join(svc_ids)}]"
-            for jid in svc_ids:
-                issue = jira_details.get(jid, {})
-                if issue:
-                    desc = (issue.get('description', '') or '')[:1500]
-                    svc_line += (f"\n    JIRA {jid}: type={issue.get('type','Task')}, "
-                                f"status={issue.get('status','?')}, "
-                                f"priority={issue.get('priority','Medium')}, "
-                                f"summary=\"{issue.get('summary','')}\", "
-                                f"description=\"{desc}\"")
-        service_list.append(svc_line)
+            # Flag exception nominations
+            if svc_data.get('is_exception'):
+                svc_line += (f", EXCEPTION_NOMINATION=true, "
+                            f"exception_reason=\"{svc_data.get('exception_reason', '')}\", "
+                            f"exception_approver=\"{svc_data.get('exception_approver', '')}\"")
+                exception_services.append(svc_name)
 
-    jira_instruction = ""
-    if all_issues:
-        jira_instruction = """\n\nJira tickets are associated with each service. Use the Jira ticket summaries and
+            # Append Jira ticket details for this service
+            svc_ids = svc_jira_map.get(svc_name, [])
+            if svc_ids:
+                svc_line += f", jira_tickets=[{', '.join(svc_ids)}]"
+                for jid in svc_ids:
+                    issue = jira_details.get(jid, {})
+                    if issue:
+                        desc = (issue.get('description', '') or '')[:1500]
+                        svc_line += (f"\n    JIRA {jid}: type={issue.get('type','Task')}, "
+                                    f"status={issue.get('status','?')}, "
+                                    f"priority={issue.get('priority','Medium')}, "
+                                    f"summary=\"{issue.get('summary','')}\", "
+                                    f"description=\"{desc}\"")
+            service_list.append(svc_line)
+
+        jira_instruction = ""
+        if all_issues:
+            jira_instruction = """\n\nJira tickets are associated with each service. Use the Jira ticket summaries and
 descriptions to explain WHAT actually changed in each service. Organize changes by:
 - 🆕 New Features
 - 🐛 Bug Fixes
@@ -2142,39 +2144,39 @@ descriptions to explain WHAT actually changed in each service. Organize changes 
 - 🔧 Maintenance
 """
 
-    has_jira_context = bool(jira_details) or bool(fix_version_issues)
-    whats_changed_instruction = (
-        'A detailed "What\'s Changed" section organized by change type '
-        '(Features, Bug Fixes, Improvements, Maintenance). For each Jira ticket, '
-        'write EXACTLY 2-3 sentences per ticket explaining: what was changed, why '
-        'it was changed, and any technical details from the ticket description. '
-        'Be consistent — every ticket gets the same level of detail.'
-        if has_jira_context else
-        'A brief summary of upcoming changes based on service notes '
-        '(1-2 sentences per service)'
-    )
-
-    exception_instruction = ""
-    if exception_services:
-        exc_list = ', '.join(exception_services)
-        exception_instruction = (
-            f"\n\nIMPORTANT: The following services were nominated AFTER the cutoff as "
-            f"exception nominations: {exc_list}. Add a '⚠️ Post-Cutoff Changes' section "
-            f"at the end highlighting these exception nominations, who requested them, "
-            f"the reason, and who approved them. Flag these as higher risk.\n"
+        has_jira_context = bool(jira_details) or bool(fix_version_issues)
+        whats_changed_instruction = (
+            'A detailed "What\'s Changed" section organized by change type '
+            '(Features, Bug Fixes, Improvements, Maintenance). For each Jira ticket, '
+            'write EXACTLY 2-3 sentences per ticket explaining: what was changed, why '
+            'it was changed, and any technical details from the ticket description. '
+            'Be consistent — every ticket gets the same level of detail.'
+            if has_jira_context else
+            'A brief summary of upcoming changes based on service notes '
+            '(1-2 sentences per service)'
         )
 
-    newline = '\n'
-    # Include fix version issues context for AI
-    fix_version_context = ''
-    if fix_version_issues:
-        fv_lines = [f'\nFix Version: {fix_version} ({len(fix_version_issues)} Jira tickets):']
-        for issue in fix_version_issues:
-            desc = (issue.get('description', '') or '')[:300]
-            fv_lines.append(f"  - {issue['id']} ({issue.get('type','Task')}): {issue.get('summary', '?')} [{issue.get('status','?')}] — {desc}")
-        fix_version_context = '\n'.join(fv_lines)
+        exception_instruction = ""
+        if exception_services:
+            exc_list = ', '.join(exception_services)
+            exception_instruction = (
+                f"\n\nIMPORTANT: The following services were nominated AFTER the cutoff as "
+                f"exception nominations: {exc_list}. Add a '⚠️ Post-Cutoff Changes' section "
+                f"at the end highlighting these exception nominations, who requested them, "
+                f"the reason, and who approved them. Flag these as higher risk.\n"
+            )
 
-    prompt = f"""Generate professional release notes for the operations team.
+        newline = '\n'
+        # Include fix version issues context for AI
+        fix_version_context = ''
+        if fix_version_issues:
+            fv_lines = [f'\nFix Version: {fix_version} ({len(fix_version_issues)} Jira tickets):']
+            for issue in fix_version_issues:
+                desc = (issue.get('description', '') or '')[:300]
+                fv_lines.append(f"  - {issue['id']} ({issue.get('type','Task')}): {issue.get('summary', '?')} [{issue.get('status','?')}] — {desc}")
+            fix_version_context = '\n'.join(fv_lines)
+
+        prompt = f"""Generate professional release notes for the operations team.
 
 Release Date: {board.get('release_date', 'Unknown')}
 Fix Version: {fix_version or 'Not set'}
@@ -2205,16 +2207,23 @@ STRICT FORMAT RULES — follow these exactly:
 Return ONLY the markdown text, no JSON wrapping. Do NOT wrap in ```markdown``` code fences.
 """
 
-    try:
-        response = gemini_generate_with_retry(prompt)
-        notes = response.text if response else 'AI unavailable'
-        return jsonify({'notes': notes, 'gemini_powered': True,
-                       'jira_enriched': total_jira > 0,
-                       'jira_count': total_jira,
-                       'fix_version': fix_version,
-                       'release_date': board.get('release_date')})
-    except Exception as e:
-        return jsonify({'error': str(e), 'notes': '', 'gemini_powered': False}), 500
+        try:
+            response = gemini_generate_with_retry(prompt)
+            notes = response.text if response else 'AI unavailable'
+            return jsonify({'notes': notes, 'gemini_powered': True,
+                           'jira_enriched': total_jira > 0,
+                           'jira_count': total_jira,
+                           'fix_version': fix_version,
+                           'release_date': board.get('release_date')})
+        except Exception as e:
+            print(f'[release-notes] Gemini error: {e}')
+            return jsonify({'error': str(e), 'notes': '', 'gemini_powered': False}), 500
+
+    except Exception as outer_e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f'[release-notes] FATAL ERROR: {outer_e}\n{tb}')
+        return jsonify({'error': f'Internal error: {str(outer_e)}', 'notes': '', 'gemini_powered': False}), 500
 
 
 # ── Release History ───────────────────────────────────────────────────────────
