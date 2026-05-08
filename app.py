@@ -529,6 +529,121 @@ def _fetch_jira_issues(jira_ids):
     return results
 
 
+def _fetch_jira_by_fix_version(fix_version):
+    """Fetch all Jira tickets for a given fix version.
+
+    Tries multiple methods in order:
+    1. MCP server's jira_search_issues or search_issues tool (uses JIRA_MCP_URL)
+    2. Direct Jira REST API with Bearer token (uses JIRA_BASE_URL + JIRA_PAT_TOKEN)
+    3. Direct Jira REST API with Basic auth (uses JIRA_BASE_URL + JIRA_EMAIL + JIRA_PAT_TOKEN)
+
+    Returns list of issue dicts: [{id, summary, description, type, status, priority, components}]
+    """
+    if not fix_version:
+        return []
+
+    jql = f'fixVersion = "{fix_version}" ORDER BY issuetype ASC'
+    issues = []
+
+    # ── Method 1: Try MCP server's search tool ──
+    if JIRA_MCP_URL:
+        print(f'[jira] Trying MCP search for fix version: {fix_version}')
+        for tool_name in ['jira_search_issues', 'search_issues', 'jira_search']:
+            raw = _jira_mcp_call(tool_name, {'jql': jql, 'max_results': 200}, timeout=20)
+            if raw:
+                try:
+                    if isinstance(raw, str):
+                        data = json.loads(raw)
+                    elif isinstance(raw, dict):
+                        data = raw
+                    else:
+                        data = {'issues': []}
+
+                    # Handle different MCP response shapes
+                    raw_issues = data.get('issues', data.get('result', {}).get('issues', []))
+                    if isinstance(raw_issues, list):
+                        for item in raw_issues:
+                            if isinstance(item, dict):
+                                fields = item.get('fields', item)
+                                issues.append({
+                                    'id': item.get('key', item.get('id', '?')),
+                                    'summary': fields.get('summary', ''),
+                                    'description': (fields.get('description') or '')[:500],
+                                    'type': (fields.get('issuetype', {}) or {}).get('name', fields.get('type', 'Task')),
+                                    'status': (fields.get('status', {}) if isinstance(fields.get('status'), dict) else {}).get('name', str(fields.get('status', '?'))),
+                                    'priority': (fields.get('priority', {}) if isinstance(fields.get('priority'), dict) else {}).get('name', str(fields.get('priority', 'Medium'))),
+                                    'components': [c.get('name', str(c)) for c in (fields.get('components') or []) if c]
+                                })
+                    if issues:
+                        print(f'[jira] MCP search returned {len(issues)} issues for fix version {fix_version}')
+                        return issues
+                except Exception as e:
+                    print(f'[jira] MCP search parse error for {tool_name}: {e}')
+                    continue
+
+    # ── Method 2: Direct Jira REST API ──
+    jira_base = os.environ.get('JIRA_BASE_URL', '')
+    if not jira_base and JIRA_MCP_URL:
+        # Try to derive base URL from MCP URL (e.g. https://jira-mcp.example.com -> https://jira.example.com)
+        # This is a heuristic — may not always work
+        pass
+
+    if jira_base:
+        print(f'[jira] Trying direct REST API for fix version: {fix_version}')
+        headers = {'Content-Type': 'application/json'}
+
+        # Auth: try Bearer token first, then Basic auth
+        jira_token = os.environ.get('JIRA_AUTH_TOKEN', '') or JIRA_PAT_TOKEN
+        if jira_token:
+            headers['Authorization'] = f'Bearer {jira_token}'
+        elif JIRA_EMAIL and JIRA_PAT_TOKEN:
+            import base64
+            cred = base64.b64encode(f'{JIRA_EMAIL}:{JIRA_PAT_TOKEN}'.encode()).decode()
+            headers['Authorization'] = f'Basic {cred}'
+
+        if 'Authorization' in headers:
+            try:
+                if PROXY_URL:
+                    resp = gh_http.post(
+                        f'{jira_base}/rest/api/2/search',
+                        headers=headers,
+                        json={'jql': jql, 'maxResults': 200,
+                              'fields': ['summary', 'description', 'issuetype', 'status', 'priority', 'components']},
+                        timeout=15
+                    )
+                else:
+                    resp = requests.post(
+                        f'{jira_base}/rest/api/2/search',
+                        headers=headers,
+                        json={'jql': jql, 'maxResults': 200,
+                              'fields': ['summary', 'description', 'issuetype', 'status', 'priority', 'components']},
+                        timeout=15, verify=SSL_VERIFY
+                    )
+                if resp.ok:
+                    for item in resp.json().get('issues', []):
+                        fields = item.get('fields', {})
+                        issues.append({
+                            'id': item['key'],
+                            'summary': fields.get('summary', ''),
+                            'description': (fields.get('description') or '')[:500],
+                            'type': (fields.get('issuetype') or {}).get('name', 'Task'),
+                            'status': (fields.get('status') or {}).get('name', '?'),
+                            'priority': (fields.get('priority') or {}).get('name', 'Medium'),
+                            'components': [c.get('name', '') for c in (fields.get('components') or [])]
+                        })
+                    print(f'[jira] REST API returned {len(issues)} issues for fix version {fix_version}')
+                else:
+                    print(f'[jira] REST API returned {resp.status_code}: {resp.text[:200]}')
+            except Exception as e:
+                print(f'[jira] REST API error: {e}')
+
+    if not issues:
+        print(f'[jira] No Jira issues found for fix version {fix_version}. '
+              f'Ensure JIRA_MCP_URL or JIRA_BASE_URL + JIRA_PAT_TOKEN are configured.')
+
+    return issues
+
+
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -1390,53 +1505,19 @@ def update_fix_version():
 
 @app.route('/api/release/jira_by_fix_version', methods=['POST'])
 def jira_by_fix_version():
-    """Fetch all Jira tickets for a given fix version via Jira API."""
+    """Fetch all Jira tickets for a given fix version."""
     data = request.json or {}
     fix_version = data.get('fix_version', '').strip()
     if not fix_version:
         return jsonify({'error': 'fix_version is required'}), 400
 
-    # Build JQL query for fix version
-    jql = f'fixVersion = "{fix_version}" ORDER BY issuetype ASC'
-    # Use the existing Jira MCP infrastructure to fetch tickets
-    # For now, return the JQL for the frontend; actual Jira API call
-    # requires JIRA_BASE_URL and JIRA_AUTH_TOKEN configuration
     try:
-        # Attempt to fetch from Jira if configured
-        jira_base = os.environ.get('JIRA_BASE_URL', '')
-        jira_token = os.environ.get('JIRA_AUTH_TOKEN', '')
-        if jira_base and jira_token:
-            import requests as req
-            headers = {
-                'Authorization': f'Bearer {jira_token}',
-                'Content-Type': 'application/json'
-            }
-            resp = req.post(
-                f'{jira_base}/rest/api/2/search',
-                headers=headers,
-                json={'jql': jql, 'maxResults': 200,
-                      'fields': ['summary', 'description', 'issuetype', 'status', 'priority', 'components']},
-                timeout=15
-            )
-            if resp.ok:
-                data = resp.json()
-                issues = []
-                for item in data.get('issues', []):
-                    fields = item.get('fields', {})
-                    issues.append({
-                        'id': item['key'],
-                        'summary': fields.get('summary', ''),
-                        'description': (fields.get('description') or '')[:500],
-                        'type': (fields.get('issuetype') or {}).get('name', 'Task'),
-                        'status': (fields.get('status') or {}).get('name', '?'),
-                        'priority': (fields.get('priority') or {}).get('name', 'Medium'),
-                        'components': [c.get('name', '') for c in (fields.get('components') or [])]
-                    })
-                return jsonify({'fix_version': fix_version, 'total': len(issues), 'issues': issues})
-        # Jira not configured — return empty with guidance
+        issues = _fetch_jira_by_fix_version(fix_version)
+        if issues:
+            return jsonify({'fix_version': fix_version, 'total': len(issues), 'issues': issues})
         return jsonify({
             'fix_version': fix_version, 'total': 0, 'issues': [],
-            'info': 'Jira not configured. Set JIRA_BASE_URL and JIRA_AUTH_TOKEN env vars.'
+            'info': 'No tickets found. Ensure JIRA_MCP_URL or JIRA_BASE_URL + JIRA_PAT_TOKEN are configured.'
         })
     except Exception as e:
         return jsonify({'error': str(e), 'fix_version': fix_version, 'total': 0, 'issues': []}), 500
@@ -1900,35 +1981,7 @@ def generate_release_notes():
     fix_version = board.get('fix_version', '')
 
     # ── Step 1: Fetch Jira tickets by fix version ──
-    fix_version_issues = []
-    if fix_version:
-        jira_base = os.environ.get('JIRA_BASE_URL', '')
-        jira_token = os.environ.get('JIRA_AUTH_TOKEN', '')
-        if jira_base and jira_token:
-            try:
-                import requests as req
-                headers = {'Authorization': f'Bearer {jira_token}', 'Content-Type': 'application/json'}
-                resp = req.post(
-                    f'{jira_base}/rest/api/2/search',
-                    headers=headers,
-                    json={'jql': f'fixVersion = "{fix_version}"', 'maxResults': 200,
-                          'fields': ['summary', 'description', 'issuetype', 'status', 'priority', 'components']},
-                    timeout=15
-                )
-                if resp.ok:
-                    for item in resp.json().get('issues', []):
-                        fields = item.get('fields', {})
-                        fix_version_issues.append({
-                            'id': item['key'],
-                            'summary': fields.get('summary', ''),
-                            'description': (fields.get('description') or '')[:500],
-                            'type': (fields.get('issuetype') or {}).get('name', 'Task'),
-                            'status': (fields.get('status') or {}).get('name', '?'),
-                            'priority': (fields.get('priority') or {}).get('name', 'Medium'),
-                            'components': [c.get('name', '') for c in (fields.get('components') or [])]
-                        })
-            except Exception as e:
-                print(f'[jira] Fix version fetch error: {e}')
+    fix_version_issues = _fetch_jira_by_fix_version(fix_version)
 
     # ── Step 2: Collect per-nomination Jira IDs (manual entries) ──
     all_jira_ids = []
@@ -2058,7 +2111,7 @@ def generate_release_notes():
         service_list.append(svc_line)
 
     jira_instruction = ""
-    if jira_details:
+    if all_issues:
         jira_instruction = """\n\nJira tickets are associated with each service. Use the Jira ticket summaries and
 descriptions to explain WHAT actually changed in each service. Organize changes by:
 - 🆕 New Features
@@ -2067,13 +2120,14 @@ descriptions to explain WHAT actually changed in each service. Organize changes 
 - 🔧 Maintenance
 """
 
+    has_jira_context = bool(jira_details) or bool(fix_version_issues)
     whats_changed_instruction = (
         'A detailed "What\'s Changed" section organized by change type '
         '(Features, Bug Fixes, Improvements, Maintenance). For each Jira ticket, '
         'write EXACTLY 2-3 sentences per ticket explaining: what was changed, why '
         'it was changed, and any technical details from the ticket description. '
         'Be consistent — every ticket gets the same level of detail.'
-        if jira_details else
+        if has_jira_context else
         'A brief summary of upcoming changes based on service notes '
         '(1-2 sentences per service)'
     )
