@@ -327,20 +327,63 @@ def main():
         sys.exit(1)
 
     # Test 2: Discover endpoint + available tools
-    header("🔍 Endpoint & Tool Discovery")
-    info(f"Base URL: {MCP_URL}")
-    info("Trying: base, /mcp, /messages, /rpc")
-    print()
-    working_url, tool_names = discover_endpoint()
+    header("🔍 Discovering ACTUAL tools on server")
+    info("Calling tools/list to see what tools exist...")
 
-    if working_url:
-        ok(f"Working endpoint: {working_url}")
-        MCP_URL = working_url
-    else:
-        warn("Could not discover tools via tools/list")
-        info("Will try tool calls directly against base URL")
+    # Make a direct tools/list call
+    import requests as req2
+    list_headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+        'Authorization': f'Bearer {PAT_TOKEN}',
+        'Jira-Token': PAT_TOKEN,
+    }
+    list_payload = {
+        'jsonrpc': '2.0',
+        'id': str(uuid.uuid4()),
+        'method': 'tools/list',
+        'params': {}
+    }
+    try:
+        lr = req2.post(MCP_URL, json=list_payload, headers=list_headers,
+                       timeout=15, verify=SSL_VERIFY)
+        print(f"  tools/list HTTP: {lr.status_code}")
+        print(f"  tools/list Content-Type: {lr.headers.get('Content-Type', '?')}")
+        print(f"  tools/list Raw Response (first 1000 chars):")
+        raw_text = lr.text[:1000]
+        # Handle SSE format
+        for line in raw_text.split('\n'):
+            print(f"     {line}")
+        # Try to parse
+        try:
+            body = lr.text.strip()
+            if body.startswith('event:'):
+                # SSE: extract data lines
+                for line in body.split('\n'):
+                    if line.startswith('data:'):
+                        data = json.loads(line[5:].strip())
+                        tools = data.get('result', {}).get('tools', [])
+                        if tools:
+                            ok(f"Server has {len(tools)} tools:")
+                            for t in tools:
+                                print(f"     • {GREEN}{t.get('name', '?')}{RESET}")
+                        else:
+                            warn(f"Response parsed but no tools found: {json.dumps(data)[:300]}")
+            else:
+                data = json.loads(body)
+                tools = data.get('result', {}).get('tools', data.get('tools', []))
+                if tools:
+                    ok(f"Server has {len(tools)} tools:")
+                    for t in tools:
+                        print(f"     • {GREEN}{t.get('name', '?')}{RESET}")
+                else:
+                    warn(f"Response parsed but no tools found: {json.dumps(data)[:300]}")
+        except json.JSONDecodeError as je:
+            warn(f"Could not parse response as JSON: {je}")
+    except Exception as e:
+        fail(f"tools/list call failed: {e}")
 
-    # Test 3: Tool Tests
+    # Tool Tests
     header("📋 Tool Tests")
 
     if args.all:
