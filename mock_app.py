@@ -79,6 +79,7 @@ MOCK_JIRA_ISSUES = {
 
 # ── In-memory board storage (replaces ConfigMap) ─────────────────────────────
 _board_store = {}
+_release_history = []  # archived boards from previous release cycles
 
 def _get_release_date():
     today = datetime.date.today()
@@ -186,6 +187,34 @@ def auth_status():
 @app.route('/api/services')
 def list_services():
     return jsonify({'services': MOCK_SERVICES, 'namespace': 'mock-namespace', 'count': len(MOCK_SERVICES)})
+
+@app.route('/api/prod/services')
+def list_prod_services():
+    """Mock: List production services (simulates a remote OpenShift cluster).
+    In production, this connects to PROD_CLUSTER_API using PROD_CLUSTER_TOKEN."""
+    prod_api = os.environ.get('PROD_CLUSTER_API', '')
+    prod_ns = os.environ.get('PROD_NAMESPACE', 'prod-namespace')
+    # Simulate prod services — same set but some with older versions to show drift
+    prod_services = []
+    for svc in MOCK_SERVICES:
+        prod_svc = dict(svc)
+        # Simulate some prod services lagging behind UAT
+        tag = svc.get('image_tag', '')
+        if svc['name'] in ('billing-service', 'notification-svc', 'auth-service'):
+            # Older version in prod
+            parts = tag.replace('v', '').split('.')
+            if len(parts) >= 3:
+                parts[-1] = str(max(0, int(parts[-1]) - 1))
+                prod_svc['image_tag'] = 'v' + '.'.join(parts)
+                prod_svc['image'] = svc['image'].rsplit(':', 1)[0] + ':' + prod_svc['image_tag']
+        prod_services.append(prod_svc)
+    return jsonify({
+        'services': prod_services,
+        'namespace': prod_ns,
+        'cluster': prod_api or 'mock-prod-cluster',
+        'count': len(prod_services),
+        'connected': True
+    })
 
 @app.route('/api/custom_components')
 def list_custom_components():
@@ -430,6 +459,12 @@ def complete():
     board['released_by'] = by
     board['audit_trail'].append({'action': 'release', 'by': by, 'at': now})
     _write_board(board)
+
+    # Archive board snapshot to release history
+    import copy
+    snapshot = copy.deepcopy(board)
+    _release_history.append(snapshot)
+
     return jsonify({'status': 'released'})
 
 
@@ -443,6 +478,36 @@ def new_cycle():
     _write_board(new_board)
     return jsonify({'status': 'ok', 'release_date': new_board['release_date'],
                     'message': f"New release cycle started for {new_board['release_date']}"})
+
+@app.route('/api/release/history')
+def release_history():
+    """Return archived release boards from previous cycles."""
+    summaries = []
+    for board in reversed(_release_history):
+        svc_list = []
+        for name, svc in board.get('services', {}).items():
+            svc_list.append({
+                'name': name,
+                'image_tag': svc.get('image_tag', ''),
+                'helm_version': svc.get('helm_version', ''),
+                'nominated_by': svc.get('nominated_by', ''),
+                'readiness': svc.get('readiness', 'unknown'),
+                'jira_ids': svc.get('jira_ids', ''),
+                'notes': svc.get('notes', '')
+            })
+        summaries.append({
+            'release_date': board.get('release_date', ''),
+            'fix_version': board.get('fix_version', ''),
+            'status': board.get('status', ''),
+            'released_at': board.get('released_at', ''),
+            'released_by': board.get('released_by', ''),
+            'finalized_by': board.get('finalized_by', ''),
+            'service_count': len(board.get('services', {})),
+            'exception_count': len(board.get('exception_nominations', [])),
+            'services': svc_list,
+            'cutoff': board.get('cutoff', '')
+        })
+    return jsonify({'history': summaries, 'count': len(summaries)})
 
 @app.route('/api/release/drift')
 def drift():
@@ -496,9 +561,11 @@ def export():
     fmt = request.args.get('format', 'json')
     manifest = {'release': {
         'name': f"Release {board.get('release_date', 'unknown')}",
+        'fix_version': board.get('fix_version', ''),
         'cutoff': board.get('cutoff'), 'status': board.get('status'),
         'services': [{'name': n, 'image': s.get('image',''), 'image_tag': s.get('image_tag',''),
                        'helm_chart': s.get('helm_version',''), 'nominated_by': s.get('nominated_by',''),
+                       'jira_ids': s.get('jira_ids',''),
                        'readiness': s.get('readiness','unknown'), 'notes': s.get('notes','')}
                       for n, s in board['services'].items()]
     }}

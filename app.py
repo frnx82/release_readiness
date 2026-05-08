@@ -66,6 +66,9 @@ if not SSL_VERIFY:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     print('[Release Readiness] ⚠️  SSL verification DISABLED')
 
+# Release history archive
+_release_history = []  # archived boards from previous release cycles
+
 # Proxy + Kerberos (same pattern as Pipeline Hub)
 PROXY_URL = os.getenv('PROXY_URL', '')
 
@@ -918,6 +921,143 @@ def list_custom_components():
     return jsonify({'components': CUSTOM_COMPONENTS, 'count': len(CUSTOM_COMPONENTS)})
 
 
+# ── Production Cluster (Remote OpenShift) ─────────────────────────────────────
+# Connect to a remote OpenShift/K8s production cluster to list live versions.
+# Required env vars:
+#   PROD_CLUSTER_API   - OpenShift API URL, e.g. https://api.openshift-prod.example.com:6443
+#   PROD_CLUSTER_TOKEN - ServiceAccount bearer token with 'view' role
+#   PROD_NAMESPACE     - Target namespace in the prod cluster
+# Optional:
+#   PROD_CLUSTER_CA_CERT   - Path to CA certificate file for SSL verification
+#   PROD_CLUSTER_VERIFY_SSL - Set to 'false' to disable SSL verification (not recommended)
+
+def _get_prod_api_client():
+    """Create a Kubernetes API client for the remote production cluster."""
+    prod_api = os.environ.get('PROD_CLUSTER_API', '')
+    prod_token = os.environ.get('PROD_CLUSTER_TOKEN', '')
+    if not prod_api or not prod_token:
+        return None, 'PROD_CLUSTER_API and PROD_CLUSTER_TOKEN env vars are required'
+
+    prod_config = client.Configuration()
+    prod_config.host = prod_api
+    prod_config.api_key = {"authorization": f"Bearer {prod_token}"}
+
+    # SSL configuration
+    ca_cert = os.environ.get('PROD_CLUSTER_CA_CERT', '')
+    verify_ssl = os.environ.get('PROD_CLUSTER_VERIFY_SSL', 'true').lower()
+    if ca_cert:
+        prod_config.ssl_ca_cert = ca_cert
+        prod_config.verify_ssl = True
+    elif verify_ssl == 'false':
+        prod_config.verify_ssl = False
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    else:
+        prod_config.verify_ssl = True
+
+    return client.ApiClient(prod_config), None
+
+
+@app.route('/api/prod/services')
+def list_prod_services():
+    """List all services from the production OpenShift cluster.
+
+    Connects to the remote cluster using PROD_CLUSTER_API and PROD_CLUSTER_TOKEN
+    environment variables. Returns the same format as /api/services.
+    """
+    prod_ns = os.environ.get('PROD_NAMESPACE', 'default')
+
+    # Check cache first
+    cache_key = ('prod_services', prod_ns)
+    cached = _cache_get(cache_key)
+    if cached:
+        return jsonify(cached)
+
+    api_client, error = _get_prod_api_client()
+    if error:
+        return jsonify({
+            'services': [], 'namespace': prod_ns,
+            'cluster': os.environ.get('PROD_CLUSTER_API', ''),
+            'count': 0, 'connected': False, 'error': error
+        })
+
+    services = []
+    prod_api_url = os.environ.get('PROD_CLUSTER_API', '')
+    try:
+        apps_v1 = client.AppsV1Api(api_client)
+
+        # Deployments
+        try:
+            deploys = apps_v1.list_namespaced_deployment(prod_ns).items
+            for d in deploys:
+                containers = d.spec.template.spec.containers or []
+                image = containers[0].image if containers else ''
+                services.append({
+                    'name': d.metadata.name,
+                    'kind': 'Deployment',
+                    'image': image,
+                    'image_tag': _extract_image_tag(image),
+                    'helm_version': _extract_helm_version(d.metadata.labels),
+                    'replicas': d.status.ready_replicas or 0,
+                    'desired_replicas': d.spec.replicas or 1,
+                    'available': (d.status.ready_replicas or 0) >= (d.spec.replicas or 1),
+                    'created': d.metadata.creation_timestamp.isoformat() if d.metadata.creation_timestamp else None
+                })
+        except Exception as e:
+            print(f"[prod] Deployments error: {e}")
+
+        # StatefulSets
+        try:
+            sts = apps_v1.list_namespaced_stateful_set(prod_ns).items
+            for s in sts:
+                containers = s.spec.template.spec.containers or []
+                image = containers[0].image if containers else ''
+                services.append({
+                    'name': s.metadata.name,
+                    'kind': 'StatefulSet',
+                    'image': image,
+                    'image_tag': _extract_image_tag(image),
+                    'helm_version': _extract_helm_version(s.metadata.labels),
+                    'replicas': s.status.ready_replicas or 0,
+                    'desired_replicas': s.spec.replicas or 1,
+                    'available': (s.status.ready_replicas or 0) >= (s.spec.replicas or 1),
+                    'created': s.metadata.creation_timestamp.isoformat() if s.metadata.creation_timestamp else None
+                })
+        except Exception as e:
+            print(f"[prod] StatefulSets error: {e}")
+
+        # DaemonSets
+        try:
+            dss = apps_v1.list_namespaced_daemon_set(prod_ns).items
+            for d in dss:
+                containers = d.spec.template.spec.containers or []
+                image = containers[0].image if containers else ''
+                services.append({
+                    'name': d.metadata.name,
+                    'kind': 'DaemonSet',
+                    'image': image,
+                    'image_tag': _extract_image_tag(image),
+                    'helm_version': _extract_helm_version(d.metadata.labels),
+                    'replicas': d.status.number_ready or 0,
+                    'desired_replicas': d.status.desired_number_scheduled or 1,
+                    'available': (d.status.number_ready or 0) >= (d.status.desired_number_scheduled or 1),
+                    'created': d.metadata.creation_timestamp.isoformat() if d.metadata.creation_timestamp else None
+                })
+        except Exception as e:
+            print(f"[prod] DaemonSets error: {e}")
+
+    except Exception as e:
+        return jsonify({'error': str(e), 'services': [], 'namespace': prod_ns,
+                       'cluster': prod_api_url, 'connected': False}), 500
+
+    result = {
+        'services': services, 'namespace': prod_ns,
+        'cluster': prod_api_url, 'count': len(services), 'connected': True
+    }
+    _cache_set(cache_key, result)
+    return jsonify(result)
+
+
 # ── Release Board CRUD ────────────────────────────────────────────────────────
 @app.route('/api/release/current')
 def get_current_release():
@@ -1385,6 +1525,12 @@ def complete_release():
     })
 
     _write_board(board)
+
+    # Archive board snapshot to release history
+    import copy
+    snapshot = copy.deepcopy(board)
+    _release_history.append(snapshot)
+
     return jsonify({'status': 'released'})
 
 
@@ -1405,6 +1551,37 @@ def start_new_cycle():
         'release_date': new_board['release_date'],
         'message': f"New release cycle started for {new_board['release_date']}"
     })
+
+
+@app.route('/api/release/history')
+def get_release_history():
+    """Return archived release boards from previous cycles."""
+    summaries = []
+    for board in reversed(_release_history):
+        svc_list = []
+        for name, svc in board.get('services', {}).items():
+            svc_list.append({
+                'name': name,
+                'image_tag': svc.get('image_tag', ''),
+                'helm_version': svc.get('helm_version', ''),
+                'nominated_by': svc.get('nominated_by', ''),
+                'readiness': svc.get('readiness', 'unknown'),
+                'jira_ids': svc.get('jira_ids', ''),
+                'notes': svc.get('notes', '')
+            })
+        summaries.append({
+            'release_date': board.get('release_date', ''),
+            'fix_version': board.get('fix_version', ''),
+            'status': board.get('status', ''),
+            'released_at': board.get('released_at', ''),
+            'released_by': board.get('released_by', ''),
+            'finalized_by': board.get('finalized_by', ''),
+            'service_count': len(board.get('services', {})),
+            'exception_count': len(board.get('exception_nominations', [])),
+            'services': svc_list,
+            'cutoff': board.get('cutoff', '')
+        })
+    return jsonify({'history': summaries, 'count': len(summaries)})
 
 @app.route('/api/release/exceptions')
 def get_exception_stats():
@@ -1655,6 +1832,7 @@ def export_release():
     manifest = {
         'release': {
             'name': f"Release {board.get('release_date', 'unknown')}",
+            'fix_version': board.get('fix_version', ''),
             'cutoff': board.get('cutoff'),
             'status': board.get('status'),
             'finalized_by': board.get('finalized_by'),
@@ -1669,6 +1847,7 @@ def export_release():
             'image_tag': svc_data.get('image_tag', ''),
             'helm_chart': svc_data.get('helm_version', ''),
             'nominated_by': svc_data.get('nominated_by', ''),
+            'jira_ids': svc_data.get('jira_ids', ''),
             'readiness': svc_data.get('readiness', 'unknown'),
             'notes': svc_data.get('notes', '')
         })

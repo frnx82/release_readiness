@@ -699,6 +699,8 @@
                 <div class="tab" onclick="switchTab('audit')">📜 Audit Trail</div>
                 <div class="tab" onclick="switchTab('export')">📦 Export</div>
                 <div class="tab" onclick="switchTab('uat')">🖥️ UAT Env</div>
+                <div class="tab" onclick="switchTab('prod')">🏭 Prod Env</div>
+                <div class="tab" onclick="switchTab('history')">📚 History</div>
                 <div class="tab" onclick="switchTab('deploy')">🚀 Deploy</div>
                 <div class="tab" onclick="switchTab('chat')">💬 Chat</div>
                 <div class="tab" onclick="switchTab('help')">❓ Help</div>
@@ -797,6 +799,34 @@
                 </div>
                 <div id="uat-services-list">
                     <div class="empty-state"><p>Loading UAT services...</p></div>
+                </div>
+            </div>
+
+            <!-- Prod Environment Tab -->
+            <div class="tab-content" id="tab-prod">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                    <div>
+                        <h3 style="font-size:16px;margin:0">🏭 Production Environment — Live Services</h3>
+                        <p style="font-size:12px;color:var(--text2);margin:4px 0 0">Live versions from the production OpenShift cluster</p>
+                    </div>
+                    <button class="btn btn-sm" onclick="loadProdServices()">🔄 Refresh</button>
+                </div>
+                <div id="prod-services-list">
+                    <div class="empty-state"><p>Click the tab or Refresh to load prod services</p></div>
+                </div>
+            </div>
+
+            <!-- History Tab -->
+            <div class="tab-content" id="tab-history">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                    <div>
+                        <h3 style="font-size:16px;margin:0">📚 Release History</h3>
+                        <p style="font-size:12px;color:var(--text2);margin:4px 0 0">Archived boards from previous release cycles</p>
+                    </div>
+                    <button class="btn btn-sm" onclick="loadReleaseHistory()">🔄 Refresh</button>
+                </div>
+                <div id="release-history-list">
+                    <div class="empty-state"><p>Click the tab or Refresh to load release history</p></div>
                 </div>
             </div>
 
@@ -917,6 +947,16 @@
                             <div style="font-size:12px;font-weight:600">Dual Storage</div>
                             <div style="font-size:10px;color:var(--text2);margin-top:2px">ConfigMap + file fallback</div>
                         </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+                            <div style="font-size:24px;margin-bottom:4px">🏷️</div>
+                            <div style="font-size:12px;font-weight:600">Fix Version</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">Auto PYY.MM.DD format</div>
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+                            <div style="font-size:24px;margin-bottom:4px">🏭</div>
+                            <div style="font-size:12px;font-weight:600">Prod Env</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">Remote OpenShift cluster</div>
+                        </div>
                     </div>
 
                     <!-- ═══════════════════════════════════════════════════ -->
@@ -1002,7 +1042,7 @@
                                 <li>Choose <strong>● K8s Service</strong> or <strong>⚡ Custom Component</strong> in the sidebar</li>
                                 <li>Select a service from the dropdown — <strong>Image Tag</strong> and <strong>Helm Chart</strong> are auto-filled from the live UAT cluster</li>
                                 <li>Enter your name in <strong>Your Name</strong></li>
-                                <li>Enter associated <strong>Jira IDs</strong> (comma-separated, e.g., <code>BILL-101, BILL-102</code>)</li>
+                                <li>Enter associated <strong>Jira IDs</strong> (comma-separated, optional — e.g., <code>BILL-101, BILL-102</code>)</li>
                                 <li>Add optional <strong>Release Notes</strong> describing the change</li>
                                 <li>Click <strong>🚀 Nominate</strong></li>
                             </ol>
@@ -1273,8 +1313,8 @@
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">Manifest contents:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li>Release name, date, status, cutoff timestamp</li>
-                                <li>Per-service: name, image, image_tag, helm_chart, nominated_by, readiness, notes</li>
+                                <li>Release name, date, status, cutoff timestamp, <strong>fix_version</strong> (PYY.MM.DD)</li>
+                                <li>Per-service: name, image, image_tag, helm_chart, nominated_by, <strong>jira_ids</strong>, readiness, notes</li>
                             </ul>
                         </div>
                     </div>
@@ -1347,9 +1387,48 @@
                                 <li>Service name, kind (Deployment / StatefulSet), replica status (ready/desired)</li>
                                 <li>Current image tag and Helm chart version from the cluster</li>
                                 <li>Availability status — whether all pods are ready</li>
-                                <li>Use this to verify what's running vs what's nominated on the board</li>
+                                <li><strong>Board Status</strong> column — shows ✅ Nominated (matching version), ⚠️ Drift (version mismatch), or — (not nominated)</li>
+                                <li>Summary bar: total services, namespace, healthy count, <strong>nominated count with drift warnings</strong></li>
                                 <li>Click <strong>🔄 Refresh</strong> to get the latest data from the cluster</li>
                             </ul>
+                        </div>
+                    </div>
+
+                    <!-- Prod Env -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px">🏭 Prod Environment (Remote OpenShift)</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Lists <strong>live production services</strong> from a remote OpenShift cluster.
+                            Cross-references with the board to show which prod components are nominated.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">What it shows:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>All Deployments, StatefulSets, and DaemonSets from the production namespace</li>
+                                <li><strong>Board Status</strong> — ✅ Nominated or <span style="color:#ef4444">Not Nominated</span> (no version drift comparison — prod and UAT versions are always different)</li>
+                                <li>Summary bar: services count, namespace, cluster URL, nominated vs not-nominated counts</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Export Not Nominated:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>📋 Show Not Nominated</strong> — inline table of all prod services not on the board</li>
+                                <li><strong>📥 Export CSV</strong> — download for spreadsheet tracking</li>
+                                <li><strong>📥 Export JSON</strong> — machine-readable format for deployment workflow input</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Configuration:</strong>
+                            <div style="margin-top:6px;padding:10px 14px;background:var(--bg);border-radius:8px;font-family:monospace;font-size:12px;color:var(--text2)">
+                                PROD_CLUSTER_API=https://api.openshift-prod.example.com:6443<br>
+                                PROD_CLUSTER_TOKEN=&lt;sa-bearer-token&gt;<br>
+                                PROD_NAMESPACE=prod-namespace
+                            </div>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--accent)">
+                            💡 <strong>Setup:</strong> Create a read-only ServiceAccount on OpenShift Prod:<br>
+                            <code style="font-size:11px">oc create sa release-readiness-reader -n &lt;ns&gt;</code> then
+                            <code style="font-size:11px">oc adm policy add-role-to-user view system:serviceaccount:&lt;ns&gt;:release-readiness-reader -n &lt;ns&gt;</code>
                         </div>
                     </div>
 
@@ -1474,6 +1553,11 @@
                                     <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>CUSTOM_COMPONENTS</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Non-K8s components (format: name:type:description,...)</td></tr>
                                     <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>SSL_VERIFY</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Set to false for self-signed certs (default: true)</td></tr>
                                     <tr><td style="padding:6px 10px"><code>FLASK_SECRET_KEY</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Session encryption key (auto-generated if not set)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>PROD_CLUSTER_API</code></td><td style="padding:6px 10px">Prod</td><td style="padding:6px 10px">OpenShift Prod API URL (e.g. https://api.openshift-prod.example.com:6443)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>PROD_CLUSTER_TOKEN</code></td><td style="padding:6px 10px">Prod</td><td style="padding:6px 10px">ServiceAccount bearer token with 'view' role on prod namespace</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>PROD_NAMESPACE</code></td><td style="padding:6px 10px">Prod</td><td style="padding:6px 10px">Target namespace in production cluster</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>PROD_CLUSTER_CA_CERT</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">CA cert path for SSL verification (optional)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>PROD_CLUSTER_VERIFY_SSL</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Set to 'false' to disable SSL verification (not recommended)</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -1497,6 +1581,8 @@
 │                                                                 │
 │   📋 Board ──── K8s API ──── UAT Cluster (Deployments/Pods)    │
 │       │                                                         │
+│       ├── 🏷️ Fix Version (PYY.MM.DD) ──── Jira JQL Aggregation │
+│       │                                                         │
 │       ├── 🎫 Jira IDs ──── Jira MCP Server ──── Jira Instance  │
 │       │                                                         │
 │       ├── 🤖 AI Readiness ──── Google Gemini (Vertex AI)       │
@@ -1506,6 +1592,9 @@
 │       ├── 💬 AI Chatbot ──── Gemini Function Calling            │
 │       │                                                         │
 │       └── 🚀 Deploy ──── GitHub API ──── Actions Workflows     │
+│                                                                 │
+│   🖥️ UAT Env ──── K8s API (in-cluster) ── Board Status       │
+│   🏭 Prod Env ─── K8s API (remote SA) ── OpenShift Prod       │
 │                                                                 │
 │   💾 State: K8s ConfigMap (board data, audit trail)            │
 │   🔐 Auth: GitHub OAuth 2.0 / PAT                             │
@@ -1600,6 +1689,21 @@
                                 <strong style="color:var(--text)">Q: What if Gemini is not configured?</strong><br>
                                 AI Readiness and AI Chatbot are disabled. Release Notes fall back to a deterministic template
                                 (still includes Jira IDs if provided). The board and all other features work without AI.
+                            </div>
+                            <div style="margin-top:14px">
+                                <strong style="color:var(--text)">Q: How does the Prod Env tab connect to a remote cluster?</strong><br>
+                                It creates a separate Kubernetes API client using <code>PROD_CLUSTER_API</code> and <code>PROD_CLUSTER_TOKEN</code>
+                                env vars. The ServiceAccount only needs <strong>view</strong> role (read-only). No write access to prod.
+                            </div>
+                            <div style="margin-top:14px">
+                                <strong style="color:var(--text)">Q: What is the Fix Version format?</strong><br>
+                                Auto-generated as <code>PYY.MM.DD</code> from the release date (e.g., <code>P26.05.08</code>).
+                                It can be manually edited in the Export tab. Used to aggregate Jira tickets via JQL for AI Release Notes.
+                            </div>
+                            <div style="margin-top:14px">
+                                <strong style="color:var(--text)">Q: Are Jira IDs required when nominating?</strong><br>
+                                No — Jira IDs are <strong>optional</strong>. You can nominate services without them.
+                                If a Fix Version is set, AI Release Notes will aggregate Jira tickets from the fix version automatically.
                             </div>
                         </div>
                     </div>
@@ -1709,7 +1813,7 @@
                     </div>
                     <div><label style="font-size:11px;color:var(--text2)">Your Name <span style="color:#ef4444;font-weight:700">*</span></label><input type="text"
                             id="nom-by" placeholder="e.g. rajesh" value="" oninput="validateNominateForm()"></div>
-                    <div><label style="font-size:11px;color:var(--text2)">Jira IDs <span style="font-weight:normal">(comma-separated)</span> <span style="color:#ef4444;font-weight:700">*</span></label><input type="text"
+                    <div><label style="font-size:11px;color:var(--text2)">Jira IDs <span style="font-weight:normal">(comma-separated, optional)</span></label><input type="text"
                             id="nom-jira-ids" placeholder="e.g. PROJ-123, PROJ-456" oninput="validateNominateForm()"></div>
                     <textarea id="nom-notes" placeholder="Release notes (optional)..."></textarea>
                     <button id="btn-nominate" class="btn btn-primary" onclick="nominateService()" style="width:100%;opacity:0.5;cursor:not-allowed" disabled>🚀 Nominate</button>
@@ -1817,12 +1921,14 @@
             document.getElementById('modal-overlay').classList.add('active');
         }
         function switchTab(name) {
-            const tabs = ['board', 'drift', 'readiness', 'audit', 'export', 'uat', 'deploy', 'chat', 'help'];
+            const tabs = ['board', 'drift', 'readiness', 'audit', 'export', 'uat', 'prod', 'history', 'deploy', 'chat', 'help'];
             document.querySelectorAll('.tab').forEach((t, i) => {
                 t.classList.toggle('active', tabs[i] === name);
             });
             document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + name));
             if (name === 'uat') loadUATServices();
+            if (name === 'prod') loadProdServices();
+            if (name === 'history') loadReleaseHistory();
             if (name === 'deploy') loadDeployWorkflows();
             if (name === 'chat') { const el = document.getElementById('chat-messages'); el.scrollTop = el.scrollHeight; document.getElementById('chat-input').focus(); }
         }
@@ -1835,14 +1941,14 @@
                 renderBoard();
                 renderAudit();
                 updateSidebar();
-                // Populate fix version field
+                // Populate fix version field (always update, even after new cycle)
                 const fvInput = document.getElementById('fix-version-input');
-                if (fvInput && _board.fix_version) {
-                    fvInput.value = _board.fix_version;
+                if (fvInput) {
+                    fvInput.value = _board.fix_version || '';
                 }
                 const fvDate = document.getElementById('fix-version-release-date');
-                if (fvDate && _board.release_date) {
-                    fvDate.textContent = _board.release_date;
+                if (fvDate) {
+                    fvDate.textContent = _board.release_date || '—';
                 }
             } catch (e) { console.error('fetchBoard:', e); }
         }
@@ -2061,8 +2167,7 @@
         function validateNominateForm() {
             const btn = document.getElementById('btn-nominate');
             const name = document.getElementById('nom-by').value.trim();
-            const jira = document.getElementById('nom-jira-ids').value.trim();
-            let valid = name.length > 0 && jira.length > 0;
+            let valid = name.length > 0;
             if (_nomType === 'k8s') {
                 valid = valid && document.getElementById('service-select').value !== '';
             } else {
@@ -2082,7 +2187,7 @@
             const nominatedBy = document.getElementById('nom-by').value.trim();
             const jiraIds = document.getElementById('nom-jira-ids').value.trim();
             if (!nominatedBy) { showToast('Your Name is required', 'error'); document.getElementById('nom-by').focus(); return; }
-            if (!jiraIds) { showToast('Jira IDs are required', 'error'); document.getElementById('nom-jira-ids').focus(); return; }
+
             if (_nomType === 'custom') {
                 name = document.getElementById('custom-select').value;
                 const ver = document.getElementById('nom-custom-version').value.trim();
@@ -2494,6 +2599,257 @@
     `);
         }
 
+        // ═══ Prod Environment ════════════════════════════════════════════════════════
+        let _lastProdNotNominated = []; // store for export
+
+        async function loadProdServices() {
+            const container = document.getElementById('prod-services-list');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Connecting to production cluster...</div>';
+            try {
+                const r = await fetch('/api/prod/services');
+                const d = await r.json();
+
+                if (d.connected === false) {
+                    container.innerHTML = `
+                        <div class="empty-state" style="text-align:left;padding:24px">
+                            <h4 style="color:#f59e0b;margin-bottom:12px">⚠️ Production Cluster Not Connected</h4>
+                            <p style="color:var(--text2);margin-bottom:16px">${d.error || 'Connection failed'}</p>
+                            <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:16px;font-size:12px;line-height:1.8">
+                                <strong style="color:var(--text)">Required Environment Variables:</strong><br>
+                                <code style="color:var(--accent)">PROD_CLUSTER_API</code> — OpenShift API URL<br>
+                                <span style="color:var(--text2);margin-left:16px">e.g. https://api.openshift-prod.example.com:6443</span><br>
+                                <code style="color:var(--accent)">PROD_CLUSTER_TOKEN</code> — ServiceAccount bearer token<br>
+                                <span style="color:var(--text2);margin-left:16px">Created with: <code>oc create token release-readiness-reader -n &lt;namespace&gt;</code></span><br>
+                                <code style="color:var(--accent)">PROD_NAMESPACE</code> — Target namespace<br>
+                                <br>
+                                <strong style="color:var(--text)">Optional:</strong><br>
+                                <code style="color:var(--accent)">PROD_CLUSTER_CA_CERT</code> — CA cert path for SSL<br>
+                                <code style="color:var(--accent)">PROD_CLUSTER_VERIFY_SSL</code> — Set to <code>false</code> to skip SSL
+                            </div>
+                        </div>`;
+                    return;
+                }
+
+                const svcs = d.services || [];
+                if (!svcs.length) {
+                    container.innerHTML = '<div class="empty-state"><p>No services found in production namespace</p></div>';
+                    return;
+                }
+
+                // Cross-reference with board nominations (nominated yes/no only — no drift)
+                const boardSvcs = (_board && _board.services) ? _board.services : {};
+                let nominatedCount = 0;
+                _lastProdNotNominated = [];
+
+                const rows = svcs.map((s, i) => {
+                    const status = s.available ? '<span style="color:var(--green)">● Running</span>' : '<span style="color:var(--red)">● Down</span>';
+                    const helmBadge = s.helm_version ? `<span style="font-size:11px;padding:2px 8px;background:rgba(99,102,241,.12);color:var(--accent);border-radius:4px">${s.helm_version}</span>` : '<span style="color:var(--text2)">—</span>';
+
+                    const isNominated = !!boardSvcs[s.name];
+                    let boardStatusHtml;
+                    if (isNominated) {
+                        nominatedCount++;
+                        boardStatusHtml = `<span style="font-size:11px;padding:3px 8px;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.2);border-radius:6px;font-weight:600">✅ Nominated</span>`;
+                    } else {
+                        _lastProdNotNominated.push(s);
+                        boardStatusHtml = `<span style="font-size:11px;padding:3px 8px;background:rgba(239,68,68,.08);color:#ef4444;border:1px solid rgba(239,68,68,.15);border-radius:6px;font-weight:500">Not Nominated</span>`;
+                    }
+
+                    return `<tr style="${!isNominated ? 'background:rgba(239,68,68,.03)' : ''}">
+                        <td style="font-weight:600">${s.name}</td>
+                        <td><span class="type-badge">${s.kind}</span></td>
+                        <td style="font-family:monospace;font-size:11px;color:var(--text2);max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${s.image}">${s.image}</td>
+                        <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span></td>
+                        <td>${helmBadge}</td>
+                        <td style="text-align:center">${s.replicas}/${s.desired_replicas}</td>
+                        <td>${status}</td>
+                        <td>${boardStatusHtml}</td>
+                    </tr>`;
+                }).join('');
+
+                const notNominatedCount = svcs.length - nominatedCount;
+                const clusterLabel = d.cluster ? d.cluster.replace('https://', '').split('/')[0] : 'OpenShift';
+                container.innerHTML = `
+                    <div style="display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
+                            📦 <strong>${svcs.length}</strong> services
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
+                            🏷️ Namespace: <strong>${d.namespace || 'prod'}</strong>
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
+                            🌐 Cluster: <strong style="font-size:11px">${clusterLabel}</strong>
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
+                            ✅ Nominated: <strong style="color:var(--green)">${nominatedCount}</strong>
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
+                            ❌ Not Nominated: <strong style="color:#ef4444">${notNominatedCount}</strong>
+                        </div>
+                    </div>
+                    <div style="margin-bottom:14px;display:flex;gap:10px">
+                        <button class="btn btn-primary" onclick="exportNotNominated('table')" ${notNominatedCount === 0 ? 'disabled style="opacity:0.5"' : ''}>📋 Show Not Nominated</button>
+                        <button class="btn" onclick="exportNotNominated('csv')" ${notNominatedCount === 0 ? 'disabled style="opacity:0.5"' : ''}>📥 Export CSV</button>
+                        <button class="btn" onclick="exportNotNominated('json')" ${notNominatedCount === 0 ? 'disabled style="opacity:0.5"' : ''}>📥 Export JSON</button>
+                    </div>
+                    <table class="list-view-table">
+                        <thead><tr><th>Service</th><th>Kind</th><th>Image</th><th>Tag</th><th>Helm Chart</th><th>Replicas</th><th>Status</th><th>Board Status</th></tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                    <div id="prod-not-nominated-output"></div>`;
+            } catch(e) {
+                container.innerHTML = '<div class="empty-state"><p>Failed to connect to production cluster</p></div>';
+            }
+        }
+
+        function exportNotNominated(format) {
+            if (!_lastProdNotNominated.length) { showToast('All prod services are nominated!', 'info'); return; }
+
+            if (format === 'csv') {
+                // Download as CSV
+                const header = 'Service,Kind,Image,Tag,Helm Chart,Replicas,Status';
+                const csvRows = _lastProdNotNominated.map(s =>
+                    `"${s.name}","${s.kind}","${s.image}","${s.image_tag || ''}","${s.helm_version || ''}","${s.replicas}/${s.desired_replicas}","${s.available ? 'Running' : 'Down'}"`
+                );
+                const csv = [header, ...csvRows].join('\n');
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `not-nominated-prod-${new Date().toISOString().slice(0,10)}.csv`;
+                a.click(); URL.revokeObjectURL(url);
+                showToast(`📥 Exported ${_lastProdNotNominated.length} services to CSV`);
+                return;
+            }
+
+            if (format === 'json') {
+                // Download as JSON (useful for workflow input)
+                const data = {
+                    exported_at: new Date().toISOString(),
+                    release_date: _board ? _board.release_date : '',
+                    fix_version: _board ? _board.fix_version : '',
+                    description: 'Production services not yet nominated to the release board',
+                    services: _lastProdNotNominated.map(s => ({
+                        name: s.name, kind: s.kind, image: s.image,
+                        image_tag: s.image_tag, helm_version: s.helm_version || '',
+                        replicas: s.replicas, desired_replicas: s.desired_replicas,
+                        available: s.available
+                    }))
+                };
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `not-nominated-prod-${new Date().toISOString().slice(0,10)}.json`;
+                a.click(); URL.revokeObjectURL(url);
+                showToast(`📥 Exported ${_lastProdNotNominated.length} services to JSON`);
+                return;
+            }
+
+            // Show inline table
+            const output = document.getElementById('prod-not-nominated-output');
+            const tableRows = _lastProdNotNominated.map(s => `<tr>
+                <td style="font-weight:600">${s.name}</td>
+                <td><span class="type-badge">${s.kind}</span></td>
+                <td style="font-family:monospace;font-size:11px">${s.image}</td>
+                <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span></td>
+                <td>${s.helm_version || '—'}</td>
+            </tr>`).join('');
+
+            output.innerHTML = `
+                <div style="margin-top:20px;border:1px solid rgba(239,68,68,.2);border-radius:10px;padding:16px;background:rgba(239,68,68,.03)">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                        <h4 style="margin:0;font-size:14px;color:#ef4444">❌ ${_lastProdNotNominated.length} Services Not Nominated</h4>
+                        <span style="font-size:11px;color:var(--text2)">These prod components need UAT deployment before nomination</span>
+                    </div>
+                    <table class="list-view-table" style="font-size:12px">
+                        <thead><tr><th>Service</th><th>Kind</th><th>Prod Image</th><th>Prod Tag</th><th>Helm Chart</th></tr></thead>
+                        <tbody>${tableRows}</tbody>
+                    </table>
+                </div>`;
+        }
+
+        // ═══ Release History ══════════════════════════════════════════════════════════
+        async function loadReleaseHistory() {
+            const container = document.getElementById('release-history-list');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading release history...</div>';
+            try {
+                const r = await fetch('/api/release/history');
+                const d = await r.json();
+                const history = d.history || [];
+
+                if (!history.length) {
+                    container.innerHTML = `
+                        <div class="empty-state" style="padding:40px">
+                            <div style="font-size:48px;margin-bottom:12px">📚</div>
+                            <h4 style="margin-bottom:8px">No Release History Yet</h4>
+                            <p style="color:var(--text2);font-size:13px">Previous release boards will appear here after you<br>click <strong>✅ Mark Released</strong> and start a new cycle.</p>
+                        </div>`;
+                    return;
+                }
+
+                const cards = history.map((rel, i) => {
+                    const svcRows = rel.services.map(s => {
+                        const rdBadge = s.readiness === 'ready' ? '<span style="color:var(--green)">\u25cf Ready</span>'
+                            : s.readiness === 'review' ? '<span style="color:var(--yellow)">\u25cf Review</span>'
+                            : s.readiness === 'risk' ? '<span style="color:var(--red)">\u25cf Risk</span>'
+                            : '<span style="color:var(--text2)">\u2014</span>';
+                        return `<tr>
+                            <td style="font-weight:600">${s.name}</td>
+                            <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span></td>
+                            <td style="font-size:11px;color:var(--text2)">${s.helm_version || '\u2014'}</td>
+                            <td>${rdBadge}</td>
+                            <td style="font-size:11px;color:var(--text2)">${s.nominated_by || '\u2014'}</td>
+                            <td style="font-size:11px;font-family:monospace;color:var(--accent)">${s.jira_ids || '\u2014'}</td>
+                        </tr>`;
+                    }).join('');
+
+                    const relDate = (rel.released_at || '').replace('T', ' ').substring(0, 19);
+
+                    return `
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:0;margin-bottom:12px;overflow:hidden">
+                            <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 20px;cursor:pointer;user-select:none" onclick="this.parentElement.querySelector('.hist-detail').classList.toggle('open')">
+                                <div style="display:flex;gap:14px;align-items:center">
+                                    <span style="font-size:20px">📦</span>
+                                    <div>
+                                        <div style="font-weight:700;font-size:14px">Release ${rel.release_date}</div>
+                                        <div style="font-size:11px;color:var(--text2);margin-top:2px">
+                                            ${rel.fix_version ? `Fix: <code style="color:var(--accent)">${rel.fix_version}</code> \u00b7 ` : ''}
+                                            ${rel.service_count} services
+                                            ${rel.exception_count > 0 ? ` \u00b7 <span style="color:#f59e0b">\u26a0\ufe0f ${rel.exception_count} exceptions</span>` : ''}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div style="display:flex;gap:14px;align-items:center">
+                                    <div style="text-align:right;font-size:11px;color:var(--text2)">
+                                        <div>Released: ${relDate}</div>
+                                        <div>By: <strong style="color:var(--text)">${rel.released_by || '?'}</strong></div>
+                                    </div>
+                                    <span style="color:var(--text2);font-size:16px;transition:transform .2s">▶</span>
+                                </div>
+                            </div>
+                            <div class="hist-detail" style="max-height:0;overflow:hidden;transition:max-height .3s ease">
+                                <div style="padding:0 20px 16px;border-top:1px solid var(--border)">
+                                    <table class="list-view-table" style="font-size:12px;margin-top:12px">
+                                        <thead><tr><th>Service</th><th>Version</th><th>Helm</th><th>Readiness</th><th>Nominated By</th><th>Jira</th></tr></thead>
+                                        <tbody>${svcRows}</tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>`;
+                }).join('');
+
+                container.innerHTML = `
+                    <div style="display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap">
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
+                            \ud83d\udcda <strong>${history.length}</strong> past release${history.length > 1 ? 's' : ''}
+                        </div>
+                    </div>
+                    <style>.hist-detail.open { max-height: 800px !important; } .hist-detail.open + span { transform: rotate(90deg); }</style>
+                    ${cards}`;
+            } catch (e) {
+                container.innerHTML = '<div class="empty-state"><p>Failed to load release history</p></div>';
+            }
+        }
+
         // ═══ UAT Environment ═════════════════════════════════════════════════════════
         async function loadUATServices() {
             const container = document.getElementById('uat-services-list');
@@ -2504,17 +2860,47 @@
                 const svcs = d.services || [];
                 if (!svcs.length) { container.innerHTML = '<div class="empty-state"><p>No services found in UAT namespace</p></div>'; return; }
 
+                // Cross-reference with board nominations
+                const boardSvcs = (_board && _board.services) ? _board.services : {};
+                let nominatedCount = 0, driftCount = 0;
+
                 const rows = svcs.map((s, i) => {
                     const status = s.available ? '<span style="color:var(--green)">● Running</span>' : '<span style="color:var(--red)">● Down</span>';
                     const helmBadge = s.helm_version ? `<span style="font-size:11px;padding:2px 8px;background:rgba(99,102,241,.12);color:var(--accent);border-radius:4px">${s.helm_version}</span>` : '<span style="color:var(--text2)">—</span>';
+
+                    // Check if this service is nominated on the board
+                    const nominated = boardSvcs[s.name];
+                    let boardStatusHtml = '<span style="color:var(--text2)">—</span>';
+                    if (nominated) {
+                        const nomTag = nominated.image_tag || '';
+                        const liveTag = s.image_tag || '';
+                        if (nomTag === liveTag) {
+                            // Nominated and versions match
+                            nominatedCount++;
+                            boardStatusHtml = `<span style="font-size:11px;padding:3px 8px;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.2);border-radius:6px;font-weight:600">✅ Nominated</span>`;
+                        } else {
+                            // Nominated but version drift
+                            nominatedCount++;
+                            driftCount++;
+                            boardStatusHtml = `<div>
+                                <span style="font-size:11px;padding:3px 8px;background:rgba(245,158,11,.12);color:#f59e0b;border:1px solid rgba(245,158,11,.2);border-radius:6px;font-weight:600">⚠️ Drift</span>
+                                <div style="font-size:10px;color:var(--text2);margin-top:3px">
+                                    Board: <span style="color:var(--accent);font-family:monospace">${nomTag}</span>
+                                    <br>Live: <span style="color:#f59e0b;font-family:monospace">${liveTag}</span>
+                                </div>
+                            </div>`;
+                        }
+                    }
+
                     return `<tr>
                         <td style="font-weight:600">${s.name}</td>
                         <td><span class="type-badge">${s.kind}</span></td>
-                        <td style="font-family:monospace;font-size:11px;color:var(--text2);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${s.image}">${s.image}</td>
+                        <td style="font-family:monospace;font-size:11px;color:var(--text2);max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${s.image}">${s.image}</td>
                         <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span></td>
                         <td>${helmBadge}</td>
                         <td style="text-align:center">${s.replicas}/${s.desired_replicas}</td>
                         <td>${status}</td>
+                        <td>${boardStatusHtml}</td>
                     </tr>`;
                 }).join('');
 
@@ -2529,9 +2915,13 @@
                         <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
                             ✅ Healthy: <strong style="color:var(--green)">${svcs.filter(s => s.available).length}</strong>
                         </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
+                            📋 Nominated: <strong style="color:var(--accent)">${nominatedCount}</strong>
+                            ${driftCount > 0 ? ` · <span style="color:#f59e0b">⚠️ ${driftCount} drift</span>` : ''}
+                        </div>
                     </div>
                     <table class="list-view-table">
-                        <thead><tr><th>Service</th><th>Kind</th><th>Image</th><th>Tag</th><th>Helm Chart</th><th>Replicas</th><th>Status</th></tr></thead>
+                        <thead><tr><th>Service</th><th>Kind</th><th>Image</th><th>Tag</th><th>Helm Chart</th><th>Replicas</th><th>Status</th><th>Board Status</th></tr></thead>
                         <tbody>${rows}</tbody>
                     </table>`;
             } catch(e) {
