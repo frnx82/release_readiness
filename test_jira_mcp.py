@@ -70,9 +70,10 @@ def mcp_call(tool_name, arguments, timeout=15):
         'Accept': 'application/json, text/event-stream',
     }
 
-    # Auth: Jira-Token header (per MCP server docs)
+    # Auth: send both headers (server may expect either one)
     if PAT_TOKEN:
         headers['Jira-Token'] = PAT_TOKEN
+        headers['Authorization'] = f'Bearer {PAT_TOKEN}'
 
     # Also send email if available
     if JIRA_EMAIL:
