@@ -446,62 +446,68 @@ def main():
             else:
                 import base64
                 print(f"  Jira URL: {CYAN}{jira_url}{RESET}")
-                api_headers = {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                }
-                # Basic auth: email:PAT
-                if JIRA_EMAIL and PAT_TOKEN:
-                    cred = base64.b64encode(f'{JIRA_EMAIL}:{PAT_TOKEN}'.encode()).decode()
-                    api_headers['Authorization'] = f'Basic {cred}'
-                    print(f"  Auth: Basic ({JIRA_EMAIL})")
-                elif PAT_TOKEN:
-                    api_headers['Authorization'] = f'Bearer {PAT_TOKEN}'
-                    print(f"  Auth: Bearer token")
 
                 search_url = f'{jira_url}/rest/api/2/search'
-                params = {
-                    'jql': jql,
-                    'maxResults': 50,
-                    'fields': 'summary,description,issuetype,status,priority,components'
-                }
 
-                # Try GET first (Jira Server), then POST (Jira Cloud)
-                for method in ['GET', 'POST']:
-                    try:
-                        print(f"\n  Trying {method} {search_url}")
-                        if method == 'GET':
-                            resp = requests.get(search_url, headers=api_headers, params=params,
-                                                timeout=20, verify=SSL_VERIFY)
-                        else:
-                            resp = requests.post(search_url, headers=api_headers,
-                                                 json={'jql': jql, 'maxResults': 50,
-                                                       'fields': ['summary', 'description', 'issuetype', 'status', 'priority', 'components']},
-                                                 timeout=20, verify=SSL_VERIFY)
+                # Try multiple auth methods
+                auth_methods = []
+                if PAT_TOKEN:
+                    auth_methods.append(('Bearer', f'Bearer {PAT_TOKEN}'))
+                if JIRA_EMAIL and PAT_TOKEN:
+                    cred = base64.b64encode(f'{JIRA_EMAIL}:{PAT_TOKEN}'.encode()).decode()
+                    auth_methods.append(('Basic', f'Basic {cred}'))
 
-                        print(f"  HTTP {resp.status_code}")
-                        if resp.ok:
-                            data = resp.json()
-                            issues = data.get('issues', [])
-                            ok(f"{method} returned {len(issues)} issues!")
-                            for issue in issues[:10]:
-                                fields = issue.get('fields', {})
-                                key = issue.get('key', '?')
-                                summary = fields.get('summary', '?')
-                                itype = (fields.get('issuetype') or {}).get('name', '?')
-                                status = (fields.get('status') or {}).get('name', '?')
-                                desc = (fields.get('description') or '')[:150]
-                                print(f"\n  {CYAN}{key}{RESET} [{itype}] — {status}")
-                                print(f"    Summary: {summary}")
-                                if desc:
-                                    print(f"    Description: {DIM}{desc}...{RESET}")
-                            if issues:
-                                print(f"\n  {GREEN}{BOLD}✅ Direct REST API works! Set JIRA_BASE_URL={jira_url} in your app.{RESET}")
-                            break
-                        else:
-                            print(f"  Response: {resp.text[:300]}")
-                    except Exception as e:
-                        fail(f"{method} failed: {e}")
+                for auth_name, auth_value in auth_methods:
+                    api_headers = {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'Authorization': auth_value,
+                    }
+                    print(f"\n  Auth: {auth_name}")
+
+                    # Try GET (Jira Server), then POST (Jira Cloud)
+                    for method in ['GET', 'POST']:
+                        try:
+                            print(f"  Trying {method} {search_url}")
+                            if method == 'GET':
+                                resp = requests.get(search_url, headers=api_headers,
+                                                    params={'jql': jql, 'maxResults': 50,
+                                                            'fields': 'summary,description,issuetype,status,priority,components'},
+                                                    timeout=20, verify=SSL_VERIFY)
+                            else:
+                                resp = requests.post(search_url, headers=api_headers,
+                                                     json={'jql': jql, 'maxResults': 50,
+                                                           'fields': ['summary', 'description', 'issuetype', 'status', 'priority', 'components']},
+                                                     timeout=20, verify=SSL_VERIFY)
+
+                            print(f"  HTTP {resp.status_code}")
+                            if resp.ok:
+                                data = resp.json()
+                                issues = data.get('issues', [])
+                                ok(f"{method} with {auth_name} returned {len(issues)} issues!")
+                                for issue in issues[:10]:
+                                    fields = issue.get('fields', {})
+                                    key = issue.get('key', '?')
+                                    summary = fields.get('summary', '?')
+                                    itype = (fields.get('issuetype') or {}).get('name', '?')
+                                    status = (fields.get('status') or {}).get('name', '?')
+                                    desc = (fields.get('description') or '')[:150]
+                                    print(f"\n  {CYAN}{key}{RESET} [{itype}] — {status}")
+                                    print(f"    Summary: {summary}")
+                                    if desc:
+                                        print(f"    Description: {DIM}{desc}...{RESET}")
+                                if issues:
+                                    print(f"\n  {GREEN}{BOLD}✅ Direct REST API works!{RESET}")
+                                    print(f"  {GREEN}Set JIRA_BASE_URL={jira_url} in your app deployment.{RESET}")
+                                    print(f"  {GREEN}Auth method: {auth_name}{RESET}")
+                                break  # method worked
+                            else:
+                                print(f"  Response: {resp.text[:300]}")
+                        except Exception as e:
+                            fail(f"{method} failed: {e}")
+                    else:
+                        continue  # try next auth method
+                    break  # auth + method worked
 
     # Test 6: Custom JQL
     if args.jql:
