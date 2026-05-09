@@ -1114,6 +1114,7 @@ def list_prod_services():
 
     api_client, error = _get_prod_api_client()
     if error:
+        print(f'[prod] Client creation failed: {error}')
         return jsonify({
             'services': [], 'namespace': prod_ns,
             'cluster': os.environ.get('PROD_CLUSTER_API', ''),
@@ -1122,8 +1123,10 @@ def list_prod_services():
 
     services = []
     prod_api_url = os.environ.get('PROD_CLUSTER_API', '')
+    print(f'[prod] Connecting to {prod_api_url}, namespace={prod_ns}')
     try:
         apps_v1 = client.AppsV1Api(api_client)
+        print(f'[prod] API client created, listing deployments...')
 
         # Deployments
         try:
@@ -1186,8 +1189,30 @@ def list_prod_services():
             print(f"[prod] DaemonSets error: {e}")
 
     except Exception as e:
-        return jsonify({'error': str(e), 'services': [], 'namespace': prod_ns,
-                       'cluster': prod_api_url, 'connected': False}), 500
+        import traceback
+        tb = traceback.format_exc()
+        error_type = type(e).__name__
+        error_msg = str(e)
+        # Extract useful info from K8s API errors
+        detail = ''
+        if hasattr(e, 'status'):
+            detail = f' (HTTP {e.status})'
+        if hasattr(e, 'reason'):
+            detail += f' Reason: {e.reason}'
+        if hasattr(e, 'body'):
+            try:
+                import json as _json
+                body = _json.loads(e.body)
+                detail += f' Message: {body.get("message", "")[:200]}'
+            except Exception:
+                detail += f' Body: {str(e.body)[:200]}'
+        print(f'[prod] ❌ Connection FAILED: {error_type}: {error_msg}{detail}')
+        print(f'[prod] Traceback: {tb}')
+        return jsonify({
+            'error': f'{error_type}: {error_msg}{detail}',
+            'services': [], 'namespace': prod_ns,
+            'cluster': prod_api_url, 'connected': False
+        }), 500
 
     result = {
         'services': services, 'namespace': prod_ns,
