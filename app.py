@@ -666,6 +666,49 @@ def _fetch_jira_by_fix_version(fix_version):
     return issues
 
 
+def _map_issues_to_services(fix_version_issues, service_names):
+    """Map Jira issues to nominated services based on the Jira component field.
+
+    Each Jira ticket's components are matched against service names using
+    case-insensitive, dash/underscore-normalized comparison.
+
+    Args:
+        fix_version_issues: list of issue dicts from _fetch_jira_by_fix_version
+        service_names: list of nominated service names from the board
+
+    Returns:
+        svc_map: dict of service_name → [issue dicts]
+        unmatched: list of issue dicts with no matching service
+    """
+    svc_map = {}   # service_name → [issues]
+    unmatched = []
+
+    # Normalize service names for fuzzy matching
+    def _norm(s):
+        return s.lower().replace('-', '').replace('_', '').replace(' ', '')
+
+    normalized_to_svc = {_norm(name): name for name in service_names}
+
+    for issue in fix_version_issues:
+        matched = False
+        for comp in issue.get('components', []):
+            comp_norm = _norm(comp)
+            if comp_norm in normalized_to_svc:
+                svc_name = normalized_to_svc[comp_norm]
+                svc_map.setdefault(svc_name, []).append(issue)
+                matched = True
+                # Don't break — a ticket with multiple components can map to multiple services
+        if not matched:
+            unmatched.append(issue)
+
+    if fix_version_issues:
+        mapped_count = sum(len(v) for v in svc_map.values())
+        print(f'[jira] Component mapping: {mapped_count} tickets mapped to {len(svc_map)} services, '
+              f'{len(unmatched)} unmatched')
+
+    return svc_map, unmatched
+
+
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -2034,20 +2077,45 @@ def generate_release_notes():
         # ── Step 1: Fetch Jira tickets by fix version ──
         fix_version_issues = _fetch_jira_by_fix_version(fix_version)
 
-        # ── Step 2: Collect per-nomination Jira IDs (manual entries) ──
+        # ── Step 2: Map fix-version issues to services by Jira component ──
+        service_names = list(board['services'].keys())
+        component_svc_map, unmatched_issues = _map_issues_to_services(
+            fix_version_issues, service_names)
+
+        # ── Step 3: Collect per-nomination Jira IDs (manual entries) ──
         all_jira_ids = []
-        svc_jira_map = {}  # service_name → [jira_ids]
+        manual_svc_jira_map = {}  # service_name → [jira_ids]
         for svc_name, svc_data in board['services'].items():
             ids = _parse_jira_ids(svc_data.get('jira_ids', ''))
             if ids:
-                svc_jira_map[svc_name] = ids
+                manual_svc_jira_map[svc_name] = ids
                 all_jira_ids.extend(ids)
 
         jira_details = {}
         if all_jira_ids:
             jira_details = _fetch_jira_issues(list(set(all_jira_ids)))
 
-        # ── Merge all issues ──
+        # ── Build combined per-service Jira map ──
+        # Merge component-mapped + manually-entered Jira IDs per service
+        combined_svc_jiras = {}  # service_name → [issue dicts]
+        for svc_name in board['services']:
+            combined = []
+            seen_ids = set()
+            # Component-mapped issues (from fix version)
+            for issue in component_svc_map.get(svc_name, []):
+                if issue['id'] not in seen_ids:
+                    combined.append(issue)
+                    seen_ids.add(issue['id'])
+            # Manually entered Jira IDs
+            for jid in manual_svc_jira_map.get(svc_name, []):
+                if jid not in seen_ids:
+                    issue = jira_details.get(jid, {'id': jid, 'summary': '', 'type': 'Task', 'status': '?'})
+                    combined.append(issue)
+                    seen_ids.add(jid)
+            if combined:
+                combined_svc_jiras[svc_name] = combined
+
+        # All issues (for total count)
         all_issues = {}
         for issue in fix_version_issues:
             all_issues[issue['id']] = issue
@@ -2055,6 +2123,9 @@ def generate_release_notes():
             all_issues[jid] = issue
 
         total_jira = len(all_issues)
+        print(f'[release-notes] {total_jira} total Jira issues, '
+              f'{len(combined_svc_jiras)} services have mapped tickets, '
+              f'{len(unmatched_issues)} unmatched')
 
         if not get_model():
             # Deterministic fallback (no Gemini)
@@ -2065,7 +2136,10 @@ def generate_release_notes():
             lines.append("| Service | Version | Jira Tickets | Helm Chart | Notes |")
             lines.append("|---|---|---|---|---|")
             for svc_name, svc_data in board['services'].items():
-                jira_col = svc_data.get('jira_ids', '') or '—'
+                # Jira column: show only tickets mapped to THIS service
+                svc_issues = combined_svc_jiras.get(svc_name, [])
+                jira_col = ', '.join(i['id'] for i in svc_issues) if svc_issues else '—'
+
                 if svc_data.get('is_custom'):
                     ver_str = svc_data.get('image_tag', '?')
                 else:
@@ -2074,38 +2148,34 @@ def generate_release_notes():
                     ver_str = f"{tag} (Helm: {helm})" if helm else tag
                 lines.append(f"| {svc_name} | {ver_str} | {jira_col} | {svc_data.get('helm_version', 'N/A')} | {svc_data.get('notes', '')} |")
 
-            # "What's Changed" from fix version + manual Jira tickets
+            # "What's Changed" — organized by service
             if all_issues:
                 lines.append("\n## What's Changed\n")
                 if fix_version and fix_version_issues:
                     lines.append(f"*Jira tickets from fix version `{fix_version}` ({len(fix_version_issues)} tickets):*\n")
-                features, bugs, improvements, tasks = [], [], [], []
-                for jid, issue in all_issues.items():
-                    desc_preview = (issue.get('description', '') or '')[:120]
-                    if len(issue.get('description', '')) > 120:
-                        desc_preview += '...'
-                    entry = f"- **{jid}**: {issue.get('summary', '?')} [{issue.get('status', '?')}]\n  > {desc_preview}"
-                    itype = issue.get('type', 'Task')
-                    if itype in ('Story', 'Feature'):
-                        features.append(entry)
-                    elif itype == 'Bug':
-                        bugs.append(entry)
-                    elif itype == 'Improvement':
-                        improvements.append(entry)
-                    else:
-                        tasks.append(entry)
-                if features:
-                    lines.append("### 🆕 New Features")
-                    lines.extend(features)
-                if bugs:
-                    lines.append("\n### 🐛 Bug Fixes")
-                    lines.extend(bugs)
-                if improvements:
-                    lines.append("\n### ⚡ Improvements")
-                    lines.extend(improvements)
-                if tasks:
-                    lines.append("\n### 🔧 Maintenance")
-                    lines.extend(tasks)
+
+                # Per-service changes
+                for svc_name in board['services']:
+                    svc_issues = combined_svc_jiras.get(svc_name, [])
+                    if svc_issues:
+                        lines.append(f"\n### 📦 {svc_name}")
+                        for issue in svc_issues:
+                            desc_preview = (issue.get('description', '') or '')[:120]
+                            if len(issue.get('description', '')) > 120:
+                                desc_preview += '...'
+                            itype = issue.get('type', 'Task')
+                            icon = '🆕' if itype in ('Story', 'Feature') else '🐛' if itype == 'Bug' else '⚡' if itype == 'Improvement' else '🔧'
+                            lines.append(f"- {icon} **{issue['id']}** [{itype}]: {issue.get('summary', '?')} [{issue.get('status', '?')}]")
+                            if desc_preview:
+                                lines.append(f"  > {desc_preview}")
+
+                # Unmatched tickets (no component match)
+                if unmatched_issues:
+                    lines.append(f"\n### 📋 Other Changes ({len(unmatched_issues)} tickets)")
+                    lines.append("> *These Jira tickets have no component matching a nominated service.*\n")
+                    for issue in unmatched_issues:
+                        comps = ', '.join(issue.get('components', [])) or 'No component'
+                        lines.append(f"- **{issue['id']}** [{issue.get('type', 'Task')}]: {issue.get('summary', '?')} [{issue.get('status', '?')}] — Components: {comps}")
 
             # Post-cutoff exception warning
             exc_services = [n for n, s in board['services'].items() if s.get('is_exception')]
@@ -2121,11 +2191,10 @@ def generate_release_notes():
                            'fix_version': fix_version,
                            'release_date': board.get('release_date')})
 
-        # ── Build AI prompt with Jira context ──
+        # ── Build AI prompt with per-service Jira context ──
         service_list = []
         exception_services = []
         for svc_name, svc_data in board['services'].items():
-            # Build version info: K8s services get both tag + helm, custom gets only manual version
             is_custom = svc_data.get('is_custom', False)
             tag = svc_data.get('image_tag', '?')
             helm = svc_data.get('helm_version')
@@ -2146,37 +2215,38 @@ def generate_release_notes():
                             f"exception_approver=\"{svc_data.get('exception_approver', '')}\"")
                 exception_services.append(svc_name)
 
-            # Append Jira ticket details for this service
-            svc_ids = svc_jira_map.get(svc_name, [])
-            if svc_ids:
+            # Append ONLY the Jira tickets that belong to THIS service
+            svc_issues = combined_svc_jiras.get(svc_name, [])
+            if svc_issues:
+                svc_ids = [i['id'] for i in svc_issues]
                 svc_line += f", jira_tickets=[{', '.join(svc_ids)}]"
-                for jid in svc_ids:
-                    issue = jira_details.get(jid, {})
-                    if issue:
-                        desc = (issue.get('description', '') or '')[:1500]
-                        svc_line += (f"\n    JIRA {jid}: type={issue.get('type','Task')}, "
-                                    f"status={issue.get('status','?')}, "
-                                    f"priority={issue.get('priority','Medium')}, "
-                                    f"summary=\"{issue.get('summary','')}\", "
-                                    f"description=\"{desc}\"")
+                for issue in svc_issues:
+                    desc = (issue.get('description', '') or '')[:1500]
+                    svc_line += (f"\n    JIRA {issue['id']}: type={issue.get('type','Task')}, "
+                                f"status={issue.get('status','?')}, "
+                                f"priority={issue.get('priority','Medium')}, "
+                                f"summary=\"{issue.get('summary','')}\", "
+                                f"description=\"{desc}\"")
             service_list.append(svc_line)
 
         jira_instruction = ""
         if all_issues:
-            jira_instruction = """\n\nJira tickets are associated with each service. Use the Jira ticket summaries and
-descriptions to explain WHAT actually changed in each service. Organize changes by:
+            jira_instruction = """\n\nJira tickets are associated with each service based on the Jira component field.
+Use the Jira ticket summaries and descriptions to explain WHAT actually changed in each service.
+Only associate a Jira ticket with the service it is listed under. Organize changes by:
 - 🆕 New Features
 - 🐛 Bug Fixes
 - ⚡ Improvements
 - 🔧 Maintenance
 """
 
-        has_jira_context = bool(jira_details) or bool(fix_version_issues)
+        has_jira_context = bool(combined_svc_jiras) or bool(fix_version_issues)
         whats_changed_instruction = (
-            'A detailed "What\'s Changed" section organized by change type '
-            '(Features, Bug Fixes, Improvements, Maintenance). For each Jira ticket, '
-            'write EXACTLY 2-3 sentences per ticket explaining: what was changed, why '
-            'it was changed, and any technical details from the ticket description. '
+            'A detailed "What\'s Changed" section organized by SERVICE, then by change type '
+            '(Features, Bug Fixes, Improvements, Maintenance) within each service. '
+            'For each Jira ticket, write EXACTLY 2-3 sentences explaining: what was changed, '
+            'why it was changed, and any technical details from the ticket description. '
+            'Only include tickets under the service they are mapped to. '
             'Be consistent — every ticket gets the same level of detail.'
             if has_jira_context else
             'A brief summary of upcoming changes based on service notes '
@@ -2194,14 +2264,15 @@ descriptions to explain WHAT actually changed in each service. Organize changes 
             )
 
         newline = '\n'
-        # Include fix version issues context for AI
-        fix_version_context = ''
-        if fix_version_issues:
-            fv_lines = [f'\nFix Version: {fix_version} ({len(fix_version_issues)} Jira tickets):']
-            for issue in fix_version_issues:
-                desc = (issue.get('description', '') or '')[:300]
-                fv_lines.append(f"  - {issue['id']} ({issue.get('type','Task')}): {issue.get('summary', '?')} [{issue.get('status','?')}] — {desc}")
-            fix_version_context = '\n'.join(fv_lines)
+        # Include unmatched issues context for AI
+        unmatched_context = ''
+        if unmatched_issues:
+            um_lines = [f'\nUnmatched Jira tickets ({len(unmatched_issues)} — no component matching a nominated service):']
+            for issue in unmatched_issues:
+                comps = ', '.join(issue.get('components', [])) or 'No component'
+                desc = (issue.get('description', '') or '')[:200]
+                um_lines.append(f"  - {issue['id']} ({issue.get('type','Task')}) [Components: {comps}]: {issue.get('summary', '?')} — {desc}")
+            unmatched_context = '\n'.join(um_lines)
 
         prompt = f"""Generate professional release notes for the operations team.
 
@@ -2209,15 +2280,16 @@ Release Date: {board.get('release_date', 'Unknown')}
 Fix Version: {fix_version or 'Not set'}
 Status: {board.get('status', 'open')}
 
-Nominated services:
+Nominated services (each service lists ONLY its associated Jira tickets):
 {newline.join(service_list)}
-{fix_version_context}
+{unmatched_context}
 {jira_instruction}{exception_instruction}
 STRICT FORMAT RULES — follow these exactly:
 
 1. Executive Summary: EXACTLY 2-3 sentences summarising the release scope and impact.
 
 2. Service table with columns: Service | Version | Jira Tickets | Change Summary | Risk Level
+   JIRA TICKETS COLUMN: List ONLY the Jira ticket IDs associated with that specific service. If none, put "—".
    VERSION COLUMN RULES:
    - For K8S SERVICE entries: ALWAYS show BOTH values as "<image_tag> (Helm: <helm_chart_version>)"
      Example: "v3.2.1 (Helm: 2.5.0)". If helm is N/A, show "<image_tag> (Helm: N/A)".
@@ -2228,9 +2300,11 @@ STRICT FORMAT RULES — follow these exactly:
 
 3. {whats_changed_instruction}
 
-4. AI Risk Assessment: A brief risk summary paragraph.
+{'4. An "Other Changes" section listing any unmatched Jira tickets that do not belong to a specific service.' if unmatched_issues else ''}
 
-{'5. A ⚠️ Post-Cutoff Exception Nominations section listing each exception, who requested it, who approved it, and the reason.' if exception_services else ''}
+{'5' if unmatched_issues else '4'}. AI Risk Assessment: A brief risk summary paragraph.
+
+{'6' if unmatched_issues else '5'}. {('A ⚠️ Post-Cutoff Exception Nominations section listing each exception, who requested it, who approved it, and the reason.') if exception_services else ''}
 Return ONLY the markdown text, no JSON wrapping. Do NOT wrap in ```markdown``` code fences.
 """
 
