@@ -1,0 +1,40 @@
+# =============================================================================
+# Istio Access Logging — Telemetry API
+# =============================================================================
+# Enables access logging for ALL pods in the namespace so you can see
+# every HTTP request flowing through the Istio sidecar (istio-proxy).
+#
+# View logs:
+#   kubectl logs <pod-name> -c istio-proxy --tail=50
+#   kubectl logs <pod-name> -c istio-proxy -f   # live streaming
+#
+# Each log line shows:
+#   [2026-05-11T16:00:00.000Z] "GET /api/services HTTP/1.1" 200 - via_upstream
+#   - 0 1234 15 - "10.244.1.5" "python-requests/2.31.0"
+#   "abc-request-id" "release-readiness.demo-dev.svc.cluster.local"
+#   "10.244.1.8:8080" outbound|8080||data-service.demo-dev.svc.cluster.local
+#
+# Fields decoded:
+#   Method + Path + Protocol | Status | Response flags | Bytes | Duration(ms)
+#   Source IP | User-Agent | Request ID | Authority | Upstream cluster
+#
+# Risk Level: 🟢 LOW — Read-only observability, no traffic impact
+# =============================================================================
+{{- if .Values.observability.accessLogging | default true }}
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: access-logging
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    chart: {{ $.Chart.Name }}
+    security-principle: "observability"
+spec:
+  # Apply to all workloads in the namespace
+  accessLogging:
+    - providers:
+        - name: envoy
+      # Log format: JSON (easier to parse) or TEXT (human readable)
+      # Default Istio format is TEXT — includes source, dest, status, latency
+{{- end }}
