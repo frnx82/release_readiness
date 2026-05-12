@@ -742,6 +742,7 @@ def _k8s_retry(fn, *args, **kwargs):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 NAMESPACE = os.getenv('POD_NAMESPACE', 'default')
+DEPLOY_ENV = os.getenv('DEPLOY_ENV', 'uat').lower()  # 'uat' or 'prod' — determines which cluster is local
 RELEASE_CADENCE = os.getenv('RELEASE_CADENCE', 'friday')  # 'friday' or 'custom'
 CUTOFF_DAY = int(os.getenv('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
 CUTOFF_HOUR = int(os.getenv('CUTOFF_HOUR', '17'))  # 17:00
@@ -1016,8 +1017,53 @@ def api_auth_status():
 # ── Service listing from live cluster ─────────────────────────────────────────
 @app.route('/api/services')
 def list_services():
-    """List all deployable services from the K8s cluster with current versions."""
+    """List all deployable services from the K8s cluster with current versions.
+
+    When DEPLOY_ENV=uat: reads from the LOCAL cluster (current behavior).
+    When DEPLOY_ENV=prod: connects REMOTELY to UAT via UAT_CLUSTER_API/TOKEN.
+    """
     namespace = request.args.get('namespace', NAMESPACE)
+
+    # ── DEPLOY_ENV=prod: connect to remote UAT cluster ──
+    if DEPLOY_ENV == 'prod':
+        uat_ns = os.environ.get('UAT_NAMESPACE', namespace)
+        cache_key = ('uat_services', uat_ns)
+        cached = _cache_get(cache_key)
+        if cached:
+            return jsonify(cached)
+
+        print(f'[uat] DEPLOY_ENV=prod → connecting REMOTELY to UAT cluster')
+        api_client, error = _get_uat_api_client()
+        if error:
+            print(f'[uat] Client creation failed: {error}')
+            return jsonify({
+                'services': [], 'namespace': uat_ns,
+                'cluster': os.environ.get('UAT_CLUSTER_API', ''),
+                'count': 0, 'connected': False, 'error': error
+            })
+
+        uat_api_url = os.environ.get('UAT_CLUSTER_API', '')
+        print(f'[uat] Connecting to {uat_api_url}, namespace={uat_ns}')
+        try:
+            services = _list_services_from_api(api_client, uat_ns, '[uat-remote]')
+        except Exception as e:
+            import traceback
+            print(f'[uat] ❌ Connection FAILED: {type(e).__name__}: {e}')
+            print(f'[uat] Traceback: {traceback.format_exc()}')
+            return jsonify({
+                'error': str(e), 'services': [], 'namespace': uat_ns,
+                'cluster': uat_api_url, 'connected': False
+            }), 500
+
+        result = {
+            'services': services, 'namespace': uat_ns,
+            'cluster': uat_api_url, 'count': len(services),
+            'connected': True, 'deploy_env': DEPLOY_ENV
+        }
+        _cache_set(cache_key, result)
+        return jsonify(result)
+
+    # ── DEPLOY_ENV=uat (default): read local cluster ──
     cache_key = ('services', namespace)
     cached = _cache_get(cache_key)
     if cached:
@@ -1140,14 +1186,117 @@ def _get_prod_api_client():
     return client.ApiClient(prod_config), None
 
 
+# ── UAT Cluster (Remote) ─────────────────────────────────────────────────────
+# Connect to a remote UAT cluster when app is deployed in production.
+# Required env vars (only when DEPLOY_ENV=prod):
+#   UAT_CLUSTER_API    - UAT OpenShift API URL
+#   UAT_CLUSTER_TOKEN  - ServiceAccount bearer token with 'view' role
+#   UAT_NAMESPACE      - Target namespace in the UAT cluster
+# Optional:
+#   UAT_CLUSTER_VERIFY_SSL - Set to 'false' to disable SSL verification
+
+def _get_uat_api_client():
+    """Create a Kubernetes API client for the remote UAT cluster."""
+    uat_api = os.environ.get('UAT_CLUSTER_API', '')
+    uat_token = os.environ.get('UAT_CLUSTER_TOKEN', '')
+    print(f'[uat-remote] UAT_CLUSTER_API = {"SET (" + uat_api[:20] + "...)" if uat_api else "EMPTY"}')
+    print(f'[uat-remote] UAT_CLUSTER_TOKEN = {"SET (" + str(len(uat_token)) + " chars)" if uat_token else "EMPTY"}')
+    if not uat_api or not uat_token:
+        return None, f'UAT_CLUSTER_API {"✅" if uat_api else "❌ EMPTY"} and UAT_CLUSTER_TOKEN {"✅" if uat_token else "❌ EMPTY"} — both are required'
+
+    uat_config = client.Configuration()
+    uat_config.host = uat_api
+    uat_config.api_key = {"authorization": f"Bearer {uat_token}"}
+
+    # SSL configuration
+    verify_ssl = os.environ.get('UAT_CLUSTER_VERIFY_SSL', 'true').lower()
+    if verify_ssl == 'false':
+        uat_config.verify_ssl = False
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    else:
+        uat_config.verify_ssl = True
+
+    return client.ApiClient(uat_config), None
+
+
+def _list_services_from_api(api_client, namespace, log_prefix='[remote]'):
+    """Shared helper to list Deployments/StatefulSets/DaemonSets from a K8s API client."""
+    services = []
+    apps_v1 = client.AppsV1Api(api_client)
+    print(f'{log_prefix} API client ready, listing deployments in namespace={namespace}...')
+
+    # Deployments
+    try:
+        deploys = apps_v1.list_namespaced_deployment(namespace).items
+        for d in deploys:
+            containers = d.spec.template.spec.containers or []
+            image = containers[0].image if containers else ''
+            services.append({
+                'name': d.metadata.name,
+                'kind': 'Deployment',
+                'image': image,
+                'image_tag': _extract_image_tag(image),
+                'helm_version': _extract_helm_version(d.metadata.labels),
+                'replicas': d.status.ready_replicas or 0,
+                'desired_replicas': d.spec.replicas or 1,
+                'available': (d.status.ready_replicas or 0) >= (d.spec.replicas or 1),
+                'created': d.metadata.creation_timestamp.isoformat() if d.metadata.creation_timestamp else None
+            })
+    except Exception as e:
+        print(f"{log_prefix} Deployments error: {e}")
+
+    # StatefulSets
+    try:
+        sts = apps_v1.list_namespaced_stateful_set(namespace).items
+        for s in sts:
+            containers = s.spec.template.spec.containers or []
+            image = containers[0].image if containers else ''
+            services.append({
+                'name': s.metadata.name,
+                'kind': 'StatefulSet',
+                'image': image,
+                'image_tag': _extract_image_tag(image),
+                'helm_version': _extract_helm_version(s.metadata.labels),
+                'replicas': s.status.ready_replicas or 0,
+                'desired_replicas': s.spec.replicas or 1,
+                'available': (s.status.ready_replicas or 0) >= (s.spec.replicas or 1),
+                'created': s.metadata.creation_timestamp.isoformat() if s.metadata.creation_timestamp else None
+            })
+    except Exception as e:
+        print(f"{log_prefix} StatefulSets error: {e}")
+
+    # DaemonSets
+    try:
+        dss = apps_v1.list_namespaced_daemon_set(namespace).items
+        for d in dss:
+            containers = d.spec.template.spec.containers or []
+            image = containers[0].image if containers else ''
+            services.append({
+                'name': d.metadata.name,
+                'kind': 'DaemonSet',
+                'image': image,
+                'image_tag': _extract_image_tag(image),
+                'helm_version': _extract_helm_version(d.metadata.labels),
+                'replicas': d.status.number_ready or 0,
+                'desired_replicas': d.status.desired_number_scheduled or 1,
+                'available': (d.status.number_ready or 0) >= (d.status.desired_number_scheduled or 1),
+                'created': d.metadata.creation_timestamp.isoformat() if d.metadata.creation_timestamp else None
+            })
+    except Exception as e:
+        print(f"{log_prefix} DaemonSets error: {e}")
+
+    return services
+
+
 @app.route('/api/prod/services')
 def list_prod_services():
-    """List all services from the production OpenShift cluster.
+    """List all services from the production cluster.
 
-    Connects to the remote cluster using PROD_CLUSTER_API and PROD_CLUSTER_TOKEN
-    environment variables. Returns the same format as /api/services.
+    When DEPLOY_ENV=prod: reads from the LOCAL cluster (we're already in prod).
+    When DEPLOY_ENV=uat:  connects REMOTELY via PROD_CLUSTER_API/TOKEN.
     """
-    prod_ns = os.environ.get('PROD_NAMESPACE', 'default')
+    prod_ns = os.environ.get('PROD_NAMESPACE', NAMESPACE)
 
     # Check cache first
     cache_key = ('prod_services', prod_ns)
@@ -1155,6 +1304,27 @@ def list_prod_services():
     if cached:
         return jsonify(cached)
 
+    # ── DEPLOY_ENV=prod: read local cluster ──
+    if DEPLOY_ENV == 'prod':
+        print(f'[prod] DEPLOY_ENV=prod → reading LOCAL cluster, namespace={prod_ns}')
+        try:
+            services = _list_services_from_api(client.ApiClient(), prod_ns, '[prod-local]')
+            result = {
+                'services': services, 'namespace': prod_ns,
+                'cluster': 'local (production)', 'count': len(services),
+                'connected': True, 'deploy_env': DEPLOY_ENV
+            }
+            _cache_set(cache_key, result)
+            return jsonify(result)
+        except Exception as e:
+            print(f'[prod-local] ❌ Error reading local cluster: {e}')
+            return jsonify({
+                'error': str(e), 'services': [], 'namespace': prod_ns,
+                'cluster': 'local (production)', 'connected': False
+            }), 500
+
+    # ── DEPLOY_ENV=uat: connect to remote prod cluster ──
+    print(f'[prod] DEPLOY_ENV=uat → connecting REMOTELY to prod cluster')
     api_client, error = _get_prod_api_client()
     if error:
         print(f'[prod] Client creation failed: {error}')
@@ -1164,79 +1334,15 @@ def list_prod_services():
             'count': 0, 'connected': False, 'error': error
         })
 
-    services = []
     prod_api_url = os.environ.get('PROD_CLUSTER_API', '')
     print(f'[prod] Connecting to {prod_api_url}, namespace={prod_ns}')
     try:
-        apps_v1 = client.AppsV1Api(api_client)
-        print(f'[prod] API client created, listing deployments...')
-
-        # Deployments
-        try:
-            deploys = apps_v1.list_namespaced_deployment(prod_ns).items
-            for d in deploys:
-                containers = d.spec.template.spec.containers or []
-                image = containers[0].image if containers else ''
-                services.append({
-                    'name': d.metadata.name,
-                    'kind': 'Deployment',
-                    'image': image,
-                    'image_tag': _extract_image_tag(image),
-                    'helm_version': _extract_helm_version(d.metadata.labels),
-                    'replicas': d.status.ready_replicas or 0,
-                    'desired_replicas': d.spec.replicas or 1,
-                    'available': (d.status.ready_replicas or 0) >= (d.spec.replicas or 1),
-                    'created': d.metadata.creation_timestamp.isoformat() if d.metadata.creation_timestamp else None
-                })
-        except Exception as e:
-            print(f"[prod] Deployments error: {e}")
-
-        # StatefulSets
-        try:
-            sts = apps_v1.list_namespaced_stateful_set(prod_ns).items
-            for s in sts:
-                containers = s.spec.template.spec.containers or []
-                image = containers[0].image if containers else ''
-                services.append({
-                    'name': s.metadata.name,
-                    'kind': 'StatefulSet',
-                    'image': image,
-                    'image_tag': _extract_image_tag(image),
-                    'helm_version': _extract_helm_version(s.metadata.labels),
-                    'replicas': s.status.ready_replicas or 0,
-                    'desired_replicas': s.spec.replicas or 1,
-                    'available': (s.status.ready_replicas or 0) >= (s.spec.replicas or 1),
-                    'created': s.metadata.creation_timestamp.isoformat() if s.metadata.creation_timestamp else None
-                })
-        except Exception as e:
-            print(f"[prod] StatefulSets error: {e}")
-
-        # DaemonSets
-        try:
-            dss = apps_v1.list_namespaced_daemon_set(prod_ns).items
-            for d in dss:
-                containers = d.spec.template.spec.containers or []
-                image = containers[0].image if containers else ''
-                services.append({
-                    'name': d.metadata.name,
-                    'kind': 'DaemonSet',
-                    'image': image,
-                    'image_tag': _extract_image_tag(image),
-                    'helm_version': _extract_helm_version(d.metadata.labels),
-                    'replicas': d.status.number_ready or 0,
-                    'desired_replicas': d.status.desired_number_scheduled or 1,
-                    'available': (d.status.number_ready or 0) >= (d.status.desired_number_scheduled or 1),
-                    'created': d.metadata.creation_timestamp.isoformat() if d.metadata.creation_timestamp else None
-                })
-        except Exception as e:
-            print(f"[prod] DaemonSets error: {e}")
-
+        services = _list_services_from_api(api_client, prod_ns, '[prod-remote]')
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
         error_type = type(e).__name__
         error_msg = str(e)
-        # Extract useful info from K8s API errors
         detail = ''
         if hasattr(e, 'status'):
             detail = f' (HTTP {e.status})'
@@ -1259,7 +1365,8 @@ def list_prod_services():
 
     result = {
         'services': services, 'namespace': prod_ns,
-        'cluster': prod_api_url, 'count': len(services), 'connected': True
+        'cluster': prod_api_url, 'count': len(services),
+        'connected': True, 'deploy_env': DEPLOY_ENV
     }
     _cache_set(cache_key, result)
     return jsonify(result)
@@ -3285,11 +3392,23 @@ if __name__ == '__main__':
     print('=' * 60)
     print('  Release Readiness Dashboard — Startup Config')
     print('=' * 60)
+    print(f'  🌍 DEPLOY_ENV = {DEPLOY_ENV.upper()}')
+    if DEPLOY_ENV == 'prod':
+        print(f'     → Prod Env tab: reads LOCAL cluster')
+        print(f'     → UAT Env tab:  connects REMOTELY via UAT_CLUSTER_*')
+    else:
+        print(f'     → UAT Env tab:  reads LOCAL cluster')
+        print(f'     → Prod Env tab: connects REMOTELY via PROD_CLUSTER_*')
+    print()
     _vars = {
         'PROD_CLUSTER_API': os.environ.get('PROD_CLUSTER_API', ''),
         'PROD_CLUSTER_TOKEN': os.environ.get('PROD_CLUSTER_TOKEN', ''),
-        'PROD_NAMESPACE': os.environ.get('PROD_NAMESPACE', 'default'),
+        'PROD_NAMESPACE': os.environ.get('PROD_NAMESPACE', ''),
         'PROD_CLUSTER_VERIFY_SSL': os.environ.get('PROD_CLUSTER_VERIFY_SSL', 'true'),
+        'UAT_CLUSTER_API': os.environ.get('UAT_CLUSTER_API', ''),
+        'UAT_CLUSTER_TOKEN': os.environ.get('UAT_CLUSTER_TOKEN', ''),
+        'UAT_NAMESPACE': os.environ.get('UAT_NAMESPACE', ''),
+        'UAT_CLUSTER_VERIFY_SSL': os.environ.get('UAT_CLUSTER_VERIFY_SSL', 'true'),
         'JIRA_MCP_URL': os.environ.get('JIRA_MCP_URL', ''),
         'JIRA_PAT_TOKEN': os.environ.get('JIRA_PAT_TOKEN', ''),
         'JIRA_BASE_URL': os.environ.get('JIRA_BASE_URL', ''),

@@ -246,6 +246,42 @@ spec:
         - name: PROD_CLUSTER_VERIFY_SSL
           value: "false"                                      # ← Set to 'true' in production with proper CA certs
 
+        # ═══ Deployment Environment ═══════════════════════════════
+        # Controls which cluster is "local" and which is "remote":
+        #   DEPLOY_ENV=uat  → UAT tab reads local, Prod tab connects remotely
+        #   DEPLOY_ENV=prod → Prod tab reads local, UAT tab connects remotely
+        - name: DEPLOY_ENV
+          value: "uat"                                        # ← Change to "prod" when deploying to production cluster
+
+        # ═══ UAT Cluster (Remote) ═════════════════════════════════
+        # Only needed when DEPLOY_ENV=prod (app deployed in production).
+        # Create the secret:
+        #   kubectl create secret generic release-readiness-uat \
+        #     --from-literal=api-url=https://api.openshift-uat.example.com:6443 \
+        #     --from-literal=token=eyJhbGciOiJSUzI1NiIs... \
+        #     --from-literal=namespace=uat-namespace \
+        #     -n YOUR_NAMESPACE
+        - name: UAT_CLUSTER_API
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-uat
+              key: api-url
+              optional: true
+        - name: UAT_CLUSTER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-uat
+              key: token
+              optional: true
+        - name: UAT_NAMESPACE
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-uat
+              key: namespace
+              optional: true
+        - name: UAT_CLUSTER_VERIFY_SSL
+          value: "false"                                      # ← Set to 'true' with proper CA certs
+
         resources:
           requests:
             cpu: 100m
