@@ -955,7 +955,7 @@
                         <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
                             <div style="font-size:24px;margin-bottom:4px">🏭</div>
                             <div style="font-size:12px;font-weight:600">Prod Env</div>
-                            <div style="font-size:10px;color:var(--text2);margin-top:2px">Remote OpenShift cluster</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">Bi-directional cluster</div>
                         </div>
                     </div>
 
@@ -1372,7 +1372,43 @@
                     <!-- ═══════════════════════════════════════════════════ -->
                     <!-- SECTION: UAT Environment & Deploy                  -->
                     <!-- ═══════════════════════════════════════════════════ -->
-                    <h3 style="font-size:16px;margin:24px 0 12px;color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:8px">🖥️ UAT Environment & Deployment</h3>
+                    <h3 style="font-size:16px;margin:24px 0 12px;color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:8px">🖥️ Environments & Bi-Directional Cluster Support</h3>
+
+                    <!-- Bi-Directional Cluster Architecture -->
+                    <div style="background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(99,102,241,.08));border:1px solid rgba(16,185,129,.25);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px">🔄 Bi-Directional Cluster Architecture (<code>DEPLOY_ENV</code>)</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            The dashboard supports <strong>deployment in both UAT and Production clusters</strong>. The <code>DEPLOY_ENV</code>
+                            environment variable controls which cluster is "local" (in-cluster) and which is "remote" (connected via API token).
+                        </p>
+                        <div style="margin-top:12px;overflow-x:auto">
+                            <table style="width:100%;font-size:12px;border-collapse:collapse;color:var(--text2)">
+                                <thead>
+                                    <tr style="border-bottom:1px solid var(--border);text-align:left">
+                                        <th style="padding:8px 10px;color:var(--text);font-weight:600">DEPLOY_ENV</th>
+                                        <th style="padding:8px 10px;color:var(--text);font-weight:600">UAT Env Tab</th>
+                                        <th style="padding:8px 10px;color:var(--text);font-weight:600">Prod Env Tab</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr style="border-bottom:1px solid var(--border)">
+                                        <td style="padding:6px 10px"><code>uat</code> (default)</td>
+                                        <td style="padding:6px 10px">Reads <strong style="color:var(--green)">LOCAL</strong> cluster</td>
+                                        <td style="padding:6px 10px">Connects <strong style="color:var(--accent)">REMOTELY</strong> via <code>PROD_CLUSTER_*</code></td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding:6px 10px"><code>prod</code></td>
+                                        <td style="padding:6px 10px">Connects <strong style="color:var(--accent)">REMOTELY</strong> via <code>UAT_CLUSTER_*</code></td>
+                                        <td style="padding:6px 10px">Reads <strong style="color:var(--green)">LOCAL</strong> cluster</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--green)">
+                            💡 <strong>Why bi-directional?</strong> Firewalled environments (e.g. UAT cannot reach Prod network).
+                            Deploy the app in <em>both</em> clusters — each reads its own local services and connects remotely to the other.
+                        </div>
+                    </div>
 
                     <!-- UAT Env -->
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
@@ -1384,7 +1420,7 @@
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">What it shows:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li>Service name, kind (Deployment / StatefulSet), replica status (ready/desired)</li>
+                                <li>Service name, kind (Deployment / StatefulSet / DaemonSet), replica status (ready/desired)</li>
                                 <li>Current image tag and Helm chart version from the cluster</li>
                                 <li>Availability status — whether all pods are ready</li>
                                 <li><strong>Board Status</strong> column — shows ✅ Nominated (matching version), ⚠️ Drift (version mismatch), or — (not nominated)</li>
@@ -1392,21 +1428,35 @@
                                 <li>Click <strong>🔄 Refresh</strong> to get the latest data from the cluster</li>
                             </ul>
                         </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Connectivity:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><code>DEPLOY_ENV=uat</code> → reads <strong>local</strong> in-cluster K8s API (default)</li>
+                                <li><code>DEPLOY_ENV=prod</code> → connects <strong>remotely</strong> via <code>UAT_CLUSTER_API</code> + <code>UAT_CLUSTER_TOKEN</code></li>
+                            </ul>
+                        </div>
                     </div>
 
                     <!-- Prod Env -->
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
-                        <h3 style="font-size:15px;margin-bottom:8px">🏭 Prod Environment (Remote OpenShift)</h3>
+                        <h3 style="font-size:15px;margin-bottom:8px">🏭 Prod Environment</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            Lists <strong>live production services</strong> from a remote OpenShift cluster.
-                            Cross-references with the board to show which prod components are nominated.
+                            Lists <strong>live production services</strong> and cross-references with the board to show
+                            which prod components are nominated.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">What it shows:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
                                 <li>All Deployments, StatefulSets, and DaemonSets from the production namespace</li>
-                                <li><strong>Board Status</strong> — ✅ Nominated or <span style="color:#ef4444">Not Nominated</span> (no version drift comparison — prod and UAT versions are always different)</li>
+                                <li><strong>Board Status</strong> — ✅ Nominated or <span style="color:#ef4444">Not Nominated</span> (no version drift — prod and UAT versions differ by design)</li>
                                 <li>Summary bar: services count, namespace, cluster URL, nominated vs not-nominated counts</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Connectivity:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><code>DEPLOY_ENV=prod</code> → reads <strong>local</strong> in-cluster K8s API</li>
+                                <li><code>DEPLOY_ENV=uat</code> → connects <strong>remotely</strong> via <code>PROD_CLUSTER_API</code> + <code>PROD_CLUSTER_TOKEN</code></li>
                             </ul>
                         </div>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
@@ -1417,16 +1467,8 @@
                                 <li><strong>📥 Export JSON</strong> — machine-readable format for deployment workflow input</li>
                             </ul>
                         </div>
-                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
-                            <strong style="color:var(--accent2)">Configuration:</strong>
-                            <div style="margin-top:6px;padding:10px 14px;background:var(--bg);border-radius:8px;font-family:monospace;font-size:12px;color:var(--text2)">
-                                PROD_CLUSTER_API=https://api.openshift-prod.example.com:6443<br>
-                                PROD_CLUSTER_TOKEN=&lt;sa-bearer-token&gt;<br>
-                                PROD_NAMESPACE=prod-namespace
-                            </div>
-                        </div>
                         <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--accent)">
-                            💡 <strong>Setup:</strong> Create a read-only ServiceAccount on OpenShift Prod:<br>
+                            💡 <strong>Setup:</strong> Create a read-only ServiceAccount on the remote cluster:<br>
                             <code style="font-size:11px">oc create sa release-readiness-reader -n &lt;ns&gt;</code> then
                             <code style="font-size:11px">oc adm policy add-role-to-user view system:serviceaccount:&lt;ns&gt;:release-readiness-reader -n &lt;ns&gt;</code>
                         </div>
@@ -1536,6 +1578,7 @@
                                     </tr>
                                 </thead>
                                 <tbody>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(245,158,11,.08)"><td style="padding:6px 10px"><code>DEPLOY_ENV</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Set to <code>uat</code> (default) or <code>prod</code> — controls bi-directional cluster connectivity</td></tr>
                                     <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>POD_NAMESPACE</code></td><td style="padding:6px 10px">Auto</td><td style="padding:6px 10px">K8s namespace (auto-detected from pod metadata)</td></tr>
                                     <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>GCP_PROJECT_ID</code></td><td style="padding:6px 10px">For AI</td><td style="padding:6px 10px">GCP project for Vertex AI / Gemini</td></tr>
                                     <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>GCP_REGION</code></td><td style="padding:6px 10px">For AI</td><td style="padding:6px 10px">Vertex AI region (default: us-central1)</td></tr>
@@ -1548,16 +1591,20 @@
                                     <tr style="border-bottom:1px solid var(--border);background:rgba(99,102,241,.04)"><td style="padding:6px 10px"><code>BASE_URL</code></td><td style="padding:6px 10px">OAuth</td><td style="padding:6px 10px">External URL for OAuth callback</td></tr>
                                     <tr style="border-bottom:1px solid var(--border);background:rgba(99,102,241,.04)"><td style="padding:6px 10px"><code>GITHUB_URL</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">GitHub Enterprise URL (default: https://github.com)</td></tr>
                                     <tr style="border-bottom:1px solid var(--border);background:rgba(139,92,246,.06)"><td style="padding:6px 10px"><code>JIRA_MCP_URL</code></td><td style="padding:6px 10px">Jira</td><td style="padding:6px 10px">Jira MCP server endpoint URL</td></tr>
-                                    <tr style="border-bottom:1px solid var(--border);background:rgba(139,92,246,.06)"><td style="padding:6px 10px"><code>JIRA_SERVICE_ACCOUNT</code></td><td style="padding:6px 10px">Jira</td><td style="padding:6px 10px">Jira service account username</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(139,92,246,.06)"><td style="padding:6px 10px"><code>JIRA_BASE_URL</code></td><td style="padding:6px 10px">Jira</td><td style="padding:6px 10px">Jira REST API base URL (alternative to MCP)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(139,92,246,.06)"><td style="padding:6px 10px"><code>JIRA_EMAIL</code></td><td style="padding:6px 10px">Jira</td><td style="padding:6px 10px">Jira user email for Basic auth</td></tr>
                                     <tr style="border-bottom:1px solid var(--border);background:rgba(139,92,246,.06)"><td style="padding:6px 10px"><code>JIRA_PAT_TOKEN</code></td><td style="padding:6px 10px">Jira</td><td style="padding:6px 10px">Jira Personal Access Token</td></tr>
                                     <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>CUSTOM_COMPONENTS</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Non-K8s components (format: name:type:description,...)</td></tr>
                                     <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>SSL_VERIFY</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Set to false for self-signed certs (default: true)</td></tr>
-                                    <tr><td style="padding:6px 10px"><code>FLASK_SECRET_KEY</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Session encryption key (auto-generated if not set)</td></tr>
-                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>PROD_CLUSTER_API</code></td><td style="padding:6px 10px">Prod</td><td style="padding:6px 10px">OpenShift Prod API URL (e.g. https://api.openshift-prod.example.com:6443)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><code>FLASK_SECRET_KEY</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Session encryption key (auto-generated if not set)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>PROD_CLUSTER_API</code></td><td style="padding:6px 10px">Prod</td><td style="padding:6px 10px">OpenShift Prod API URL (used when DEPLOY_ENV=uat)</td></tr>
                                     <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>PROD_CLUSTER_TOKEN</code></td><td style="padding:6px 10px">Prod</td><td style="padding:6px 10px">ServiceAccount bearer token with 'view' role on prod namespace</td></tr>
                                     <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>PROD_NAMESPACE</code></td><td style="padding:6px 10px">Prod</td><td style="padding:6px 10px">Target namespace in production cluster</td></tr>
-                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>PROD_CLUSTER_CA_CERT</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">CA cert path for SSL verification (optional)</td></tr>
-                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>PROD_CLUSTER_VERIFY_SSL</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Set to 'false' to disable SSL verification (not recommended)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>PROD_CLUSTER_VERIFY_SSL</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Set to 'false' to disable SSL verification</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(245,158,11,.06)"><td style="padding:6px 10px"><code>UAT_CLUSTER_API</code></td><td style="padding:6px 10px">UAT*</td><td style="padding:6px 10px">OpenShift UAT API URL (used when DEPLOY_ENV=prod)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(245,158,11,.06)"><td style="padding:6px 10px"><code>UAT_CLUSTER_TOKEN</code></td><td style="padding:6px 10px">UAT*</td><td style="padding:6px 10px">ServiceAccount bearer token for UAT namespace</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(245,158,11,.06)"><td style="padding:6px 10px"><code>UAT_NAMESPACE</code></td><td style="padding:6px 10px">UAT*</td><td style="padding:6px 10px">Target namespace in UAT cluster</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(245,158,11,.06)"><td style="padding:6px 10px"><code>UAT_CLUSTER_VERIFY_SSL</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Set to 'false' to disable SSL verification</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -1593,8 +1640,12 @@
 │       │                                                         │
 │       └── 🚀 Deploy ──── GitHub API ──── Actions Workflows     │
 │                                                                 │
-│   🖥️ UAT Env ──── K8s API (in-cluster) ── Board Status       │
-│   🏭 Prod Env ─── K8s API (remote SA) ── OpenShift Prod       │
+│   🔄 DEPLOY_ENV=uat:                                           │
+│     🖥️ UAT Env ─── K8s API (LOCAL cluster) ── Board Status   │
+│     🏭 Prod Env ── K8s API (REMOTE via PROD_CLUSTER_*)        │
+│   🔄 DEPLOY_ENV=prod:                                          │
+│     🏭 Prod Env ── K8s API (LOCAL cluster) ── Board Status    │
+│     🖥️ UAT Env ─── K8s API (REMOTE via UAT_CLUSTER_*)        │
 │                                                                 │
 │   💾 State: K8s ConfigMap (board data, audit trail)            │
 │   🔐 Auth: GitHub OAuth 2.0 / PAT                             │
@@ -1691,9 +1742,16 @@
                                 (still includes Jira IDs if provided). The board and all other features work without AI.
                             </div>
                             <div style="margin-top:14px">
-                                <strong style="color:var(--text)">Q: How does the Prod Env tab connect to a remote cluster?</strong><br>
-                                It creates a separate Kubernetes API client using <code>PROD_CLUSTER_API</code> and <code>PROD_CLUSTER_TOKEN</code>
-                                env vars. The ServiceAccount only needs <strong>view</strong> role (read-only). No write access to prod.
+                                <strong style="color:var(--text)">Q: What is DEPLOY_ENV and how does bi-directional mode work?</strong><br>
+                                Set <code>DEPLOY_ENV=uat</code> (default) when deploying to the UAT cluster, or <code>DEPLOY_ENV=prod</code>
+                                when deploying to the Production cluster. The "local" tab reads from the in-cluster K8s API,
+                                while the "remote" tab connects via <code>PROD_CLUSTER_*</code> or <code>UAT_CLUSTER_*</code> env vars.
+                                This enables full functionality even when clusters are firewalled from each other.
+                            </div>
+                            <div style="margin-top:14px">
+                                <strong style="color:var(--text)">Q: How does the remote cluster tab connect?</strong><br>
+                                It creates a separate Kubernetes API client using the relevant <code>*_CLUSTER_API</code> and <code>*_CLUSTER_TOKEN</code>
+                                env vars. The ServiceAccount only needs <strong>view</strong> role (read-only). No write access to the remote cluster.
                             </div>
                             <div style="margin-top:14px">
                                 <strong style="color:var(--text)">Q: What is the Fix Version format?</strong><br>
