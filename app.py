@@ -1205,24 +1205,40 @@ def _fetch_artifactory_versions(artifactory_path):
         return cached
 
     import base64
-    url = f"{ARTIFACTORY_URL}/api/storage/{artifactory_path}?list&deep=0&listFolders=1"
     headers = {}
     if ARTIFACTORY_USER and ARTIFACTORY_TOKEN:
         creds = base64.b64encode(f"{ARTIFACTORY_USER}:{ARTIFACTORY_TOKEN}".encode()).decode()
         headers['Authorization'] = f'Basic {creds}'
 
-    ssl_verify = os.getenv('SSL_VERIFY', 'true').lower() != 'false'
+    ssl_verify = os.getenv('ARTIFACTORY_VERIFY_SSL', os.getenv('SSL_VERIFY', 'true')).lower() != 'false'
 
-    try:
-        print(f"[artifactory] Fetching versions from: {url}")
-        resp = requests.get(url, headers=headers, timeout=15, verify=ssl_verify)
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.exceptions.RequestException as e:
-        print(f"[artifactory] Error fetching {artifactory_path}: {e}")
-        return []
-    except ValueError:
-        print(f"[artifactory] Invalid JSON response from {url}")
+    # Try standard /api/storage/ first (returns 'children'), then ?list (returns 'files')
+    urls_to_try = [
+        f"{ARTIFACTORY_URL}/api/storage/{artifactory_path}",
+        f"{ARTIFACTORY_URL}/api/storage/{artifactory_path}?list&deep=0&listFolders=1",
+    ]
+
+    data = None
+    for url in urls_to_try:
+        try:
+            print(f"[artifactory] Trying: {url}")
+            resp = requests.get(url, headers=headers, timeout=15, verify=ssl_verify)
+            if resp.status_code == 404:
+                print(f"[artifactory] 404 for {url}, trying next...")
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            print(f"[artifactory] Success: {url} (keys: {list(data.keys())[:5]})")
+            break
+        except requests.exceptions.RequestException as e:
+            print(f"[artifactory] Error for {url}: {e}")
+            continue
+        except ValueError:
+            print(f"[artifactory] Invalid JSON from {url}")
+            continue
+
+    if data is None:
+        print(f"[artifactory] All URLs failed for {artifactory_path}")
         return []
 
     # Parse response — Artifactory /api/storage returns 'children' array
@@ -1353,6 +1369,9 @@ def _get_prod_api_client():
     prod_config = client.Configuration()
     prod_config.host = prod_api
     prod_config.api_key = {"authorization": f"Bearer {prod_token}"}
+    # Connection timeout to prevent pod hang/OOM on unreachable clusters
+    prod_config.connection_pool_maxsize = 4
+    prod_config.retries = 1
 
     # SSL configuration
     ca_cert = os.environ.get('PROD_CLUSTER_CA_CERT', '')
@@ -1407,7 +1426,11 @@ def _get_uat_api_client():
 def _list_services_from_api(api_client, namespace, log_prefix='[remote]'):
     """Shared helper to list Deployments/StatefulSets/DaemonSets from a K8s API client."""
     services = []
-    apps_v1 = client.AppsV1Api(api_client)
+    try:
+        apps_v1 = client.AppsV1Api(api_client)
+    except Exception as e:
+        print(f'{log_prefix} ❌ Failed to create AppsV1Api: {e}')
+        raise
     print(f'{log_prefix} API client ready, listing deployments in namespace={namespace}...')
 
     # Deployments
@@ -1509,7 +1532,17 @@ def list_prod_services():
 
     # ── DEPLOY_ENV=uat: connect to remote prod cluster ──
     print(f'[prod] DEPLOY_ENV=uat → connecting REMOTELY to prod cluster')
-    api_client, error = _get_prod_api_client()
+    try:
+        api_client, error = _get_prod_api_client()
+    except Exception as e:
+        print(f'[prod] ❌ Fatal error creating API client: {e}')
+        return jsonify({
+            'services': [], 'namespace': prod_ns,
+            'cluster': os.environ.get('PROD_CLUSTER_API', ''),
+            'count': 0, 'connected': False,
+            'error': f'Failed to create API client: {type(e).__name__}: {str(e)[:200]}'
+        })
+
     if error:
         print(f'[prod] Client creation failed: {error}')
         return jsonify({
@@ -1526,7 +1559,7 @@ def list_prod_services():
         import traceback
         tb = traceback.format_exc()
         error_type = type(e).__name__
-        error_msg = str(e)
+        error_msg = str(e)[:300]
         detail = ''
         if hasattr(e, 'status'):
             detail = f' (HTTP {e.status})'
@@ -1545,7 +1578,7 @@ def list_prod_services():
             'error': f'{error_type}: {error_msg}{detail}',
             'services': [], 'namespace': prod_ns,
             'cluster': prod_api_url, 'connected': False
-        }), 500
+        })
 
     result = {
         'services': services, 'namespace': prod_ns,
