@@ -747,6 +747,11 @@ RELEASE_CADENCE = os.getenv('RELEASE_CADENCE', 'friday')  # 'friday' or 'custom'
 CUTOFF_DAY = int(os.getenv('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
 CUTOFF_HOUR = int(os.getenv('CUTOFF_HOUR', '17'))  # 17:00
 
+# ── Artifactory (Custom Component Version Detection) ─────────────────────────
+ARTIFACTORY_URL = os.getenv('ARTIFACTORY_URL', '').rstrip('/')
+ARTIFACTORY_USER = os.getenv('ARTIFACTORY_USER', '')
+ARTIFACTORY_TOKEN = os.getenv('ARTIFACTORY_TOKEN', '')
+
 # ── Storage Backend ───────────────────────────────────────────────────────────
 STORAGE_BACKEND = os.getenv('STORAGE_BACKEND', 'auto')   # 'auto', 'configmap', 'file'
 BOARD_DATA_DIR  = os.getenv('BOARD_DATA_DIR', '/data/boards')
@@ -987,7 +992,8 @@ def _load_custom_components():
             components.append({
                 'name': parts[0].strip(),
                 'type': parts[1].strip(),
-                'description': parts[2].strip() if len(parts) > 2 else ''
+                'description': parts[2].strip() if len(parts) > 2 else '',
+                'artifactory_path': parts[3].strip() if len(parts) > 3 else ''
             })
     return components or _DEFAULT_CUSTOM_COMPONENTS
 
@@ -1144,7 +1150,185 @@ def list_services():
 @app.route('/api/custom_components')
 def list_custom_components():
     """List all configured custom components (non-K8s, e.g. Spark/PySpark)."""
-    return jsonify({'components': CUSTOM_COMPONENTS, 'count': len(CUSTOM_COMPONENTS)})
+    enriched = []
+    for c in CUSTOM_COMPONENTS:
+        entry = dict(c)
+        entry['has_artifactory'] = bool(c.get('artifactory_path') and ARTIFACTORY_URL)
+        enriched.append(entry)
+    return jsonify({'components': enriched, 'count': len(enriched)})
+
+
+# ── Artifactory Version Detection ─────────────────────────────────────────────
+# Fetches available versions from Artifactory for custom components.
+# Uses the /api/storage/ endpoint (Generic/Maven repos — folder-based versions).
+# Auth: Basic auth with ARTIFACTORY_USER:ARTIFACTORY_TOKEN.
+
+def _version_freshness(date_str):
+    """Determine version freshness relative to the current release cycle.
+    Returns: 'current_week', 'previous_week', or 'stale'.
+    """
+    try:
+        # Parse the date (Artifactory returns ISO format or lastModified format)
+        if 'T' in date_str:
+            dt = datetime.datetime.fromisoformat(date_str.replace('Z', '+00:00').replace('+00:00', ''))
+        else:
+            dt = datetime.datetime.strptime(date_str[:19], '%Y-%m-%d %H:%M:%S')
+    except (ValueError, TypeError):
+        return 'unknown'
+
+    today = datetime.date.today()
+    # Current release week: Monday of this week through Friday
+    monday = today - datetime.timedelta(days=today.weekday())
+    prev_monday = monday - datetime.timedelta(days=7)
+    version_date = dt.date() if hasattr(dt, 'date') else dt
+
+    if version_date >= monday:
+        return 'current_week'
+    elif version_date >= prev_monday:
+        return 'previous_week'
+    else:
+        return 'stale'
+
+
+def _fetch_artifactory_versions(artifactory_path):
+    """Fetch available versions from Artifactory for a given path.
+    Uses /api/storage/{path} with listFolders to enumerate version directories.
+    Returns list of {'version': str, 'date': str, 'freshness': str}, sorted newest first.
+    """
+    if not ARTIFACTORY_URL or not artifactory_path:
+        return []
+
+    # Check cache first
+    cache_key = f'artifactory_{artifactory_path}'
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    import base64
+    url = f"{ARTIFACTORY_URL}/api/storage/{artifactory_path}?list&deep=0&listFolders=1"
+    headers = {}
+    if ARTIFACTORY_USER and ARTIFACTORY_TOKEN:
+        creds = base64.b64encode(f"{ARTIFACTORY_USER}:{ARTIFACTORY_TOKEN}".encode()).decode()
+        headers['Authorization'] = f'Basic {creds}'
+
+    ssl_verify = os.getenv('SSL_VERIFY', 'true').lower() != 'false'
+
+    try:
+        print(f"[artifactory] Fetching versions from: {url}")
+        resp = requests.get(url, headers=headers, timeout=15, verify=ssl_verify)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.exceptions.RequestException as e:
+        print(f"[artifactory] Error fetching {artifactory_path}: {e}")
+        return []
+    except ValueError:
+        print(f"[artifactory] Invalid JSON response from {url}")
+        return []
+
+    # Parse response — Artifactory /api/storage returns 'children' array
+    # Each child: {"uri": "/1.2.3", "folder": true}
+    # Or with ?list: {"files": [{"uri": "/1.2.3", "folder": true, "lastModified": "..."}]}
+    versions = []
+
+    if 'files' in data:
+        # ?list response format
+        for item in data.get('files', []):
+            uri = item.get('uri', '').strip('/')
+            if item.get('folder', False) and uri:
+                versions.append({
+                    'version': uri,
+                    'date': item.get('lastModified', ''),
+                    'size': item.get('size', 0)
+                })
+            elif uri and not item.get('folder', False):
+                # File-based: extract version from filename
+                # e.g. "app-1.2.3.jar" → "1.2.3"
+                import re
+                match = re.search(r'(\d+\.\d+[\w.-]*)', uri)
+                if match:
+                    versions.append({
+                        'version': match.group(1),
+                        'date': item.get('lastModified', ''),
+                        'size': item.get('size', 0)
+                    })
+    elif 'children' in data:
+        # Standard /api/storage response format
+        for child in data.get('children', []):
+            uri = child.get('uri', '').strip('/')
+            if child.get('folder', False) and uri:
+                versions.append({
+                    'version': uri,
+                    'date': '',  # No date in children response; need individual lookup
+                    'size': 0
+                })
+
+    # If we have children but no dates, fetch the folder info for each (limited to top 10)
+    if versions and not any(v['date'] for v in versions):
+        for v in versions[:10]:
+            try:
+                folder_url = f"{ARTIFACTORY_URL}/api/storage/{artifactory_path}/{v['version']}"
+                r2 = requests.get(folder_url, headers=headers, timeout=5, verify=ssl_verify)
+                if r2.ok:
+                    d2 = r2.json()
+                    v['date'] = d2.get('lastModified', d2.get('created', ''))
+            except Exception:
+                pass
+
+    # Add freshness labels
+    for v in versions:
+        v['freshness'] = _version_freshness(v['date']) if v['date'] else 'unknown'
+
+    # Sort by date descending (newest first), unknown dates at end
+    def sort_key(v):
+        if v['date']:
+            return v['date']
+        return '0000'  # Unknown dates sort last
+    versions.sort(key=sort_key, reverse=True)
+
+    # Limit to 20 most recent
+    versions = versions[:20]
+
+    # Cache for 5 minutes
+    _cache_set(cache_key, versions)
+    return versions
+
+
+@app.route('/api/artifactory/versions/<component_name>')
+def get_artifactory_versions(component_name):
+    """Fetch available versions from Artifactory for a custom component."""
+    comp = CUSTOM_COMPONENTS_MAP.get(component_name)
+    if not comp:
+        return jsonify({'error': f'Component {component_name} not found'}), 404
+
+    art_path = comp.get('artifactory_path', '')
+    if not art_path:
+        return jsonify({
+            'component': component_name,
+            'artifactory_configured': False,
+            'message': 'No Artifactory path configured for this component',
+            'versions': []
+        })
+
+    if not ARTIFACTORY_URL:
+        return jsonify({
+            'component': component_name,
+            'artifactory_configured': False,
+            'message': 'ARTIFACTORY_URL not configured',
+            'versions': []
+        })
+
+    versions = _fetch_artifactory_versions(art_path)
+    latest = versions[0] if versions else None
+
+    return jsonify({
+        'component': component_name,
+        'artifactory_configured': True,
+        'artifactory_path': art_path,
+        'latest_version': latest['version'] if latest else None,
+        'latest_date': latest['date'] if latest else None,
+        'freshness': latest['freshness'] if latest else None,
+        'versions': versions
+    })
 
 
 # ── Production Cluster (Remote OpenShift) ─────────────────────────────────────
@@ -1517,7 +1701,10 @@ def nominate_service():
             'to_tag': image_tag,
             'changed_by': nominated_by,
             'changed_at': now,
-            'reason': notes or 'Version update'
+            'reason': notes or 'Version update',
+            'is_exception': is_exception,
+            **(({'exception_approver': exception_approver, 'exception_reason': exception_reason})
+               if is_exception else {})
         })
 
         # Exception metadata on re-nomination
@@ -1559,7 +1746,10 @@ def nominate_service():
                 'to_tag': image_tag,
                 'changed_by': nominated_by,
                 'changed_at': now,
-                'reason': 'Initial nomination'
+                'reason': 'Exception nomination' if is_exception else 'Initial nomination',
+                'is_exception': is_exception,
+                **(({'exception_approver': exception_approver, 'exception_reason': exception_reason})
+                   if is_exception else {})
             }]
         }
 
@@ -3414,6 +3604,9 @@ if __name__ == '__main__':
         'JIRA_BASE_URL': os.environ.get('JIRA_BASE_URL', ''),
         'GEMINI_API_KEY': os.environ.get('GEMINI_API_KEY', ''),
         'GCP_PROJECT_ID': os.environ.get('GCP_PROJECT_ID', ''),
+        'ARTIFACTORY_URL': os.environ.get('ARTIFACTORY_URL', ''),
+        'ARTIFACTORY_USER': os.environ.get('ARTIFACTORY_USER', ''),
+        'ARTIFACTORY_TOKEN': os.environ.get('ARTIFACTORY_TOKEN', ''),
     }
     for k, v in _vars.items():
         if v:

@@ -1862,11 +1862,29 @@
                     <!-- Custom component dropdown -->
                     <div id="nom-custom-section" style="display:none">
                         <label style="font-size:11px;color:var(--text2)">Select Component <span style="color:#ef4444;font-weight:700">*</span></label>
-                        <select id="custom-select" onchange="validateNominateForm()">
+                        <select id="custom-select" onchange="onCustomComponentSelect()">
                             <option value="">— Select a component —</option>
                         </select>
-                        <div><label style="font-size:11px;color:var(--text2)">Version (manual entry) <span style="color:#ef4444;font-weight:700">*</span></label><input type="text"
-                                id="nom-custom-version" placeholder="e.g. v1.2.3 or build-20260326" oninput="validateNominateForm()"></div>
+                        <!-- Artifactory version section -->
+                        <div id="art-version-section" style="display:none;margin-top:6px">
+                            <label style="font-size:11px;color:var(--text2)">Version (from Artifactory) <span style="color:#ef4444;font-weight:700">*</span></label>
+                            <div id="art-version-loading" style="display:none;font-size:11px;color:var(--text2);padding:6px 0">
+                                <span class="spinner" style="width:12px;height:12px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:6px"></span> Loading versions from Artifactory...
+                            </div>
+                            <select id="art-version-select" onchange="onArtifactoryVersionSelect()" style="display:none">
+                                <option value="">— Select version —</option>
+                            </select>
+                            <div id="art-freshness-badge" style="display:none;margin-top:4px"></div>
+                            <div style="margin-top:4px">
+                                <button type="button" class="btn btn-sm" style="font-size:10px;padding:2px 8px" onclick="toggleManualVersion()"
+                                    id="btn-manual-toggle">✏️ Enter manually</button>
+                            </div>
+                        </div>
+                        <!-- Manual version (shown by default for non-artifactory, or as override) -->
+                        <div id="manual-version-section">
+                            <label style="font-size:11px;color:var(--text2)">Version (manual entry) <span style="color:#ef4444;font-weight:700">*</span></label>
+                            <input type="text" id="nom-custom-version" placeholder="e.g. v1.2.3 or build-20260326" oninput="validateNominateForm()">
+                        </div>
                         <div id="custom-desc" style="font-size:11px;color:var(--text2);margin-top:2px;font-style:italic"></div>
                     </div>
                     <div><label style="font-size:11px;color:var(--text2)">Your Name <span style="color:#ef4444;font-weight:700">*</span></label><input type="text"
@@ -1984,6 +2002,8 @@
                 t.classList.toggle('active', tabs[i] === name);
             });
             document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + name));
+            // Persist active tab in URL hash (survives browser refresh)
+            if (history.replaceState) { history.replaceState(null, '', '#' + name); }
             if (name === 'uat') loadUATServices();
             if (name === 'prod') loadProdServices();
             if (name === 'history') loadReleaseHistory();
@@ -2202,13 +2222,133 @@
             sel.innerHTML = '<option value="">Select a component...</option>' +
                 _customComponents.map(c => {
                     const already = nominated.includes(c.name);
-                    return `<option value="${c.name}" ${already ? 'style="color:#f59e0b"' : ''}>${c.name} (${c.type})${already ? ' ★ nominated' : ''}</option>`;
+                    const artIcon = c.has_artifactory ? ' 📦' : '';
+                    return `<option value="${c.name}" ${already ? 'style="color:#f59e0b"' : ''}>${c.name} (${c.type})${artIcon}${already ? ' ★ nominated' : ''}</option>`;
                 }).join('');
-            sel.onchange = function () {
-                const c = _customMap[this.value];
-                document.getElementById('custom-desc').textContent = c ? c.description : '';
+        }
+
+        let _artManualMode = false; // Track if user toggled to manual entry
+
+        function onCustomComponentSelect() {
+            const name = document.getElementById('custom-select').value;
+            const c = _customMap[name];
+            document.getElementById('custom-desc').textContent = c ? c.description : '';
+            document.getElementById('nom-custom-version').value = '';
+
+            // Reset version sections
+            _artManualMode = false;
+            document.getElementById('art-version-section').style.display = 'none';
+            document.getElementById('art-version-select').style.display = 'none';
+            document.getElementById('art-version-loading').style.display = 'none';
+            document.getElementById('art-freshness-badge').style.display = 'none';
+            document.getElementById('manual-version-section').style.display = '';
+            const toggleBtn = document.getElementById('btn-manual-toggle');
+            if (toggleBtn) { toggleBtn.textContent = '✏️ Enter manually'; }
+
+            if (c && c.has_artifactory) {
+                // Show Artifactory section, hide manual
+                document.getElementById('art-version-section').style.display = '';
+                document.getElementById('manual-version-section').style.display = 'none';
+                fetchArtifactoryVersions(name);
+            }
+            validateNominateForm();
+        }
+
+        async function fetchArtifactoryVersions(componentName) {
+            const loadEl = document.getElementById('art-version-loading');
+            const selEl = document.getElementById('art-version-select');
+            const badgeEl = document.getElementById('art-freshness-badge');
+
+            loadEl.style.display = '';
+            selEl.style.display = 'none';
+            badgeEl.style.display = 'none';
+
+            try {
+                const r = await fetch(`/api/artifactory/versions/${encodeURIComponent(componentName)}`);
+                const d = await r.json();
+                loadEl.style.display = 'none';
+
+                if (!d.artifactory_configured || !d.versions || d.versions.length === 0) {
+                    // No versions found — fall back to manual
+                    document.getElementById('manual-version-section').style.display = '';
+                    document.getElementById('art-version-section').style.display = 'none';
+                    if (d.versions && d.versions.length === 0) {
+                        showToast('No versions found in Artifactory — enter manually', 'warn');
+                    }
+                    return;
+                }
+
+                // Build version dropdown
+                selEl.innerHTML = '<option value="">— Select version —</option>' +
+                    d.versions.map(v => {
+                        const badge = v.freshness === 'current_week' ? '🟢' :
+                                      v.freshness === 'previous_week' ? '🟡' :
+                                      v.freshness === 'stale' ? '🔴' : '⚪';
+                        const dateStr = v.date ? ` (${v.date.substring(0, 10)})` : '';
+                        return `<option value="${v.version}" data-freshness="${v.freshness}" data-date="${v.date}">${badge} ${v.version}${dateStr}</option>`;
+                    }).join('');
+                selEl.style.display = '';
+
+                // Auto-select latest
+                if (d.latest_version) {
+                    selEl.value = d.latest_version;
+                    onArtifactoryVersionSelect();
+                }
+            } catch (e) {
+                loadEl.style.display = 'none';
+                console.error('Artifactory fetch error:', e);
+                document.getElementById('manual-version-section').style.display = '';
+                document.getElementById('art-version-section').style.display = 'none';
+                showToast('Artifactory error — enter version manually', 'warn');
+            }
+        }
+
+        function onArtifactoryVersionSelect() {
+            const sel = document.getElementById('art-version-select');
+            const opt = sel.options[sel.selectedIndex];
+            const badgeEl = document.getElementById('art-freshness-badge');
+            const version = sel.value;
+
+            if (!version || !opt) {
+                badgeEl.style.display = 'none';
+                // Clear the hidden manual field
                 document.getElementById('nom-custom-version').value = '';
-            };
+            } else {
+                const freshness = opt.getAttribute('data-freshness') || 'unknown';
+                const date = opt.getAttribute('data-date') || '';
+                const labels = {
+                    'current_week':  { text: '🟢 Current Week', bg: 'rgba(16,185,129,.1)', color: '#10b981', border: 'rgba(16,185,129,.25)' },
+                    'previous_week': { text: '🟡 Previous Week', bg: 'rgba(245,158,11,.1)', color: '#f59e0b', border: 'rgba(245,158,11,.25)' },
+                    'stale':         { text: '🔴 Stale (2+ weeks)', bg: 'rgba(239,68,68,.08)', color: '#ef4444', border: 'rgba(239,68,68,.2)' },
+                    'unknown':       { text: '⚪ Unknown', bg: 'var(--surface2)', color: 'var(--text2)', border: 'var(--border)' }
+                };
+                const l = labels[freshness] || labels['unknown'];
+                badgeEl.innerHTML = `<span style="font-size:11px;padding:2px 8px;background:${l.bg};color:${l.color};border:1px solid ${l.border};border-radius:4px;font-weight:600">${l.text}</span>`
+                    + (date ? `<span style="font-size:10px;color:var(--text2);margin-left:6px">${date.substring(0, 10)}</span>` : '');
+                badgeEl.style.display = '';
+                // Set the hidden manual field so nomination uses this version
+                document.getElementById('nom-custom-version').value = version;
+            }
+            validateNominateForm();
+        }
+
+        function toggleManualVersion() {
+            _artManualMode = !_artManualMode;
+            const btn = document.getElementById('btn-manual-toggle');
+            if (_artManualMode) {
+                document.getElementById('manual-version-section').style.display = '';
+                document.getElementById('art-version-select').style.display = 'none';
+                document.getElementById('art-freshness-badge').style.display = 'none';
+                btn.textContent = '📦 Use Artifactory version';
+                document.getElementById('nom-custom-version').value = '';
+                document.getElementById('nom-custom-version').focus();
+            } else {
+                document.getElementById('manual-version-section').style.display = 'none';
+                document.getElementById('art-version-select').style.display = '';
+                btn.textContent = '✏️ Enter manually';
+                onArtifactoryVersionSelect(); // re-apply selected version
+            }
+            validateNominateForm();
         }
 
         function toggleNomType(type) {
@@ -2637,7 +2777,7 @@
             try {
                 const r = await fetch('/api/release/finalize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ finalized_by: by }) });
                 const d = await r.json();
-                if (r.ok) { showToast('🔒 Board locked'); refreshAll(); }
+                if (r.ok) { showToast('🔒 Board locked'); await refreshAll(); }
                 else { showToast(d.error || 'Failed', 'error'); }
             } catch (e) { showToast('Error', 'error'); }
         }
@@ -2652,7 +2792,7 @@
             try {
                 const r = await fetch('/api/release/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unlocked_by: by }) });
                 const d = await r.json();
-                if (r.ok) { showToast('🔓 Board unlocked'); refreshAll(); }
+                if (r.ok) { showToast('🔓 Board unlocked'); await refreshAll(); }
                 else { showToast(d.error || 'Failed', 'error'); }
             } catch (e) { showToast('Error', 'error'); }
         }
@@ -2667,7 +2807,7 @@
             try {
                 const r = await fetch('/api/release/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ completed_by: by }) });
                 const d = await r.json();
-                if (r.ok) { showToast('🎉 Release completed!'); refreshAll(); }
+                if (r.ok) { showToast('🎉 Release completed!'); await refreshAll(); }
                 else { showToast(d.error || 'Failed', 'error'); }
             } catch (e) { showToast('Error', 'error'); }
         }
@@ -2681,7 +2821,7 @@
             try {
                 const r = await fetch('/api/release/new_cycle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
                 const d = await r.json();
-                if (r.ok) { showToast(`🔄 New cycle started for ${d.release_date}`); refreshAll(); }
+                if (r.ok) { showToast(`🔄 New cycle started for ${d.release_date}`); await refreshAll(); }
                 else { showToast(d.error || 'Failed', 'error'); }
             } catch (e) { showToast('Error', 'error'); }
         }
@@ -2689,9 +2829,11 @@
         function viewServiceDetail(name) {
             const s = (_board && _board.services) ? _board.services[name] : null;
             if (!s) return;
-            const hist = (s.version_history || []).map(h =>
-                `<div class="audit-item"><strong>${h.from_tag || 'new'} → ${h.to_tag}</strong> by ${h.changed_by}<br>${h.reason}<br><span style="font-size:10px">${(h.changed_at || '').replace('T', ' ').substring(0, 19)}</span></div>`
-            ).join('');
+            const hist = (s.version_history || []).map(h => {
+                const excBadge = h.is_exception ? `<span style="font-size:10px;padding:1px 6px;background:rgba(245,158,11,.12);color:#f59e0b;border:1px solid rgba(245,158,11,.2);border-radius:4px;font-weight:600;margin-left:6px">⚠️ EXCEPTION</span>` : '';
+                const excInfo = h.is_exception ? `<div style="font-size:10px;color:#f59e0b;margin-top:2px">Approved by: ${h.exception_approver || '?'} · Reason: ${h.exception_reason || '?'}</div>` : '';
+                return `<div class="audit-item"><strong>${h.from_tag || 'new'} → ${h.to_tag}</strong>${excBadge} by ${h.changed_by}<br>${h.reason}${excInfo}<br><span style="font-size:10px">${(h.changed_at || '').replace('T', ' ').substring(0, 19)}</span></div>`;
+            }).join('');
             const rd = s.readiness_details;
             const rdHtml = rd ? `<div style="margin-top:12px"><strong>AI Readiness:</strong> <span class="readiness-badge readiness-${rd.readiness || 'unknown'}">${rd.readiness} ${rd.score || 0}/100</span><p style="font-size:12px;margin-top:6px">${rd.summary || ''}</p></div>` : '';
             openModal(name, `
@@ -3059,6 +3201,10 @@
         async function refreshAll() { await fetchBoard(); await fetchServices(); }
         // Restore saved view preference
         if (_boardView === 'list') { toggleBoardView('list'); }
+        // Restore active tab from URL hash (persists across browser refresh)
+        const _hashTab = window.location.hash.replace('#', '');
+        const _validTabs = ['board', 'drift', 'readiness', 'audit', 'export', 'uat', 'prod', 'history', 'deploy', 'chat', 'help'];
+        if (_hashTab && _validTabs.includes(_hashTab)) { switchTab(_hashTab); }
         refreshAll();
         checkGitHubStatus();
 
@@ -3133,25 +3279,28 @@
                 timeline.innerHTML = entries.map((h, i) => {
                     const isCurrent = (i === 0);
                     const isInitial = (h.from_tag === null);
-                    const actionLabel = isInitial ? 'Initial Nomination' : h.reason || 'Version Update';
-                    const color = isCurrent ? 'var(--green)' : 'var(--text2)';
-                    const borderColor = isCurrent ? 'var(--green)' : 'var(--border)';
+                    const isException = h.is_exception;
+                    const actionLabel = isException ? '⚠️ Exception Nomination' : isInitial ? 'Initial Nomination' : h.reason || 'Version Update';
+                    const color = isCurrent ? 'var(--green)' : isException ? '#f59e0b' : 'var(--text2)';
+                    const borderColor = isCurrent ? 'var(--green)' : isException ? '#f59e0b' : 'var(--border)';
                     const tag = h.to_tag || '?';
                     const rollbackBtn = !isCurrent && tag !== svc.image_tag
                         ? `<button class="btn btn-sm" style="padding:2px 10px;font-size:11px;background:rgba(99,102,241,.12);color:var(--accent);border-color:var(--accent);margin-top:6px" onclick="rollbackVersion('${serviceName}', '${tag}')">↩ Use this version</button>`
                         : '';
                     const currentBadge = isCurrent ? '<span style="font-size:10px;padding:1px 6px;background:rgba(16,185,129,.15);color:var(--green);border-radius:4px;margin-left:6px">CURRENT</span>' : '';
-                    return `<div style="padding:12px 14px;margin-bottom:8px;background:var(--surface2);border:1px solid ${borderColor};border-radius:8px;border-left:3px solid ${borderColor}">
+                    const exceptionInfo = isException ? `<div style="font-size:10px;color:#f59e0b;margin-top:3px">Approved by: ${h.exception_approver || '?'} · Reason: ${h.exception_reason || '?'}</div>` : '';
+                    return `<div style="padding:12px 14px;margin-bottom:8px;background:${isException ? 'rgba(245,158,11,.04)' : 'var(--surface2)'};border:1px solid ${borderColor};border-radius:8px;border-left:3px solid ${borderColor}">
                         <div style="display:flex;justify-content:space-between;align-items:center">
                             <div>
                                 <span class="card-tag" style="font-size:12px">${tag}</span>${currentBadge}
                             </div>
                             <span style="font-size:11px;color:var(--text2)">${(h.changed_at || '').replace('T', ' ').substring(0, 19)}</span>
                         </div>
-                        <div style="font-size:12px;color:var(--text2);margin-top:6px">
-                            ${isInitial ? '🆕' : '🔄'} ${actionLabel}
+                        <div style="font-size:12px;color:${isException ? '#f59e0b' : 'var(--text2)'};margin-top:6px">
+                            ${isInitial ? (isException ? '⚠️' : '🆕') : '🔄'} ${actionLabel}
                             ${h.from_tag ? ` · <span style="text-decoration:line-through;opacity:.6">${h.from_tag}</span> → <strong>${tag}</strong>` : ''}
                         </div>
+                        ${exceptionInfo}
                         <div style="font-size:11px;color:var(--text2);margin-top:4px">👤 ${h.changed_by || '?'}</div>
                         ${rollbackBtn}
                     </div>`;

@@ -282,6 +282,33 @@ spec:
         - name: UAT_CLUSTER_VERIFY_SSL
           value: "false"                                      # ← Set to 'true' with proper CA certs
 
+        # ═══ Artifactory (Custom Component Version Detection) ═════
+        # Auto-detect latest versions for non-K8s components.
+        # Create the secret:
+        #   kubectl create secret generic release-readiness-artifactory \
+        #     --from-literal=url=https://artifactory.your-org.com \
+        #     --from-literal=user=your-username \
+        #     --from-literal=token=your-api-token \
+        #     -n YOUR_NAMESPACE
+        - name: ARTIFACTORY_URL
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-artifactory
+              key: url
+              optional: true
+        - name: ARTIFACTORY_USER
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-artifactory
+              key: user
+              optional: true
+        - name: ARTIFACTORY_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-artifactory
+              key: token
+              optional: true
+
         resources:
           requests:
             cpu: 100m
