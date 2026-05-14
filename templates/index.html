@@ -661,6 +661,7 @@
             <span id="board-status-badge" class="badge badge-open">● Open</span>
         </div>
         <div class="header-meta">
+            <span id="live-clock" style="font-size:12px;color:var(--text2);font-family:'Inter',monospace;letter-spacing:0.5px;padding:3px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">🕐 --</span>
             <span id="countdown-display" class="countdown">⏱ Loading...</span>
             <span id="release-date-display">Release: --</span>
             <button class="btn btn-sm" onclick="refreshAll()" title="Refresh">🔄 Refresh</button>
@@ -3595,6 +3596,25 @@
                 }).join('');
             }
         }
+        // ── Live Clock ───────────────────────────────────────────────────────
+        function updateLiveClock() {
+            const el = document.getElementById('live-clock');
+            if (!el) return;
+            const now = new Date();
+            const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const day = days[now.getDay()];
+            const mon = months[now.getMonth()];
+            const date = now.getDate();
+            const h = now.getHours();
+            const m = String(now.getMinutes()).padStart(2, '0');
+            const s = String(now.getSeconds()).padStart(2, '0');
+            const ampm = h >= 12 ? 'PM' : 'AM';
+            const h12 = h % 12 || 12;
+            el.textContent = `🕐 ${day}, ${mon} ${date} · ${h12}:${m}:${s} ${ampm} EST`;
+        }
+        updateLiveClock();
+        setInterval(updateLiveClock, 1000);
         setInterval(updateCountdown, 60000);
 
         // Auto-archive check: every 5 minutes, if board is released and past release date,

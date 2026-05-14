@@ -1696,7 +1696,11 @@ def nominate_service():
         helm_version = None
         kind = comp.get('type', 'Custom')
     else:
-        # K8s service — auto-fill version from live cluster
+        # K8s service — auto-fill version from live UAT cluster
+        # IMPORTANT: The Board tab lists services from the UAT cluster (via /api/services),
+        # so we must read the version from the same source.
+        # When DEPLOY_ENV=prod, local cluster IS production — must use remote UAT client.
+        # When DEPLOY_ENV=uat, local cluster IS UAT — use default in-cluster client.
         namespace = data.get('namespace', NAMESPACE)
         image = ''
         image_tag = ''
@@ -1704,24 +1708,41 @@ def nominate_service():
         kind = 'Deployment'
 
         try:
-            apps_v1 = client.AppsV1Api()
-            try:
-                d = _k8s_retry(apps_v1.read_namespaced_deployment, service_name, namespace)
-                containers = d.spec.template.spec.containers or []
-                image = containers[0].image if containers else ''
-                image_tag = _extract_image_tag(image)
-                helm_version = _extract_helm_version(d.metadata.labels)
-                kind = 'Deployment'
-            except client.exceptions.ApiException:
+            apps_v1 = None
+            if DEPLOY_ENV == 'prod':
+                # Deployed in prod → read version from remote UAT cluster
+                uat_api_client, uat_err = _get_uat_api_client()
+                if uat_err:
+                    print(f"[nominate] Cannot reach UAT cluster for version lookup: {uat_err}")
+                    # Fall through with empty version — user can re-nominate later
+                else:
+                    uat_ns = os.environ.get('UAT_NAMESPACE', NAMESPACE)
+                    apps_v1 = client.AppsV1Api(uat_api_client)
+                    namespace = uat_ns
+                    print(f"[nominate] DEPLOY_ENV=prod → reading version from REMOTE UAT cluster, ns={uat_ns}")
+            else:
+                # Deployed in UAT → read version from local cluster
+                apps_v1 = client.AppsV1Api()
+                print(f"[nominate] DEPLOY_ENV=uat → reading version from LOCAL cluster, ns={namespace}")
+
+            if apps_v1:
                 try:
-                    s = _k8s_retry(apps_v1.read_namespaced_stateful_set, service_name, namespace)
-                    containers = s.spec.template.spec.containers or []
+                    d = _k8s_retry(apps_v1.read_namespaced_deployment, service_name, namespace)
+                    containers = d.spec.template.spec.containers or []
                     image = containers[0].image if containers else ''
                     image_tag = _extract_image_tag(image)
-                    helm_version = _extract_helm_version(s.metadata.labels)
-                    kind = 'StatefulSet'
+                    helm_version = _extract_helm_version(d.metadata.labels)
+                    kind = 'Deployment'
                 except client.exceptions.ApiException:
-                    pass
+                    try:
+                        s = _k8s_retry(apps_v1.read_namespaced_stateful_set, service_name, namespace)
+                        containers = s.spec.template.spec.containers or []
+                        image = containers[0].image if containers else ''
+                        image_tag = _extract_image_tag(image)
+                        helm_version = _extract_helm_version(s.metadata.labels)
+                        kind = 'StatefulSet'
+                    except client.exceptions.ApiException:
+                        pass
         except Exception as e:
             print(f"[nominate] K8s lookup error: {e}")
 
