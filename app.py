@@ -1212,23 +1212,32 @@ def _fetch_artifactory_versions(artifactory_path):
 
     ssl_verify = os.getenv('ARTIFACTORY_VERIFY_SSL', os.getenv('SSL_VERIFY', 'true')).lower() != 'false'
 
-    # Try standard /api/storage/ first (returns 'children'), then ?list (returns 'files')
+    # Try multiple API patterns — different Artifactory setups use different paths:
+    #  1. /api/storage/{path}              — Standard Artifactory OSS/Pro
+    #  2. /artifactory/api/storage/{path}  — Artifactory with /artifactory/ context
+    #  3. Direct path with JSON Accept     — Works on most Artifactory instances
+    #  4. /api/storage/{path}?list         — Enhanced listing with dates (Enterprise)
     urls_to_try = [
-        f"{ARTIFACTORY_URL}/api/storage/{artifactory_path}",
-        f"{ARTIFACTORY_URL}/api/storage/{artifactory_path}?list&deep=0&listFolders=1",
+        (f"{ARTIFACTORY_URL}/api/storage/{artifactory_path}", headers),
+        (f"{ARTIFACTORY_URL}/artifactory/api/storage/{artifactory_path}", headers),
+        (f"{ARTIFACTORY_URL}/{artifactory_path}/", {**headers, 'Accept': 'application/json'}),
+        (f"{ARTIFACTORY_URL}/api/storage/{artifactory_path}?list&deep=0&listFolders=1", headers),
     ]
 
     data = None
-    for url in urls_to_try:
+    for url, req_headers in urls_to_try:
         try:
             print(f"[artifactory] Trying: {url}")
-            resp = requests.get(url, headers=headers, timeout=15, verify=ssl_verify)
+            resp = requests.get(url, headers=req_headers, timeout=15, verify=ssl_verify)
             if resp.status_code == 404:
                 print(f"[artifactory] 404 for {url}, trying next...")
                 continue
+            if resp.status_code == 401 or resp.status_code == 403:
+                print(f"[artifactory] Auth error ({resp.status_code}) for {url} — check ARTIFACTORY_USER/TOKEN")
+                continue
             resp.raise_for_status()
             data = resp.json()
-            print(f"[artifactory] Success: {url} (keys: {list(data.keys())[:5]})")
+            print(f"[artifactory] ✅ Success: {url} (keys: {list(data.keys())[:5]})")
             break
         except requests.exceptions.RequestException as e:
             print(f"[artifactory] Error for {url}: {e}")
@@ -1238,7 +1247,7 @@ def _fetch_artifactory_versions(artifactory_path):
             continue
 
     if data is None:
-        print(f"[artifactory] All URLs failed for {artifactory_path}")
+        print(f"[artifactory] ❌ All URLs failed for {artifactory_path}")
         return []
 
     # Parse response — Artifactory /api/storage returns 'children' array
