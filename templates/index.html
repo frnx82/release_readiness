@@ -3110,18 +3110,48 @@
             const container = document.getElementById('uat-services-list');
             container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading UAT services...</div>';
             try {
-                const r = await fetch('/api/services');
-                const d = await r.json();
+                // Fetch UAT and Prod services in parallel for cross-reference
+                const [uatResp, prodResp] = await Promise.all([
+                    fetch('/api/services'),
+                    fetch('/api/prod/services').catch(() => null)
+                ]);
+                const d = await uatResp.json();
                 const svcs = d.services || [];
                 if (!svcs.length) { container.innerHTML = '<div class="empty-state"><p>No services found in UAT namespace</p></div>'; return; }
 
+                // Build prod version map for cross-reference
+                let prodVersionMap = {};
+                let prodConnected = false;
+                if (prodResp && prodResp.ok) {
+                    try {
+                        const prodData = await prodResp.json();
+                        if (prodData.connected !== false && prodData.services) {
+                            prodConnected = true;
+                            prodData.services.forEach(ps => { prodVersionMap[ps.name] = ps.image_tag || ''; });
+                        }
+                    } catch(e) { /* ignore prod parse errors */ }
+                }
+
                 // Cross-reference with board nominations
                 const boardSvcs = (_board && _board.services) ? _board.services : {};
-                let nominatedCount = 0, driftCount = 0;
+                let nominatedCount = 0, driftCount = 0, prodMatchCount = 0;
 
                 const rows = svcs.map((s, i) => {
                     const status = s.available ? '<span style="color:var(--green)">● Running</span>' : '<span style="color:var(--red)">● Down</span>';
                     const helmBadge = s.helm_version ? `<span style="font-size:11px;padding:2px 8px;background:rgba(99,102,241,.12);color:var(--accent);border-radius:4px">${s.helm_version}</span>` : '<span style="color:var(--text2)">—</span>';
+
+                    // Prod version comparison badge
+                    let prodBadgeHtml = '';
+                    if (prodConnected && s.name in prodVersionMap) {
+                        const prodTag = prodVersionMap[s.name];
+                        const uatTag = s.image_tag || '';
+                        if (uatTag && prodTag && uatTag === prodTag) {
+                            prodMatchCount++;
+                            prodBadgeHtml = `<span style="font-size:10px;padding:2px 6px;background:rgba(139,92,246,.1);color:#8b5cf6;border:1px solid rgba(139,92,246,.2);border-radius:4px;font-weight:600;margin-left:4px" title="Same version running in Production">= PROD</span>`;
+                        } else if (uatTag && prodTag) {
+                            prodBadgeHtml = `<span style="font-size:10px;padding:2px 6px;background:rgba(59,130,246,.08);color:#3b82f6;border:1px solid rgba(59,130,246,.15);border-radius:4px;font-weight:500;margin-left:4px" title="Prod: ${prodTag}">Δ ${prodTag.substring(0, 12)}</span>`;
+                        }
+                    }
 
                     // Check if this service is nominated on the board
                     const nominated = boardSvcs[s.name];
@@ -3151,7 +3181,7 @@
                         <td style="font-weight:600">${s.name}</td>
                         <td><span class="type-badge">${s.kind}</span></td>
                         <td style="font-family:monospace;font-size:11px;color:var(--text2);max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${s.image}">${s.image}</td>
-                        <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span></td>
+                        <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span>${prodBadgeHtml}</td>
                         <td>${helmBadge}</td>
                         <td style="text-align:center">${s.replicas}/${s.desired_replicas}</td>
                         <td>${status}</td>
@@ -3174,6 +3204,9 @@
                             📋 Nominated: <strong style="color:var(--accent)">${nominatedCount}</strong>
                             ${driftCount > 0 ? ` · <span style="color:#f59e0b">⚠️ ${driftCount} drift</span>` : ''}
                         </div>
+                        ${prodConnected ? `<div style="background:rgba(139,92,246,.06);border:1px solid rgba(139,92,246,.15);border-radius:8px;padding:8px 16px;font-size:12px">
+                            🟣 Prod Match: <strong style="color:#8b5cf6">${prodMatchCount}</strong> / ${Object.keys(prodVersionMap).length}
+                        </div>` : ''}
                     </div>
                     <table class="list-view-table">
                         <thead><tr><th>Service</th><th>Kind</th><th>Image</th><th>Tag</th><th>Helm Chart</th><th>Replicas</th><th>Status</th><th>Board Status</th></tr></thead>
