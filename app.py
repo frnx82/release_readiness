@@ -555,10 +555,20 @@ def _fetch_jira_by_fix_version(fix_version):
     issues = []
 
     # ── Method 1: Try MCP server's search tool ──
+    # Use short timeout (5s) and bail after first timeout to avoid 504 gateway errors.
+    # The MCP server may not be reachable in production — quick-fail is critical.
     if JIRA_MCP_URL:
         print(f'[jira] Trying MCP search for fix version: {fix_version}')
+        mcp_timed_out = False
         for tool_name in ['search_jira_issues', 'jira_search_issues', 'search_issues', 'jira_search']:
-            raw = _jira_mcp_call(tool_name, {'jql': jql, 'max_results': 200}, timeout=20)
+            if mcp_timed_out:
+                print(f'[jira] Skipping MCP tool {tool_name} — MCP already timed out, falling back to REST')
+                break
+            raw = _jira_mcp_call(tool_name, {'jql': jql, 'max_results': 200}, timeout=5)
+            if raw is None:
+                # Timeout or connection error — don't try remaining tools
+                mcp_timed_out = True
+                continue
             if raw:
                 try:
                     if isinstance(raw, str):
