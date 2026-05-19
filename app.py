@@ -53,6 +53,18 @@ JIRA_EMAIL            = os.getenv('JIRA_EMAIL',
                         os.getenv('JIRA_SERVICE_ACCOUNT', ''))   # Jira email / service account
 JIRA_PAT_TOKEN        = os.getenv('JIRA_PAT_TOKEN', '')          # Jira PAT token
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Confluence Configuration
+# ══════════════════════════════════════════════════════════════════════════════
+CONFLUENCE_MCP_URL    = os.getenv('CONFLUENCE_MCP_URL', '')        # MCP server endpoint URL
+CONFLUENCE_BASE_URL   = os.getenv('CONFLUENCE_BASE_URL', '')       # e.g. https://your-org.atlassian.net/wiki
+CONFLUENCE_EMAIL      = os.getenv('CONFLUENCE_EMAIL',
+                        os.getenv('JIRA_EMAIL', ''))               # Reuse Jira email by default
+CONFLUENCE_PAT_TOKEN  = os.getenv('CONFLUENCE_PAT_TOKEN',
+                        os.getenv('JIRA_PAT_TOKEN', ''))           # Reuse Jira PAT by default
+CONFLUENCE_SPACES     = [s.strip() for s in
+                        os.getenv('CONFLUENCE_DEFAULT_SPACES', '').split(',') if s.strip()]
+
 # GitHub Enterprise support
 GITHUB_URL = os.getenv('GITHUB_URL', 'https://github.com').rstrip('/')
 if GITHUB_URL == 'https://github.com':
@@ -180,6 +192,21 @@ if not JIRA_MCP_URL and not JIRA_BASE_URL:
     print("[Release Readiness] ℹ️  No Jira configured. Jira integration disabled.")
     print("    Set JIRA_MCP_URL + JIRA_EMAIL + JIRA_PAT_TOKEN for MCP mode")
     print("    Set JIRA_BASE_URL + JIRA_EMAIL + JIRA_PAT_TOKEN for direct REST API mode")
+
+# Print Confluence config status at startup
+if CONFLUENCE_MCP_URL:
+    print(f"[Release Readiness] ✅ Confluence MCP configured — URL: {CONFLUENCE_MCP_URL}")
+    if CONFLUENCE_EMAIL:
+        print(f"    Confluence email: {CONFLUENCE_EMAIL}")
+    if CONFLUENCE_PAT_TOKEN:
+        print(f"    PAT token: {'*' * 8}...configured")
+    if CONFLUENCE_SPACES:
+        print(f"    Default spaces: {', '.join(CONFLUENCE_SPACES)}")
+elif CONFLUENCE_BASE_URL:
+    print(f"[Release Readiness] ✅ Confluence REST API configured — URL: {CONFLUENCE_BASE_URL}")
+else:
+    print("[Release Readiness] ℹ️  No Confluence configured. Confluence Agent tab will be disabled.")
+    print("    Set CONFLUENCE_MCP_URL for MCP mode, or CONFLUENCE_BASE_URL for direct REST API")
 
 # ── Gemini SDK setup ─────────────────────────────────────────────────────────
 GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash')
@@ -717,6 +744,264 @@ def _map_issues_to_services(fix_version_issues, service_names):
               f'{len(unmatched)} unmatched')
 
     return svc_map, unmatched
+
+
+# ── Confluence MCP Client ─────────────────────────────────────────────────────
+
+def _confluence_mcp_call(tool_name, arguments, timeout=10):
+    """Call a tool on the Confluence MCP server via HTTP.
+    Follows same JSON-RPC pattern as _jira_mcp_call().
+    """
+    if not CONFLUENCE_MCP_URL:
+        return None
+    try:
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
+        }
+        if CONFLUENCE_PAT_TOKEN:
+            headers['Authorization'] = f'Bearer {CONFLUENCE_PAT_TOKEN}'
+        if CONFLUENCE_EMAIL:
+            headers['X-Confluence-User-Email'] = CONFLUENCE_EMAIL
+
+        payload = {
+            'jsonrpc': '2.0',
+            'id': str(uuid.uuid4()),
+            'method': 'tools/call',
+            'params': {
+                'name': tool_name,
+                'arguments': arguments
+            }
+        }
+
+        if PROXY_URL:
+            r = gh_http.post(CONFLUENCE_MCP_URL, json=payload, headers=headers,
+                             timeout=timeout, verify=SSL_VERIFY)
+        else:
+            r = requests.post(CONFLUENCE_MCP_URL, json=payload, headers=headers,
+                             timeout=timeout, verify=SSL_VERIFY)
+        r.raise_for_status()
+
+        content_type = r.headers.get('Content-Type', '')
+        raw_text = r.text.strip()
+
+        if not raw_text:
+            print(f"[Confluence MCP] Empty response from {tool_name}")
+            return None
+
+        # SSE format
+        if 'text/event-stream' in content_type or raw_text.startswith('event:') or raw_text.startswith('data:'):
+            result = None
+            for line in raw_text.split('\n'):
+                line = line.strip()
+                if line.startswith('data:'):
+                    data_str = line[5:].strip()
+                    if data_str:
+                        try:
+                            result = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+            if not result:
+                print(f"[Confluence MCP] Could not parse SSE for {tool_name}")
+                return None
+        else:
+            try:
+                result = json.loads(raw_text)
+            except json.JSONDecodeError:
+                print(f"[Confluence MCP] Invalid JSON from {tool_name}: {raw_text[:200]}")
+                return None
+
+        # MCP response extraction
+        if 'result' in result:
+            content = result['result']
+            if isinstance(content, dict) and 'content' in content:
+                texts = [c.get('text', '') for c in content.get('content', [])
+                         if isinstance(c, dict)]
+                return '\n'.join(texts) if texts else json.dumps(content)
+            return json.dumps(content) if not isinstance(content, str) else content
+        elif 'error' in result:
+            print(f"[Confluence MCP] Error: {result['error']}")
+            return None
+        return json.dumps(result)
+    except requests.exceptions.Timeout:
+        print(f"[Confluence MCP] Timeout calling {tool_name}")
+        return None
+    except requests.exceptions.ConnectionError as e:
+        print(f"[Confluence MCP] Connection error: {e}")
+        return None
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 'unknown'
+        print(f"[Confluence MCP] HTTP {status} calling {tool_name}")
+        return None
+    except Exception as e:
+        print(f"[Confluence MCP] Error calling {tool_name}: {e}")
+        return None
+
+
+def _confluence_auth_headers():
+    """Build auth headers for direct Confluence REST API."""
+    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+    if CONFLUENCE_EMAIL and CONFLUENCE_PAT_TOKEN:
+        import base64 as b64
+        cred = b64.b64encode(f'{CONFLUENCE_EMAIL}:{CONFLUENCE_PAT_TOKEN}'.encode()).decode()
+        headers['Authorization'] = f'Basic {cred}'
+    elif CONFLUENCE_PAT_TOKEN:
+        headers['Authorization'] = f'Bearer {CONFLUENCE_PAT_TOKEN}'
+    return headers
+
+
+def _confluence_search(query, space_key=None, max_results=10):
+    """Search Confluence via MCP, with REST API fallback.
+
+    Returns list of page dicts: [{id, title, space, url, excerpt, labels, ...}]
+    """
+    cache_key = ('confluence_search', query, space_key)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    results = []
+
+    # Method 1: MCP server
+    if CONFLUENCE_MCP_URL:
+        print(f'[confluence] Searching via MCP: "{query}"')
+        for tool_name in ['confluence_search', 'search_confluence', 'search_pages', 'confluence_search_pages']:
+            raw = _confluence_mcp_call(tool_name, {
+                'query': query,
+                'space_key': space_key or '',
+                'max_results': max_results
+            }, timeout=8)
+            if raw:
+                try:
+                    data = json.loads(raw) if isinstance(raw, str) else raw
+                    items = data if isinstance(data, list) else data.get('results', data.get('pages', []))
+                    if isinstance(items, list) and items:
+                        for item in items:
+                            if isinstance(item, dict):
+                                results.append({
+                                    'id': str(item.get('id', item.get('pageId', ''))),
+                                    'title': item.get('title', item.get('name', '?')),
+                                    'space': item.get('space', item.get('spaceKey', item.get('space_key', '?'))),
+                                    'url': item.get('url', item.get('webUrl', item.get('_links', {}).get('webui', ''))),
+                                    'excerpt': (item.get('excerpt', item.get('snippet', item.get('body', ''))) or '')[:300],
+                                    'last_modified': item.get('lastModified', item.get('last_modified',
+                                                     item.get('version', {}).get('when', '') if isinstance(item.get('version'), dict) else '')),
+                                    'author': item.get('author', item.get('lastModifiedBy',
+                                              item.get('version', {}).get('by', {}).get('displayName', '') if isinstance(item.get('version'), dict) else '')),
+                                    'labels': item.get('labels', []),
+                                })
+                        if results:
+                            print(f'[confluence] MCP returned {len(results)} pages')
+                            _cache_set(cache_key, results)
+                            return results
+                except Exception as e:
+                    print(f'[confluence] MCP parse error ({tool_name}): {e}')
+                    continue
+
+    # Method 2: Direct REST API
+    if CONFLUENCE_BASE_URL:
+        print(f'[confluence] Searching via REST API: "{query}"')
+        cql = f'text ~ "{query}" AND type = "page"'
+        if space_key:
+            cql += f' AND space = "{space_key}"'
+        try:
+            url = f'{CONFLUENCE_BASE_URL}/rest/api/content/search'
+            params = {
+                'cql': cql,
+                'limit': max_results,
+                'expand': 'space,version,metadata.labels'
+            }
+            http_session = gh_http if PROXY_URL else requests
+            resp = http_session.get(url, headers=_confluence_auth_headers(),
+                                    params=params, timeout=15, verify=SSL_VERIFY)
+            resp.raise_for_status()
+            for item in resp.json().get('results', []):
+                results.append({
+                    'id': str(item.get('id', '')),
+                    'title': item.get('title', '?'),
+                    'space': item.get('space', {}).get('key', '?'),
+                    'url': f"{CONFLUENCE_BASE_URL}{item.get('_links', {}).get('webui', '')}",
+                    'excerpt': item.get('excerpt', '')[:300],
+                    'last_modified': item.get('version', {}).get('when', ''),
+                    'author': item.get('version', {}).get('by', {}).get('displayName', ''),
+                    'labels': [l['name'] for l in
+                               item.get('metadata', {}).get('labels', {}).get('results', [])],
+                })
+            print(f'[confluence] REST API returned {len(results)} pages')
+        except Exception as e:
+            print(f'[confluence] REST API search error: {e}')
+
+    _cache_set(cache_key, results)
+    return results
+
+
+def _confluence_get_page(page_id):
+    """Get full page content by ID via MCP or REST."""
+    cache_key = ('confluence_page', page_id)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    page = None
+
+    # MCP
+    if CONFLUENCE_MCP_URL:
+        for tool_name in ['confluence_get_page', 'get_confluence_page', 'get_page', 'confluence_get_page_content']:
+            raw = _confluence_mcp_call(tool_name, {'page_id': page_id}, timeout=10)
+            if raw:
+                try:
+                    data = json.loads(raw) if isinstance(raw, str) else raw
+                    if isinstance(data, dict):
+                        page = {
+                            'id': str(data.get('id', page_id)),
+                            'title': data.get('title', '?'),
+                            'space': data.get('space', data.get('spaceKey', '?')),
+                            'body_html': data.get('body_html', data.get('body', data.get('content', ''))),
+                            'body_text': data.get('body_text', data.get('plainText',
+                                         data.get('body_export', data.get('body', '')))),
+                            'url': data.get('url', data.get('webUrl', '')),
+                            'labels': data.get('labels', []),
+                            'last_modified': data.get('lastModified', data.get('last_modified', '')),
+                            'author': data.get('author', data.get('lastModifiedBy', '')),
+                        }
+                        if page.get('title') and page['title'] != '?':
+                            _cache_set(cache_key, page)
+                            return page
+                except Exception as e:
+                    print(f'[confluence] MCP page parse error: {e}')
+
+    # REST fallback
+    if CONFLUENCE_BASE_URL:
+        try:
+            url = f'{CONFLUENCE_BASE_URL}/rest/api/content/{page_id}'
+            params = {'expand': 'body.view,body.storage,space,version,metadata.labels'}
+            http_session = gh_http if PROXY_URL else requests
+            resp = http_session.get(url, headers=_confluence_auth_headers(),
+                                    params=params, timeout=15, verify=SSL_VERIFY)
+            resp.raise_for_status()
+            data = resp.json()
+            body_html = data.get('body', {}).get('view', {}).get('value', '')
+            # Strip HTML tags for plain text
+            body_text = re.sub(r'<[^>]+>', ' ', body_html)
+            body_text = re.sub(r'\s+', ' ', body_text).strip()
+            page = {
+                'id': str(data.get('id', page_id)),
+                'title': data.get('title', '?'),
+                'space': data.get('space', {}).get('key', '?'),
+                'body_html': body_html,
+                'body_text': body_text[:5000],
+                'url': f"{CONFLUENCE_BASE_URL}{data.get('_links', {}).get('webui', '')}",
+                'labels': [l['name'] for l in
+                           data.get('metadata', {}).get('labels', {}).get('results', [])],
+                'last_modified': data.get('version', {}).get('when', ''),
+                'author': data.get('version', {}).get('by', {}).get('displayName', ''),
+            }
+        except Exception as e:
+            print(f'[confluence] REST API page fetch error: {e}')
+
+    if page:
+        _cache_set(cache_key, page)
+    return page
 
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
@@ -2428,6 +2713,131 @@ def fetch_jira_details():
                    'configured': True, 'fetched': len(found)})
 
 
+# ── Confluence Agent API ──────────────────────────────────────────────────────
+
+@app.route('/api/confluence/search', methods=['POST'])
+def api_confluence_search():
+    """Search Confluence and optionally generate AI summary."""
+    data = request.json or {}
+    query = data.get('query', '').strip()
+    space = data.get('space_key', '').strip() or None
+    ai_summary = data.get('ai_summary', True)
+
+    if not query:
+        return jsonify({'results': [], 'ai_summary': None, 'error': 'No query provided'}), 400
+
+    if not CONFLUENCE_MCP_URL and not CONFLUENCE_BASE_URL:
+        return jsonify({'results': [], 'ai_summary': None,
+                       'configured': False,
+                       'error': 'Confluence not configured. Set CONFLUENCE_MCP_URL or CONFLUENCE_BASE_URL.'})
+
+    results = _confluence_search(query, space, max_results=10)
+
+    # AI summarization
+    summary = None
+    if ai_summary and results:
+        try:
+            pages_text = []
+            for r in results[:3]:
+                page = _confluence_get_page(r['id'])
+                if page and page.get('body_text'):
+                    pages_text.append(f"## {page['title']}\n{page['body_text'][:2000]}")
+                elif r.get('excerpt'):
+                    pages_text.append(f"## {r['title']}\n{r['excerpt']}")
+
+            if pages_text:
+                prompt = f"""Based on these Confluence documentation pages from the organization's wiki, answer the user's question concisely and accurately.
+
+User Question: {query}
+
+Confluence Pages:
+{'---'.join(pages_text)}
+
+Instructions:
+- Provide a direct, actionable answer.
+- If the question is about a procedure, give step-by-step instructions.
+- Cite which page each piece of information comes from.
+- Flag any warnings, caveats, or prerequisites.
+- Use markdown formatting (bold, lists, code blocks) for readability.
+- If the pages don't contain enough information to answer fully, say what's missing."""
+                response = gemini_generate_with_retry(prompt)
+                if response and response.text:
+                    summary = response.text
+        except Exception as e:
+            print(f'[confluence] AI summary error: {e}')
+
+    return jsonify({
+        'results': results,
+        'ai_summary': summary,
+        'query': query,
+        'total': len(results),
+        'configured': True
+    })
+
+
+@app.route('/api/confluence/page/<page_id>')
+def api_confluence_page(page_id):
+    """Get full page content for inline preview."""
+    if not CONFLUENCE_MCP_URL and not CONFLUENCE_BASE_URL:
+        return jsonify({'error': 'Confluence not configured'}), 503
+
+    page = _confluence_get_page(page_id)
+    if not page:
+        return jsonify({'error': 'Page not found or fetch failed'}), 404
+    return jsonify(page)
+
+
+@app.route('/api/confluence/labels', methods=['POST'])
+def api_confluence_by_labels():
+    """Search Confluence pages by label(s)."""
+    data = request.json or {}
+    labels = data.get('labels', [])
+    space = data.get('space_key', '').strip() or None
+
+    if not labels:
+        return jsonify({'results': [], 'error': 'No labels provided'}), 400
+
+    # Try MCP first
+    if CONFLUENCE_MCP_URL:
+        for tool_name in ['confluence_search_by_label', 'search_by_label', 'confluence_label_search']:
+            raw = _confluence_mcp_call(tool_name, {'labels': labels, 'space_key': space or ''})
+            if raw:
+                try:
+                    data_parsed = json.loads(raw) if isinstance(raw, str) else raw
+                    items = data_parsed if isinstance(data_parsed, list) else data_parsed.get('results', [])
+                    results = []
+                    for item in items:
+                        if isinstance(item, dict):
+                            results.append({
+                                'id': str(item.get('id', '')),
+                                'title': item.get('title', '?'),
+                                'space': item.get('space', item.get('spaceKey', '?')),
+                                'url': item.get('url', ''),
+                                'labels': item.get('labels', labels),
+                                'excerpt': (item.get('excerpt', '') or '')[:300],
+                            })
+                    if results:
+                        return jsonify({'results': results, 'total': len(results)})
+                except Exception as e:
+                    print(f'[confluence] Label search parse error: {e}')
+
+    # Fallback: CQL search
+    label_cql = ' OR '.join(f'label = "{l}"' for l in labels)
+    results = _confluence_search(label_cql, space)
+    return jsonify({'results': results, 'total': len(results)})
+
+
+@app.route('/api/confluence/status')
+def api_confluence_status():
+    """Check Confluence integration status."""
+    return jsonify({
+        'configured': bool(CONFLUENCE_MCP_URL or CONFLUENCE_BASE_URL),
+        'mcp_url': bool(CONFLUENCE_MCP_URL),
+        'rest_url': bool(CONFLUENCE_BASE_URL),
+        'spaces': CONFLUENCE_SPACES,
+    })
+
+
 @app.route('/api/ai/release_notes', methods=['POST'])
 def generate_release_notes():
     """Generate AI-powered release notes for Teams/Jira.
@@ -3675,6 +4085,8 @@ if __name__ == '__main__':
         'JIRA_MCP_URL': os.environ.get('JIRA_MCP_URL', ''),
         'JIRA_PAT_TOKEN': os.environ.get('JIRA_PAT_TOKEN', ''),
         'JIRA_BASE_URL': os.environ.get('JIRA_BASE_URL', ''),
+        'CONFLUENCE_MCP_URL': os.environ.get('CONFLUENCE_MCP_URL', ''),
+        'CONFLUENCE_BASE_URL': os.environ.get('CONFLUENCE_BASE_URL', ''),
         'GEMINI_API_KEY': os.environ.get('GEMINI_API_KEY', ''),
         'GCP_PROJECT_ID': os.environ.get('GCP_PROJECT_ID', ''),
         'ARTIFACTORY_URL': os.environ.get('ARTIFACTORY_URL', ''),

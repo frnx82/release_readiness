@@ -639,6 +639,203 @@ def jira_by_fix_version():
     })
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Confluence Agent (Mock)
+# ══════════════════════════════════════════════════════════════════════════════
+
+MOCK_CONFLUENCE_PAGES = [
+    {
+        'id': '10001',
+        'title': 'Billing Service — Deployment Runbook',
+        'space': 'DEV',
+        'url': 'https://confluence.example.com/display/DEV/Billing+Service+Deployment+Runbook',
+        'excerpt': 'Step-by-step deployment runbook for the billing service. Covers pre-deployment checks, rollback procedures, database migration steps, and post-deployment verification.',
+        'last_modified': (datetime.datetime.utcnow() - datetime.timedelta(days=3)).isoformat(),
+        'author': 'John Smith',
+        'labels': ['runbook', 'billing', 'deployment'],
+        'body_html': '<h2>Billing Service Deployment Runbook</h2><h3>Pre-Deployment Checklist</h3><ul><li>✅ All PRs merged to main branch</li><li>✅ CI/CD pipeline green on main</li><li>✅ UAT sign-off obtained</li><li>✅ Database migration scripts reviewed</li></ul><h3>Deployment Steps</h3><ol><li><strong>Lock the release board</strong> — Notify #release-channel in Slack</li><li><strong>Run database migrations</strong> — Execute: <code>kubectl exec -it billing-db-0 -- /scripts/migrate.sh</code></li><li><strong>Deploy new version</strong> — Trigger deploy-uat.yml workflow with target version</li><li><strong>Verify health</strong> — Monitor <code>/actuator/health</code> endpoint for 5 minutes</li><li><strong>Run smoke tests</strong> — Execute: <code>npm run test:smoke -- --env=uat</code></li></ol><h3>Rollback Procedure</h3><p><strong>⚠️ Important:</strong> Database migrations cannot be automatically rolled back. Contact the DBA team before rolling back if migrations were applied.</p><ol><li>Execute rollback: <code>kubectl rollout undo deployment/billing-service</code></li><li>Verify pods are running: <code>kubectl get pods -l app=billing-service</code></li><li>Check logs: <code>kubectl logs -l app=billing-service --tail=100</code></li></ol>',
+        'body_text': 'Billing Service Deployment Runbook. Pre-Deployment Checklist: All PRs merged to main branch, CI/CD pipeline green on main, UAT sign-off obtained, Database migration scripts reviewed. Deployment Steps: 1. Lock the release board — Notify #release-channel in Slack. 2. Run database migrations — Execute: kubectl exec -it billing-db-0 -- /scripts/migrate.sh. 3. Deploy new version — Trigger deploy-uat.yml workflow with target version. 4. Verify health — Monitor /actuator/health endpoint for 5 minutes. 5. Run smoke tests — Execute: npm run test:smoke -- --env=uat. Rollback Procedure: Important: Database migrations cannot be automatically rolled back. Contact the DBA team before rolling back if migrations were applied. 1. Execute rollback: kubectl rollout undo deployment/billing-service. 2. Verify pods are running. 3. Check logs.'
+    },
+    {
+        'id': '10002',
+        'title': 'Production Release Checklist v3.2',
+        'space': 'OPS',
+        'url': 'https://confluence.example.com/display/OPS/Production+Release+Checklist',
+        'excerpt': 'Official production release checklist. Must be followed for every production deployment. Includes communication steps, validation gates, and sign-off requirements.',
+        'last_modified': (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat(),
+        'author': 'Jane Doe',
+        'labels': ['release', 'checklist', 'production', 'process'],
+        'body_html': '<h2>Production Release Checklist v3.2</h2><h3>T-2 Days (Wednesday)</h3><ul><li>☐ Version drift check — all nominated services match UAT</li><li>☐ AI readiness check — all services green or yellow</li><li>☐ Fix version set in Jira — all tickets in "Done" status</li><li>☐ Release notes generated and reviewed</li></ul><h3>T-1 Day (Thursday)</h3><ul><li>☐ Board locked by Release Manager</li><li>☐ Final UAT smoke tests passed</li><li>☐ Stakeholder sign-off email sent</li><li>☐ Change ticket created in ServiceNow</li></ul><h3>Release Day (Friday)</h3><ul><li>☐ Deploy to production environment</li><li>☐ Monitor dashboards for 30 minutes</li><li>☐ Verify customer-facing endpoints</li><li>☐ Send release announcement to #releases channel</li><li>☐ Mark board as "Released"</li></ul>',
+        'body_text': 'Production Release Checklist v3.2. T-2 Days: Version drift check, AI readiness check, Fix version set in Jira, Release notes generated. T-1 Day: Board locked by Release Manager, Final UAT smoke tests, Stakeholder sign-off, Change ticket in ServiceNow. Release Day: Deploy to production, Monitor dashboards 30 min, Verify endpoints, Send announcement, Mark board Released.'
+    },
+    {
+        'id': '10003',
+        'title': 'Auth Service — Architecture & Design',
+        'space': 'DEV',
+        'url': 'https://confluence.example.com/display/DEV/Auth+Service+Architecture',
+        'excerpt': 'Architecture overview of the authentication service. Covers OAuth2 flows, JWT token management, session handling, and integration points with downstream services.',
+        'last_modified': (datetime.datetime.utcnow() - datetime.timedelta(days=14)).isoformat(),
+        'author': 'Alex Chen',
+        'labels': ['architecture', 'auth', 'design', 'oauth'],
+        'body_html': '<h2>Auth Service Architecture</h2><h3>Overview</h3><p>The auth-service handles all authentication and authorization for the platform. Built on Spring Boot with Spring Security, it manages OAuth2 flows, JWT token issuance, and RBAC.</p><h3>Key Components</h3><ul><li><strong>OAuth2 Provider</strong> — Handles authorization code and client credentials flows</li><li><strong>JWT Engine</strong> — Issues and validates RS256 tokens (15min access, 7d refresh)</li><li><strong>Session Store</strong> — Redis-backed session management</li><li><strong>RBAC Module</strong> — Role-based access control with hierarchical permissions</li></ul><h3>Integration Points</h3><table><tr><th>Service</th><th>Protocol</th><th>Purpose</th></tr><tr><td>billing-service</td><td>gRPC</td><td>Token validation</td></tr><tr><td>payment-gateway</td><td>REST</td><td>OAuth2 scopes</td></tr><tr><td>notification-hub</td><td>Kafka</td><td>Login events</td></tr></table>',
+        'body_text': 'Auth Service Architecture. Overview: handles all authentication and authorization. Built on Spring Boot with Spring Security, manages OAuth2 flows, JWT token issuance, and RBAC. Key Components: OAuth2 Provider, JWT Engine (RS256, 15min access, 7d refresh), Redis-backed Session Store, RBAC Module. Integration Points: billing-service (gRPC, token validation), payment-gateway (REST, OAuth2 scopes), notification-hub (Kafka, login events).'
+    },
+    {
+        'id': '10004',
+        'title': 'Troubleshooting Guide — Common Production Issues',
+        'space': 'OPS',
+        'url': 'https://confluence.example.com/display/OPS/Troubleshooting+Guide',
+        'excerpt': 'Common production issues and their resolution steps. Covers pod crash loops, OOMKilled errors, connection pool exhaustion, and certificate expiry.',
+        'last_modified': (datetime.datetime.utcnow() - datetime.timedelta(days=5)).isoformat(),
+        'author': 'Mike Johnson',
+        'labels': ['troubleshooting', 'production', 'runbook', 'ops'],
+        'body_html': '<h2>Common Production Issues</h2><h3>1. Pod CrashLoopBackOff</h3><p><strong>Symptoms:</strong> Pod restarts repeatedly, service unavailable</p><p><strong>Resolution:</strong></p><ol><li>Check logs: <code>kubectl logs &lt;pod&gt; --previous</code></li><li>Check resource limits: <code>kubectl describe pod &lt;pod&gt;</code></li><li>If OOMKilled: increase memory limit in Helm values</li><li>If config error: verify ConfigMap/Secret mounts</li></ol><h3>2. Connection Pool Exhaustion</h3><p><strong>Symptoms:</strong> "Connection refused" or "Too many connections" errors</p><p><strong>Resolution:</strong></p><ol><li>Check active connections: <code>kubectl exec &lt;pod&gt; -- netstat -an | grep ESTABLISHED | wc -l</code></li><li>Scale horizontally if under high load</li><li>Adjust pool size in application config (default: 10, max recommended: 50)</li></ol><h3>3. Certificate Expiry</h3><p><strong>Symptoms:</strong> TLS handshake failures, 502 Bad Gateway</p><p><strong>Resolution:</strong></p><ol><li>Check cert: <code>kubectl get secret tls-cert -o jsonpath="{.data.tls\\.crt}" | base64 -d | openssl x509 -noout -dates</code></li><li>Renew via cert-manager: <code>kubectl delete certificate &lt;name&gt;</code> (auto-renewal)</li></ol>',
+        'body_text': 'Common Production Issues. 1. Pod CrashLoopBackOff: Check logs with kubectl logs --previous, check resource limits, increase memory if OOMKilled, verify ConfigMap/Secret mounts. 2. Connection Pool Exhaustion: Check active connections, scale horizontally, adjust pool size (default 10, max 50). 3. Certificate Expiry: Check cert dates with openssl, renew via cert-manager by deleting certificate resource.'
+    },
+    {
+        'id': '10005',
+        'title': 'New Developer Onboarding Guide',
+        'space': 'DEV',
+        'url': 'https://confluence.example.com/display/DEV/New+Developer+Onboarding',
+        'excerpt': 'Complete onboarding guide for new developers joining the team. Covers environment setup, access requests, code review process, and deployment workflow.',
+        'last_modified': (datetime.datetime.utcnow() - datetime.timedelta(days=21)).isoformat(),
+        'author': 'Sarah Lee',
+        'labels': ['onboarding', 'developer', 'setup'],
+        'body_html': '<h2>New Developer Onboarding</h2><h3>Day 1 — Access Setup</h3><ul><li>Request GitHub org access from your manager</li><li>Request Jira/Confluence access via IT ServiceDesk ticket</li><li>Install VPN client and request VPN credentials</li><li>Set up 2FA for all systems</li></ul><h3>Day 1-2 — Dev Environment</h3><ol><li>Install prerequisites: Docker, kubectl, Helm, Node.js 18+</li><li>Clone the mono-repo: <code>git clone git@github.com:org/platform.git</code></li><li>Run bootstrap: <code>make dev-setup</code></li><li>Verify: <code>make test</code> should pass all unit tests</li></ol><h3>Week 1 — Key Reading</h3><ul><li>Architecture overview (this wiki)</li><li>Code review guidelines</li><li>Release process documentation</li><li>On-call runbook</li></ul>',
+        'body_text': 'New Developer Onboarding. Day 1 Access Setup: GitHub org access, Jira/Confluence access, VPN, 2FA. Day 1-2 Dev Environment: Install Docker, kubectl, Helm, Node.js 18+. Clone mono-repo. Run make dev-setup. Verify with make test. Week 1 Key Reading: Architecture overview, Code review guidelines, Release process, On-call runbook.'
+    },
+    {
+        'id': '10006',
+        'title': 'Payment Gateway — API Integration Guide',
+        'space': 'DEV',
+        'url': 'https://confluence.example.com/display/DEV/Payment+Gateway+Integration',
+        'excerpt': 'Integration guide for consuming the payment gateway APIs. Covers authentication, endpoint reference, error handling, and webhook configuration.',
+        'last_modified': (datetime.datetime.utcnow() - datetime.timedelta(days=10)).isoformat(),
+        'author': 'Priya Patel',
+        'labels': ['api', 'payment', 'integration', 'gateway'],
+        'body_html': '<h2>Payment Gateway Integration Guide</h2><h3>Authentication</h3><p>All requests require an OAuth2 Bearer token from the auth-service. Use the <code>payment:write</code> scope for mutations and <code>payment:read</code> for queries.</p><h3>Endpoints</h3><table><tr><th>Method</th><th>Path</th><th>Description</th></tr><tr><td>POST</td><td>/api/v2/payments</td><td>Create a payment</td></tr><tr><td>GET</td><td>/api/v2/payments/{id}</td><td>Get payment status</td></tr><tr><td>POST</td><td>/api/v2/refunds</td><td>Process refund</td></tr><tr><td>GET</td><td>/api/v2/settlements</td><td>List settlements</td></tr></table><h3>Error Handling</h3><p>All errors follow RFC 7807 Problem Details format. Common codes:</p><ul><li><code>402</code> — Insufficient funds</li><li><code>409</code> — Duplicate payment (idempotency key conflict)</li><li><code>429</code> — Rate limited (100 req/min)</li></ul>',
+        'body_text': 'Payment Gateway Integration Guide. Authentication: OAuth2 Bearer token, use payment:write for mutations, payment:read for queries. Endpoints: POST /api/v2/payments (create), GET /api/v2/payments/{id} (status), POST /api/v2/refunds (refund), GET /api/v2/settlements (list). Error Handling: RFC 7807 format. 402 Insufficient funds, 409 Duplicate payment, 429 Rate limited (100 req/min).'
+    },
+]
+
+
+@app.route('/api/confluence/search', methods=['POST'])
+def confluence_search():
+    """Mock: Search Confluence pages."""
+    data = request.json or {}
+    query = data.get('query', '').strip().lower()
+    space_key = data.get('space_key', '').strip().upper()
+    ai_summary = data.get('ai_summary', True)
+
+    if not query:
+        return jsonify({'results': [], 'ai_summary': None, 'error': 'No query provided'}), 400
+
+    # Simple keyword matching
+    results = []
+    for page in MOCK_CONFLUENCE_PAGES:
+        score = 0
+        searchable = f"{page['title']} {page['excerpt']} {' '.join(page['labels'])}".lower()
+        for word in query.split():
+            if word in searchable:
+                score += 1
+            if word in [l.lower() for l in page['labels']]:
+                score += 2  # Label matches weighted higher
+        if score > 0:
+            if not space_key or page['space'] == space_key:
+                results.append({**page, '_score': score})
+
+    # Sort by relevance
+    results.sort(key=lambda x: x['_score'], reverse=True)
+    for r in results:
+        del r['_score']
+
+    # Generate mock AI summary
+    summary = None
+    if ai_summary and results:
+        top_titles = [r['title'] for r in results[:3]]
+        summary = f"Based on **{len(results)} matching page{'s' if len(results) != 1 else ''}** in Confluence, here's what I found:\n\n"
+
+        if 'runbook' in query or 'rollback' in query or 'deployment' in query:
+            summary += "### 📋 Deployment & Rollback Procedure\n\n"
+            summary += "1. **Pre-deployment**: Verify all PRs are merged, CI/CD is green, and UAT sign-off is obtained\n"
+            summary += "2. **Run database migrations**: `kubectl exec -it billing-db-0 -- /scripts/migrate.sh`\n"
+            summary += "3. **Deploy**: Trigger the deploy workflow with the target version\n"
+            summary += "4. **Verify health**: Monitor `/actuator/health` for 5 minutes\n"
+            summary += "5. **Rollback** (if needed): `kubectl rollout undo deployment/<service-name>`\n\n"
+            summary += "> ⚠️ **Warning**: Database migrations cannot be automatically rolled back — contact the DBA team first.\n\n"
+        elif 'troubleshoot' in query:
+            summary += "### 🔧 Common Issues & Resolutions\n\n"
+            summary += "**Pod CrashLoopBackOff**: Check logs with `kubectl logs <pod> --previous`, verify resource limits and config mounts.\n\n"
+            summary += "**Connection Pool Exhaustion**: Check active connections, scale horizontally, adjust pool size (default: 10, max: 50).\n\n"
+            summary += "**Certificate Expiry**: Check cert dates with openssl, renew via cert-manager by deleting the certificate resource.\n\n"
+        elif 'architecture' in query or 'design' in query:
+            summary += "### 🏗️ Architecture Overview\n\n"
+            summary += "The platform uses a **microservices architecture** with the following key services:\n\n"
+            summary += "- **auth-service**: OAuth2 + JWT (Spring Boot), integrates with billing via gRPC\n"
+            summary += "- **payment-gateway**: REST APIs with OAuth2 scopes, RFC 7807 error format\n"
+            summary += "- **billing-service**: Core billing logic with database migrations\n\n"
+        elif 'onboarding' in query:
+            summary += "### 🎓 Getting Started\n\n"
+            summary += "**Day 1**: Request GitHub, Jira/Confluence, and VPN access. Set up 2FA.\n\n"
+            summary += "**Day 1-2**: Install Docker, kubectl, Helm, Node.js 18+. Clone mono-repo and run `make dev-setup`.\n\n"
+            summary += "**Week 1**: Read architecture docs, code review guidelines, and release process documentation.\n\n"
+        elif 'release' in query or 'checklist' in query:
+            summary += "### 📋 Release Process\n\n"
+            summary += "**T-2 Days**: Version drift check, AI readiness check, fix version in Jira, release notes\n\n"
+            summary += "**T-1 Day**: Lock board, final UAT smoke tests, stakeholder sign-off, ServiceNow change ticket\n\n"
+            summary += "**Release Day**: Deploy to prod, monitor 30 min, verify endpoints, send announcement\n\n"
+        else:
+            for t in top_titles[:2]:
+                summary += f"- **{t}** — contains relevant information about your query\n"
+            summary += "\nClick 👁 Preview on any page card below for the full content.\n"
+
+        summary += f"\n*Sources: {', '.join(top_titles[:3])}*"
+
+    return jsonify({
+        'results': results[:10],
+        'ai_summary': summary,
+        'query': query,
+        'total': len(results),
+        'configured': True
+    })
+
+
+@app.route('/api/confluence/page/<page_id>')
+def confluence_page(page_id):
+    """Mock: Get full page content."""
+    for page in MOCK_CONFLUENCE_PAGES:
+        if page['id'] == page_id:
+            return jsonify(page)
+    return jsonify({'error': 'Page not found'}), 404
+
+
+@app.route('/api/confluence/labels', methods=['POST'])
+def confluence_by_labels():
+    """Mock: Search by labels."""
+    data = request.json or {}
+    labels = data.get('labels', [])
+    space_key = data.get('space_key', '').strip().upper()
+
+    results = []
+    for page in MOCK_CONFLUENCE_PAGES:
+        page_labels = [l.lower() for l in page.get('labels', [])]
+        if any(l.lower() in page_labels for l in labels):
+            if not space_key or page['space'] == space_key:
+                results.append(page)
+    return jsonify({'results': results, 'total': len(results)})
+
+
+@app.route('/api/confluence/status')
+def confluence_status():
+    """Mock: Confluence integration status."""
+    return jsonify({
+        'configured': True,
+        'mcp_url': True,
+        'rest_url': False,
+        'spaces': ['DEV', 'OPS', 'REL'],
+    })
+
+
 @app.route('/api/ai/release_notes', methods=['POST'])
 def release_notes():
     board = _read_board()

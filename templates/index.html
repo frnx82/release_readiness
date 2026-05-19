@@ -703,6 +703,7 @@
                 <div class="tab" onclick="switchTab('prod')">🏭 Prod Env</div>
                 <div class="tab" onclick="switchTab('history')">📚 History</div>
                 <div class="tab" onclick="switchTab('deploy')">🚀 Deploy</div>
+                <div class="tab" onclick="switchTab('confluence')">📖 Confluence</div>
                 <div class="tab" onclick="switchTab('chat')">💬 Chat</div>
                 <div class="tab" onclick="switchTab('help')">❓ Help</div>
             </div>
@@ -860,6 +861,49 @@
                 </div>
             </div>
 
+            <!-- Confluence Agent Tab -->
+            <div class="tab-content" id="tab-confluence">
+                <div class="chat-container">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                        <div>
+                            <h3 style="font-size:16px;margin:0">📖 Confluence Agent</h3>
+                            <p style="font-size:12px;color:var(--text2);margin:4px 0 0">Search your org's Confluence wiki — AI-powered answers from documentation</p>
+                        </div>
+                        <button class="btn btn-sm" onclick="clearConfluenceResults()" title="Clear results">🗑️ Clear</button>
+                    </div>
+                    <!-- Search Bar -->
+                    <div style="display:flex;gap:8px;margin-bottom:12px;align-items:flex-end">
+                        <div style="flex:1;display:flex;flex-direction:column;gap:4px">
+                            <div style="display:flex;gap:8px">
+                                <input type="text" id="confluence-search-input" placeholder="Ask about your org docs... (e.g. rollback procedure for billing service)"
+                                       style="flex:1;padding:10px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);font-family:inherit;font-size:13px;outline:none;transition:border-color .2s"
+                                       onkeydown="if(event.key==='Enter'){event.preventDefault();searchConfluence()}" />
+                                <input type="text" id="confluence-space-input" placeholder="Space (optional)"
+                                       style="width:110px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);font-family:inherit;font-size:12px;outline:none" />
+                            </div>
+                        </div>
+                        <button id="confluence-search-btn" class="btn btn-primary" onclick="searchConfluence()" style="padding:10px 18px;border-radius:12px;font-weight:600;font-size:13px;white-space:nowrap">🔍 Search</button>
+                    </div>
+                    <!-- Quick Action Pills -->
+                    <div class="chat-suggestions" id="confluence-pills">
+                        <div class="chat-pill" onclick="confluenceQuickSearch('runbook', 'runbook')">📚 Runbooks</div>
+                        <div class="chat-pill" onclick="confluenceQuickSearch('deployment guide', 'deployment')">🚀 Deploy Docs</div>
+                        <div class="chat-pill" onclick="confluenceQuickSearch('release process', 'release')">📋 Release Procedures</div>
+                        <div class="chat-pill" onclick="confluenceQuickSearch('troubleshooting', 'troubleshooting')">🔧 Troubleshooting</div>
+                        <div class="chat-pill" onclick="confluenceQuickSearch('architecture design', 'architecture')">📊 Architecture</div>
+                        <div class="chat-pill" onclick="confluenceQuickSearch('onboarding', 'onboarding')">🎓 Onboarding</div>
+                    </div>
+                    <!-- Results Area -->
+                    <div id="confluence-results" style="flex:1;overflow-y:auto;padding:4px 0">
+                        <div style="text-align:center;padding:60px 20px;color:var(--text2)">
+                            <div style="font-size:48px;margin-bottom:12px;opacity:0.5">📖</div>
+                            <h3 style="font-size:16px;margin-bottom:6px;color:var(--text)">Search Your Organization's Wiki</h3>
+                            <p style="font-size:13px;line-height:1.6">Type a question or click a quick action above.<br>AI will read matching pages and give you a summarized answer.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Chat Tab -->
             <div class="tab-content" id="tab-chat">
                 <div class="chat-container">
@@ -932,6 +976,11 @@
                             <div style="font-size:24px;margin-bottom:4px">📝</div>
                             <div style="font-size:12px;font-weight:600">AI Release Notes</div>
                             <div style="font-size:10px;color:var(--text2);margin-top:2px">Jira-enriched summaries</div>
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+                            <div style="font-size:24px;margin-bottom:4px">📖</div>
+                            <div style="font-size:12px;font-weight:600">Confluence Agent</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">AI wiki search & summary</div>
                         </div>
                         <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
                             <div style="font-size:24px;margin-bottom:4px">💬</div>
@@ -1563,6 +1612,92 @@
 
 
                     <!-- ═══════════════════════════════════════════════════ -->
+                    <!-- SECTION: Confluence Agent                          -->
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <h3 style="font-size:16px;margin:24px 0 12px;color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:8px">📖 Confluence Agent</h3>
+
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px">📖 AI-Powered Wiki Search</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Search your organization's <strong>Confluence wiki</strong> directly from the dashboard.
+                            AI reads matching pages and generates synthesized, summarized answers — no need to
+                            switch to Confluence and dig through pages manually.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">How to use:</strong>
+                            <ol style="margin-left:18px;color:var(--text2)">
+                                <li>Go to the <strong>📖 Confluence</strong> tab</li>
+                                <li>Type a natural language question — e.g., <em>"rollback procedure for billing service"</em></li>
+                                <li>Optionally filter by <strong>Space</strong> (e.g., DEV, OPS)</li>
+                                <li>Click <strong>🔍 Search</strong> or press Enter</li>
+                                <li>View the <strong>🤖 AI Summary</strong> at the top for a synthesized answer</li>
+                                <li>Browse <strong>📄 Source Pages</strong> below — click <strong>👁 Preview</strong> to expand inline</li>
+                                <li>Click <strong>🔗 Open in Confluence</strong> to jump to the full page</li>
+                            </ol>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Quick action pills:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>📚 Runbooks</strong> — deployment and incident response procedures</li>
+                                <li><strong>🚀 Deploy Docs</strong> — deployment guides and pipelines</li>
+                                <li><strong>📋 Release Procedures</strong> — checklists and release process docs</li>
+                                <li><strong>🔧 Troubleshooting</strong> — common issues and resolution steps</li>
+                                <li><strong>📊 Architecture</strong> — system design and service integration docs</li>
+                                <li><strong>🎓 Onboarding</strong> — new developer setup and orientation</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Features:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>🤖 AI Summary</strong> — Gemini reads top matching pages and generates a synthesized answer with steps, commands, and warnings</li>
+                                <li><strong>📄 Page cards</strong> — title, space badge, labels, author, last modified time, and excerpt</li>
+                                <li><strong>👁 Inline preview</strong> — expand full page HTML content without leaving the dashboard</li>
+                                <li><strong>🏷️ Label badges</strong> — visual tags (runbook, deployment, architecture, etc.)</li>
+                                <li><strong>Space filter</strong> — restrict search to a specific Confluence space</li>
+                                <li><strong>TTL caching</strong> — search results cached for 5 minutes to reduce API load</li>
+                                <li><strong>Read-only</strong> — the agent searches and summarizes but cannot modify wiki pages</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px">🔌 Confluence MCP Server Connection</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Connects to your organization's <strong>Confluence MCP (Model Context Protocol) server</strong>
+                            to search pages, retrieve content, and query by labels. Falls back to the <strong>Confluence REST API</strong>
+                            if no MCP server is configured.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Dual-mode architecture:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>Option 1: MCP Server</strong> (recommended) — JSON-RPC over HTTP, same protocol as Jira MCP. Set <code>CONFLUENCE_MCP_URL</code>.</li>
+                                <li><strong>Option 2: REST API</strong> (fallback) — Direct Confluence Cloud/Server REST API. Set <code>CONFLUENCE_BASE_URL</code> + auth credentials.</li>
+                                <li>Both modes support <strong>AI summarization</strong> via Gemini when <code>GEMINI_API_KEY</code> or <code>GCP_PROJECT_ID</code> is set.</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Configuration:</strong>
+                            <div style="margin-top:6px;padding:10px 14px;background:var(--bg);border-radius:8px;font-family:monospace;font-size:12px;color:var(--text2)">
+                                # Option 1: MCP Server<br>
+                                CONFLUENCE_MCP_URL=https://confluence-mcp.your-org.com<br><br>
+                                # Option 2: Direct REST API<br>
+                                CONFLUENCE_BASE_URL=https://your-org.atlassian.net/wiki<br><br>
+                                # Authentication (shared with Jira if same Atlassian instance)<br>
+                                CONFLUENCE_EMAIL=your-email@company.com<br>
+                                CONFLUENCE_PAT_TOKEN=&lt;api-token&gt;<br><br>
+                                # Optional: restrict to specific spaces<br>
+                                CONFLUENCE_DEFAULT_SPACES=DEV,OPS,REL
+                            </div>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--green)">
+                            💡 <strong>Shared credentials:</strong> If your Jira and Confluence are on the same Atlassian Cloud instance,
+                            the system automatically reuses <code>JIRA_EMAIL</code> and <code>JIRA_PAT_TOKEN</code> for Confluence auth — no extra
+                            configuration needed.
+                        </div>
+                    </div>
+
+
+                    <!-- ═══════════════════════════════════════════════════ -->
                     <!-- SECTION: Configuration Reference                   -->
                     <!-- ═══════════════════════════════════════════════════ -->
                     <h3 style="font-size:16px;margin:24px 0 12px;color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:8px">⚙️ Configuration Reference</h3>
@@ -1606,6 +1741,11 @@
                                     <tr style="border-bottom:1px solid var(--border);background:rgba(245,158,11,.06)"><td style="padding:6px 10px"><code>UAT_CLUSTER_TOKEN</code></td><td style="padding:6px 10px">UAT*</td><td style="padding:6px 10px">ServiceAccount bearer token for UAT namespace</td></tr>
                                     <tr style="border-bottom:1px solid var(--border);background:rgba(245,158,11,.06)"><td style="padding:6px 10px"><code>UAT_NAMESPACE</code></td><td style="padding:6px 10px">UAT*</td><td style="padding:6px 10px">Target namespace in UAT cluster</td></tr>
                                     <tr style="border-bottom:1px solid var(--border);background:rgba(245,158,11,.06)"><td style="padding:6px 10px"><code>UAT_CLUSTER_VERIFY_SSL</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Set to 'false' to disable SSL verification</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>CONFLUENCE_MCP_URL</code></td><td style="padding:6px 10px">Wiki</td><td style="padding:6px 10px">Confluence MCP server endpoint URL</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>CONFLUENCE_BASE_URL</code></td><td style="padding:6px 10px">Wiki</td><td style="padding:6px 10px">Confluence REST API base URL (alternative to MCP)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>CONFLUENCE_EMAIL</code></td><td style="padding:6px 10px">Wiki</td><td style="padding:6px 10px">Confluence user email (falls back to JIRA_EMAIL)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>CONFLUENCE_PAT_TOKEN</code></td><td style="padding:6px 10px">Wiki</td><td style="padding:6px 10px">Confluence API token (falls back to JIRA_PAT_TOKEN)</td></tr>
+                                    <tr style="border-bottom:1px solid var(--border);background:rgba(16,185,129,.06)"><td style="padding:6px 10px"><code>CONFLUENCE_DEFAULT_SPACES</code></td><td style="padding:6px 10px">No</td><td style="padding:6px 10px">Comma-separated space keys to search by default</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -1638,6 +1778,8 @@
 │       ├── 📝 Release Notes ──── Gemini + Jira MCP              │
 │       │                                                         │
 │       ├── 💬 AI Chatbot ──── Gemini Function Calling            │
+│       │                                                         │
+│       ├── 📖 Confluence ── Confluence MCP/REST ── Wiki Pages    │
 │       │                                                         │
 │       └── 🚀 Deploy ──── GitHub API ──── Actions Workflows     │
 │                                                                 │
@@ -1686,6 +1828,7 @@
                                 <li>Mock GitHub OAuth (auto-login, no real OAuth)</li>
                                 <li>Simulated deploy workflows with background progress (queued → building → deploying → complete)</li>
                                 <li>Keyword-based chatbot responses (no Gemini required)</li>
+                                <li>6 mock Confluence wiki pages (runbooks, architecture, troubleshooting, onboarding) with AI summaries</li>
                                 <li>In-memory board storage (resets on restart)</li>
                             </ul>
                         </div>
@@ -1763,6 +1906,19 @@
                                 <strong style="color:var(--text)">Q: Are Jira IDs required when nominating?</strong><br>
                                 No — Jira IDs are <strong>optional</strong>. You can nominate services without them.
                                 If a Fix Version is set, AI Release Notes will aggregate Jira tickets from the fix version automatically.
+                            </div>
+                        </div>
+                            <div style="margin-top:14px">
+                                <strong style="color:var(--text)">Q: What does the Confluence Agent do?</strong><br>
+                                It searches your org's Confluence wiki using natural language and generates AI-summarized answers.
+                                Think of it as a smart search that reads runbooks, architecture docs, and procedures for you —
+                                no need to leave the dashboard. Supports both MCP server and direct REST API modes.
+                            </div>
+                            <div style="margin-top:14px">
+                                <strong style="color:var(--text)">Q: Do I need a separate Confluence token?</strong><br>
+                                Not if your Jira and Confluence are on the same Atlassian Cloud instance. The system
+                                automatically reuses <code>JIRA_EMAIL</code> and <code>JIRA_PAT_TOKEN</code> for Confluence.
+                                Set <code>CONFLUENCE_EMAIL</code> and <code>CONFLUENCE_PAT_TOKEN</code> only if they're different.
                             </div>
                         </div>
                     </div>
@@ -1998,7 +2154,7 @@
             document.getElementById('modal-overlay').classList.add('active');
         }
         function switchTab(name) {
-            const tabs = ['board', 'drift', 'readiness', 'audit', 'export', 'uat', 'prod', 'history', 'deploy', 'chat', 'help'];
+            const tabs = ['board', 'drift', 'readiness', 'audit', 'export', 'uat', 'prod', 'history', 'deploy', 'confluence', 'chat', 'help'];
             document.querySelectorAll('.tab').forEach((t, i) => {
                 t.classList.toggle('active', tabs[i] === name);
             });
@@ -2009,6 +2165,7 @@
             if (name === 'prod') loadProdServices();
             if (name === 'history') loadReleaseHistory();
             if (name === 'deploy') loadDeployWorkflows();
+            if (name === 'confluence') { document.getElementById('confluence-search-input').focus(); }
             if (name === 'chat') { const el = document.getElementById('chat-messages'); el.scrollTop = el.scrollHeight; document.getElementById('chat-input').focus(); }
         }
 
@@ -3768,6 +3925,190 @@
             const d = document.createElement('div');
             d.textContent = s;
             return d.innerHTML;
+        }
+
+        // ═══ Confluence Agent ═══════════════════════════════════════════════════════
+        let _confluenceSearching = false;
+
+        async function searchConfluence() {
+            const input = document.getElementById('confluence-search-input');
+            const spaceInput = document.getElementById('confluence-space-input');
+            const query = input.value.trim();
+            if (!query || _confluenceSearching) return;
+
+            _confluenceSearching = true;
+            const btn = document.getElementById('confluence-search-btn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Searching...';
+
+            const resultsDiv = document.getElementById('confluence-results');
+            resultsDiv.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;padding:40px;color:var(--text2)"><div class="spinner"></div>Searching Confluence and generating AI summary...</div>';
+
+            try {
+                const r = await fetch('/api/confluence/search', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        query: query,
+                        space_key: spaceInput.value.trim() || '',
+                        ai_summary: true
+                    })
+                });
+                const data = await r.json();
+
+                if (data.configured === false) {
+                    resultsDiv.innerHTML = `<div style="text-align:center;padding:40px;color:var(--text2)">
+                        <div style="font-size:36px;margin-bottom:12px">⚠️</div>
+                        <h3 style="color:var(--text);margin-bottom:6px">Confluence Not Configured</h3>
+                        <p style="font-size:13px">Set <code>CONFLUENCE_MCP_URL</code> or <code>CONFLUENCE_BASE_URL</code> environment variables.</p>
+                    </div>`;
+                    return;
+                }
+
+                renderConfluenceResults(data);
+            } catch (e) {
+                resultsDiv.innerHTML = `<div style="text-align:center;padding:40px;color:var(--red)">❌ Error: ${e.message}</div>`;
+            } finally {
+                _confluenceSearching = false;
+                btn.disabled = false;
+                btn.textContent = '🔍 Search';
+            }
+        }
+
+        function confluenceQuickSearch(query, label) {
+            document.getElementById('confluence-search-input').value = query;
+            searchConfluence();
+        }
+
+        function renderConfluenceResults(data) {
+            const div = document.getElementById('confluence-results');
+            let html = '';
+
+            // AI Summary
+            if (data.ai_summary) {
+                html += `<div style="background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(5,150,105,.08));border:1px solid rgba(16,185,129,.25);border-radius:12px;padding:18px;margin-bottom:16px">
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                        <span style="font-size:18px">🤖</span>
+                        <strong style="font-size:14px;color:#10b981">AI Summary</strong>
+                        <span style="font-size:11px;color:var(--text2);margin-left:auto">${data.total} page${data.total !== 1 ? 's' : ''} found</span>
+                    </div>
+                    <div style="font-size:13px;line-height:1.8;color:var(--text)">${_renderMd(data.ai_summary)}</div>
+                </div>`;
+            }
+
+            // No results
+            if (!data.results || data.results.length === 0) {
+                if (!data.ai_summary) {
+                    html += `<div style="text-align:center;padding:40px;color:var(--text2)">
+                        <div style="font-size:36px;margin-bottom:12px">🔍</div>
+                        <p>No pages found for "<strong>${_escHtml(data.query)}</strong>"</p>
+                        <p style="font-size:12px;margin-top:8px">Try different keywords or check the space filter.</p>
+                    </div>`;
+                }
+                div.innerHTML = html;
+                return;
+            }
+
+            // Source Pages
+            html += `<div style="margin-bottom:8px"><strong style="font-size:13px;color:var(--text2)">📄 Source Pages (${data.results.length})</strong></div>`;
+
+            for (const page of data.results) {
+                const labels = (page.labels || []).map(l =>
+                    `<span style="display:inline-block;padding:2px 8px;background:rgba(99,102,241,.12);color:var(--accent2);border-radius:10px;font-size:10px;margin-right:4px">${typeof l === 'string' ? l : l.name || l}</span>`
+                ).join('');
+
+                const modified = page.last_modified ? _timeAgo(page.last_modified) : '';
+                const author = page.author || '';
+                const metaParts = [
+                    page.space ? `<span style="padding:2px 8px;background:rgba(99,102,241,.1);color:var(--accent);border-radius:6px;font-size:10px;font-weight:600">${page.space}</span>` : '',
+                    modified ? `<span style="font-size:11px;color:var(--text2)">Updated ${modified}</span>` : '',
+                    author ? `<span style="font-size:11px;color:var(--text2)">by ${author}</span>` : ''
+                ].filter(Boolean).join(' • ');
+
+                const excerpt = (page.excerpt || '').replace(/<\/?[^>]+(>|$)/g, '').substring(0, 200);
+
+                html += `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:8px;transition:border-color .2s" onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="this.style.borderColor='var(--border)'">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+                        <div style="flex:1">
+                            <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:4px">📖 ${_escHtml(page.title)}</div>
+                            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">${metaParts}</div>
+                            ${labels ? `<div style="margin-bottom:6px">${labels}</div>` : ''}
+                            ${excerpt ? `<div style="font-size:12px;color:var(--text2);line-height:1.5">${_escHtml(excerpt)}...</div>` : ''}
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:8px;margin-top:10px">
+                        <button class="btn btn-sm" onclick="previewConfluencePage('${page.id}', this)" style="font-size:11px">👁 Preview</button>
+                        ${page.url ? `<a href="${page.url}" target="_blank" class="btn btn-sm" style="font-size:11px;text-decoration:none">🔗 Open in Confluence</a>` : ''}
+                    </div>
+                    <div id="confluence-preview-${page.id}" style="display:none;margin-top:12px"></div>
+                </div>`;
+            }
+
+            div.innerHTML = html;
+        }
+
+        async function previewConfluencePage(pageId, btn) {
+            const previewDiv = document.getElementById('confluence-preview-' + pageId);
+            if (!previewDiv) return;
+
+            // Toggle
+            if (previewDiv.style.display !== 'none') {
+                previewDiv.style.display = 'none';
+                btn.textContent = '👁 Preview';
+                return;
+            }
+
+            btn.textContent = '⏳ Loading...';
+            btn.disabled = true;
+
+            try {
+                const r = await fetch(`/api/confluence/page/${pageId}`);
+                const page = await r.json();
+
+                if (page.error) {
+                    previewDiv.innerHTML = `<div style="padding:12px;color:var(--red);font-size:12px">❌ ${page.error}</div>`;
+                } else {
+                    const content = page.body_html || page.body_text || 'No content available';
+                    previewDiv.innerHTML = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:16px;max-height:400px;overflow-y:auto;font-size:13px;line-height:1.7;color:var(--text)">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)">
+                            <strong style="color:var(--accent2)">${_escHtml(page.title)}</strong>
+                            <span style="font-size:11px;color:var(--text2)">Space: ${page.space || '?'}</span>
+                        </div>
+                        <div class="confluence-page-body">${content}</div>
+                    </div>`;
+                }
+                previewDiv.style.display = 'block';
+            } catch (e) {
+                previewDiv.innerHTML = `<div style="padding:12px;color:var(--red);font-size:12px">❌ Failed to load page: ${e.message}</div>`;
+                previewDiv.style.display = 'block';
+            } finally {
+                btn.textContent = '👁 Hide';
+                btn.disabled = false;
+            }
+        }
+
+        function clearConfluenceResults() {
+            document.getElementById('confluence-search-input').value = '';
+            document.getElementById('confluence-space-input').value = '';
+            document.getElementById('confluence-results').innerHTML = `
+                <div style="text-align:center;padding:60px 20px;color:var(--text2)">
+                    <div style="font-size:48px;margin-bottom:12px;opacity:0.5">📖</div>
+                    <h3 style="font-size:16px;margin-bottom:6px;color:var(--text)">Search Your Organization's Wiki</h3>
+                    <p style="font-size:13px;line-height:1.6">Type a question or click a quick action above.<br>AI will read matching pages and give you a summarized answer.</p>
+                </div>`;
+        }
+
+        function _timeAgo(dateStr) {
+            try {
+                const d = new Date(dateStr);
+                const now = new Date();
+                const diff = Math.floor((now - d) / 1000);
+                if (diff < 60) return 'just now';
+                if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+                if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+                if (diff < 604800) return Math.floor(diff/86400) + 'd ago';
+                return d.toLocaleDateString();
+            } catch(e) { return dateStr; }
         }
 
         // Auto-resize textarea
