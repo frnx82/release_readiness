@@ -116,8 +116,7 @@ async def main():
             print(f"  Error: {exc}")
 
         # 3. List ALL pages in a specific space
-        #    NOTE: Different MCP servers use different limit param names.
-        #    We send both "limit" and "max_results" — the server ignores unknown params.
+        #    The MCP server only accepts "cql" and "limit" — no other params.
         print(f"\n═══ 3. List all pages in space '{SPACE_KEY}' ═══")
         try:
             result = await call_tool(
@@ -126,24 +125,18 @@ async def main():
                 {
                     "cql": f'type=page AND space="{SPACE_KEY}" ORDER BY lastModified DESC',
                     "limit": 25,
-                    "max_results": 25,
-                    "maxResults": 25,
-                    "pageSize": 25,
                 },
             )
-            # Print FULL result (not truncated) to diagnose the 1-page issue
+            # Print FULL result to diagnose
             print(json.dumps(result, indent=2))
-            # Also show the count
+            # Show count
             if isinstance(result, dict):
                 results_list = result.get('results', result.get('pages', result.get('content', [])))
                 if isinstance(results_list, list):
                     print(f"\n  → Got {len(results_list)} pages")
-                # Check if there's pagination info
                 size_info = result.get('size', result.get('totalSize', result.get('total', 'N/A')))
                 print(f"  → Total available: {size_info}")
-                start_info = result.get('start', result.get('startAt', 'N/A'))
-                limit_info = result.get('limit', result.get('maxResults', 'N/A'))
-                print(f"  → Start: {start_info}, Limit: {limit_info}")
+                print(f"  → Limit sent: 25")
         except Exception as exc:
             print(f"  Error: {exc}")
 
