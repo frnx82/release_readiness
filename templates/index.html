@@ -2310,6 +2310,38 @@
 
             // Sync export tab buttons with board status
             updateExportButtons();
+            // Sync nominate form enable/disable with board status
+            updateNominateFormState();
+        }
+
+        function updateNominateFormState() {
+            const status = (_board && _board.status) || 'open';
+            const formEl = document.querySelector('.nominate-form');
+            const titleEl = document.querySelector('.section-title');
+            const btn = document.getElementById('btn-nominate');
+            if (!formEl) return;
+
+            if (status === 'released') {
+                // Released — fully disable the form
+                formEl.style.opacity = '0.4';
+                formEl.style.pointerEvents = 'none';
+                if (titleEl) titleEl.innerHTML = '➕ Nominate Service <span style="font-size:11px;color:#ef4444;margin-left:8px">(Released — read-only)</span>';
+                if (btn) { btn.disabled = true; btn.style.opacity = '0.3'; btn.style.cursor = 'not-allowed'; btn.innerHTML = '🚀 Nominate (Released)'; }
+            } else if (status === 'locked') {
+                // Locked — show exception warning but allow form
+                formEl.style.opacity = '1';
+                formEl.style.pointerEvents = '';
+                if (titleEl) titleEl.innerHTML = '➕ Nominate Service <span style="font-size:11px;color:#f59e0b;margin-left:8px">(⚠️ Board Locked — exception only)</span>';
+                if (btn) { btn.innerHTML = '🚀 Nominate (Exception)'; }
+                validateNominateForm();  // re-run validation to set proper state
+            } else {
+                // Open — fully enable
+                formEl.style.opacity = '1';
+                formEl.style.pointerEvents = '';
+                if (titleEl) titleEl.innerHTML = '➕ Nominate Service';
+                if (btn) { btn.innerHTML = '🚀 Nominate'; }
+                validateNominateForm();  // re-run validation to set proper state
+            }
         }
 
         function updateCountdown() {
@@ -2435,14 +2467,19 @@
                     return;
                 }
 
-                // Build version dropdown
+                // Build version dropdown with colored options
                 selEl.innerHTML = '<option value="">— Select version —</option>' +
-                    d.versions.map(v => {
+                    d.versions.map((v, idx) => {
                         const badge = (v.freshness === 'current_week' || v.freshness === 'latest') ? '🟢' :
                                       (v.freshness === 'previous_week' || v.freshness === 'recent') ? '🟡' :
                                       (v.freshness === 'stale' || v.freshness === 'aging' || v.freshness === 'old') ? '🔴' : '⚪';
                         const dateStr = v.date ? ` (${v.date.substring(0, 10)})` : '';
-                        return `<option value="${v.version}" data-freshness="${v.freshness}" data-date="${v.date}">${badge} ${v.version}${dateStr}</option>`;
+                        // Color-code the option background based on freshness
+                        const optBg = (v.freshness === 'current_week' || v.freshness === 'latest') ? 'background:rgba(16,185,129,.12);color:#059669;font-weight:600' :
+                                      (v.freshness === 'previous_week' || v.freshness === 'recent') ? 'background:rgba(245,158,11,.1);color:#d97706' :
+                                      (v.freshness === 'stale' || v.freshness === 'aging' || v.freshness === 'old') ? 'background:rgba(239,68,68,.08);color:#b91c1c' : '';
+                        const isLatest = (idx === 0 && d.latest_version === v.version) ? ' ★ LATEST' : '';
+                        return `<option value="${v.version}" data-freshness="${v.freshness}" data-date="${v.date}" style="${optBg}">${badge} ${v.version}${dateStr}${isLatest}</option>`;
                     }).join('');
                 selEl.style.display = '';
 

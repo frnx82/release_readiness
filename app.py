@@ -33,6 +33,8 @@ from kubernetes import client, config
 from functools import wraps
 from urllib.parse import urlencode
 from werkzeug.middleware.proxy_fix import ProxyFix
+import asyncio
+import httpx
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GitHub / Deploy Configuration
@@ -197,10 +199,59 @@ if not JIRA_MCP_URL and not JIRA_BASE_URL:
 _CONFLUENCE_TOOLS = {}  # Discovered tool names from MCP server
 
 def _discover_confluence_mcp_tools():
-    """Call tools/list on the MCP server to discover available tool names."""
+    """Discover available tools from the Confluence MCP server.
+    Uses fastmcp SDK when available, falls back to raw HTTP JSON-RPC.
+    """
     global _CONFLUENCE_TOOLS
+
     if not CONFLUENCE_MCP_URL:
         return
+
+    # Method A: fastmcp SDK (proper MCP protocol)
+    try:
+        from fastmcp import Client as McpClient
+        from fastmcp.client.transports import StreamableHttpTransport
+
+        mcp_headers = {}
+        if CONFLUENCE_PAT_TOKEN:
+            mcp_headers['Authorization'] = f'Bearer {CONFLUENCE_PAT_TOKEN}'
+        if CONFLUENCE_EMAIL:
+            mcp_headers['X-Confluence-User-Email'] = CONFLUENCE_EMAIL
+
+        def _factory(**kwargs):
+            kwargs.pop('verify', None)
+            incoming = kwargs.pop('headers', {}) or {}
+            merged = {**incoming, **mcp_headers}
+            return httpx.AsyncClient(headers=merged, verify=False, **kwargs)
+
+        transport = StreamableHttpTransport(
+            CONFLUENCE_MCP_URL, httpx_client_factory=_factory,
+        )
+
+        async def _discover():
+            async with McpClient(transport) as mcp:
+                return await mcp.list_tools()
+
+        try:
+            tools = asyncio.run(_discover())
+        except RuntimeError:
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                tools = pool.submit(lambda: asyncio.run(_discover())).result(timeout=15)
+
+        for t in tools:
+            _CONFLUENCE_TOOLS[t.name] = t.description or ''
+        print(f'[confluence] MCP tool discovery (fastmcp): found {len(_CONFLUENCE_TOOLS)} tools')
+        for name, desc in _CONFLUENCE_TOOLS.items():
+            print(f'    \u2192 {name}: {desc[:80]}')
+        return
+    except ImportError:
+        print('[confluence] fastmcp not installed \u2014 trying raw HTTP discovery')
+    except Exception as e:
+        print(f'[confluence] fastmcp discovery failed: {e}')
+        print(f'    Trying raw HTTP fallback...')
+
+    # Method B: Raw HTTP JSON-RPC (fallback)
     try:
         headers = {
             'Content-Type': 'application/json',
@@ -220,7 +271,6 @@ def _discover_confluence_mcp_tools():
         r.raise_for_status()
         raw = r.text.strip()
         result = None
-        # Try SSE first
         if raw.startswith('event:') or raw.startswith('data:'):
             for line in raw.split('\n'):
                 line = line.strip()
@@ -239,29 +289,28 @@ def _discover_confluence_mcp_tools():
             tools = result.get('result', result).get('tools', [])
             if isinstance(tools, list):
                 for t in tools:
-                    name = t.get('name', '')
-                    desc = t.get('description', '')
-                    _CONFLUENCE_TOOLS[name] = desc
-                print(f'[confluence] MCP tool discovery: found {len(_CONFLUENCE_TOOLS)} tools')
+                    _CONFLUENCE_TOOLS[t.get('name', '')] = t.get('description', '')
+                print(f'[confluence] MCP tool discovery (raw HTTP): found {len(_CONFLUENCE_TOOLS)} tools')
                 for name, desc in _CONFLUENCE_TOOLS.items():
-                    print(f'    → {name}: {desc[:80]}')
+                    print(f'    \u2192 {name}: {desc[:80]}')
             else:
-                print(f'[confluence] MCP tools/list returned unexpected format: {str(result)[:200]}')
+                print(f'[confluence] tools/list unexpected format: {str(result)[:200]}')
         else:
-            print(f'[confluence] MCP tools/list returned no parseable result')
+            print(f'[confluence] tools/list returned no parseable result')
             print(f'    raw response: {raw[:300]}')
     except Exception as e:
         print(f'[confluence] MCP tool discovery failed: {e}')
         print(f'    Will try default tool names at runtime')
 
 if CONFLUENCE_MCP_URL:
-    print(f"[Release Readiness] ✅ Confluence MCP configured — URL: {CONFLUENCE_MCP_URL}")
+    print(f"[Release Readiness] \u2705 Confluence MCP configured \u2014 URL: {CONFLUENCE_MCP_URL}")
     if CONFLUENCE_EMAIL:
         print(f"    Confluence email: {CONFLUENCE_EMAIL}")
     if CONFLUENCE_PAT_TOKEN:
         print(f"    PAT token: {'*' * 8}...configured")
     if CONFLUENCE_SPACES:
         print(f"    Default spaces: {', '.join(CONFLUENCE_SPACES)}")
+    _discover_confluence_mcp_tools()
 elif CONFLUENCE_BASE_URL:
     print(f"[Release Readiness] ✅ Confluence REST API configured — URL: {CONFLUENCE_BASE_URL}")
 else:
@@ -808,12 +857,79 @@ def _map_issues_to_services(fix_version_issues, service_names):
 
 # ── Confluence MCP Client ─────────────────────────────────────────────────────
 
+def _build_confluence_httpx_factory(auth_headers):
+    """Build an httpx client factory for fastmcp, matching test-confluence.py."""
+    def factory(**kwargs):
+        kwargs.pop('verify', None)
+        incoming = kwargs.pop('headers', {}) or {}
+        merged = {**incoming, **auth_headers}
+        return httpx.AsyncClient(headers=merged, verify=False, **kwargs)
+    return factory
+
+
 def _confluence_mcp_call(tool_name, arguments, timeout=10):
-    """Call a tool on the Confluence MCP server via HTTP.
-    Follows same JSON-RPC pattern as _jira_mcp_call().
+    """Call a tool on the Confluence MCP server.
+    Uses fastmcp SDK (StreamableHttp transport) when available,
+    falls back to raw HTTP JSON-RPC.
     """
     if not CONFLUENCE_MCP_URL:
         return None
+
+    # ── Method A: fastmcp SDK (same protocol as test-confluence.py) ──
+    try:
+        from fastmcp import Client as McpClient
+        from fastmcp.client.transports import StreamableHttpTransport
+
+        mcp_headers = {}
+        if CONFLUENCE_PAT_TOKEN:
+            mcp_headers['Authorization'] = f'Bearer {CONFLUENCE_PAT_TOKEN}'
+        if CONFLUENCE_EMAIL:
+            mcp_headers['X-Confluence-User-Email'] = CONFLUENCE_EMAIL
+
+        transport = StreamableHttpTransport(
+            CONFLUENCE_MCP_URL,
+            httpx_client_factory=_build_confluence_httpx_factory(mcp_headers),
+        )
+
+        async def _call():
+            async with McpClient(transport) as mcp:
+                result = await mcp.call_tool(tool_name, arguments)
+                return result
+
+        try:
+            raw_result = asyncio.run(_call())
+        except RuntimeError:
+            # Event loop already running (gevent) — use thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                raw_result = pool.submit(lambda: asyncio.run(_call())).result(timeout=timeout)
+
+        # Extract text from MCP result (same as test-confluence.py extract_tool_payload)
+        if isinstance(raw_result, dict):
+            return json.dumps(raw_result)
+        structured = getattr(raw_result, 'structured_content', None)
+        if isinstance(structured, dict):
+            return json.dumps(structured)
+        content = getattr(raw_result, 'content', None)
+        if isinstance(content, list):
+            texts = []
+            for item in content:
+                text = getattr(item, 'text', None)
+                if isinstance(text, str):
+                    texts.append(text)
+            if texts:
+                return '\n'.join(texts)
+        if raw_result is not None:
+            return str(raw_result)
+        return None
+
+    except ImportError:
+        pass  # fastmcp not installed, fall through to raw HTTP
+    except Exception as e:
+        print(f'[Confluence MCP] fastmcp error calling {tool_name}: {e}')
+        # Fall through to raw HTTP as backup
+
+    # ── Method B: Raw HTTP JSON-RPC (fallback if fastmcp not installed) ──
     try:
         headers = {
             'Content-Type': 'application/json',
@@ -839,7 +955,7 @@ def _confluence_mcp_call(tool_name, arguments, timeout=10):
                              timeout=timeout, verify=SSL_VERIFY)
         else:
             r = requests.post(CONFLUENCE_MCP_URL, json=payload, headers=headers,
-                             timeout=timeout, verify=SSL_VERIFY)
+                              timeout=timeout, verify=SSL_VERIFY)
         r.raise_for_status()
 
         content_type = r.headers.get('Content-Type', '')
