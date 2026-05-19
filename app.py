@@ -194,6 +194,66 @@ if not JIRA_MCP_URL and not JIRA_BASE_URL:
     print("    Set JIRA_BASE_URL + JIRA_EMAIL + JIRA_PAT_TOKEN for direct REST API mode")
 
 # Print Confluence config status at startup
+_CONFLUENCE_TOOLS = {}  # Discovered tool names from MCP server
+
+def _discover_confluence_mcp_tools():
+    """Call tools/list on the MCP server to discover available tool names."""
+    global _CONFLUENCE_TOOLS
+    if not CONFLUENCE_MCP_URL:
+        return
+    try:
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
+        }
+        if CONFLUENCE_PAT_TOKEN:
+            headers['Authorization'] = f'Bearer {CONFLUENCE_PAT_TOKEN}'
+        payload = {
+            'jsonrpc': '2.0',
+            'id': str(uuid.uuid4()),
+            'method': 'tools/list',
+            'params': {}
+        }
+        http_session = gh_http if PROXY_URL else requests
+        r = http_session.post(CONFLUENCE_MCP_URL, json=payload, headers=headers,
+                              timeout=10, verify=SSL_VERIFY)
+        r.raise_for_status()
+        raw = r.text.strip()
+        result = None
+        # Try SSE first
+        if raw.startswith('event:') or raw.startswith('data:'):
+            for line in raw.split('\n'):
+                line = line.strip()
+                if line.startswith('data:'):
+                    try:
+                        result = json.loads(line[5:].strip())
+                    except json.JSONDecodeError:
+                        continue
+        else:
+            try:
+                result = json.loads(raw)
+            except json.JSONDecodeError:
+                pass
+
+        if result:
+            tools = result.get('result', result).get('tools', [])
+            if isinstance(tools, list):
+                for t in tools:
+                    name = t.get('name', '')
+                    desc = t.get('description', '')
+                    _CONFLUENCE_TOOLS[name] = desc
+                print(f'[confluence] MCP tool discovery: found {len(_CONFLUENCE_TOOLS)} tools')
+                for name, desc in _CONFLUENCE_TOOLS.items():
+                    print(f'    → {name}: {desc[:80]}')
+            else:
+                print(f'[confluence] MCP tools/list returned unexpected format: {str(result)[:200]}')
+        else:
+            print(f'[confluence] MCP tools/list returned no parseable result')
+            print(f'    raw response: {raw[:300]}')
+    except Exception as e:
+        print(f'[confluence] MCP tool discovery failed: {e}')
+        print(f'    Will try default tool names at runtime')
+
 if CONFLUENCE_MCP_URL:
     print(f"[Release Readiness] ✅ Confluence MCP configured — URL: {CONFLUENCE_MCP_URL}")
     if CONFLUENCE_EMAIL:
@@ -865,17 +925,39 @@ def _confluence_search(query, space_key=None, max_results=10):
     # Method 1: MCP server
     if CONFLUENCE_MCP_URL:
         print(f'[confluence] Searching via MCP: "{query}"')
-        for tool_name in ['confluence_search', 'search_confluence', 'search_pages', 'confluence_search_pages']:
+        # Use discovered tools if available, otherwise fall back to defaults
+        if _CONFLUENCE_TOOLS:
+            # Find search-related tools from discovered list
+            search_tools = [name for name in _CONFLUENCE_TOOLS
+                          if 'search' in name.lower() or 'find' in name.lower() or 'query' in name.lower()]
+            if not search_tools:
+                # If no search tool found, try all discovered tools
+                search_tools = list(_CONFLUENCE_TOOLS.keys())
+            print(f'[confluence] Using discovered tools: {search_tools}')
+        else:
+            search_tools = ['confluence_search', 'search_confluence', 'search_pages', 'confluence_search_pages']
+
+        mcp_timed_out = False
+        for tool_name in search_tools:
+            if mcp_timed_out:
+                print(f'[confluence] Skipping MCP tool {tool_name} — MCP already timed out')
+                break
             raw = _confluence_mcp_call(tool_name, {
                 'query': query,
                 'space_key': space_key or '',
                 'max_results': max_results
             }, timeout=8)
+            if raw is None:
+                mcp_timed_out = True
+                continue
             if raw:
                 try:
                     # raw from _confluence_mcp_call may already be extracted text (not JSON)
                     if isinstance(raw, str):
                         raw_stripped = raw.strip()
+                        # Log first 200 chars on first attempt for debugging
+                        if tool_name == search_tools[0]:
+                            print(f'[confluence] MCP raw response preview: {raw_stripped[:200]}')
                         # Handle NDJSON (multiple JSON lines)
                         if '\n' in raw_stripped and raw_stripped.startswith('{'):
                             lines = [l.strip() for l in raw_stripped.split('\n') if l.strip()]
@@ -896,6 +978,7 @@ def _confluence_search(query, space_key=None, max_results=10):
                             except json.JSONDecodeError:
                                 # Not JSON — treat as plain text, skip to next tool
                                 print(f'[confluence] MCP response from {tool_name} is not JSON, trying next tool')
+                                print(f'[confluence]   response was: {raw_stripped[:200]}')
                                 continue
                     else:
                         data = raw
@@ -981,7 +1064,15 @@ def _confluence_get_page(page_id):
 
     # MCP
     if CONFLUENCE_MCP_URL:
-        for tool_name in ['confluence_get_page', 'get_confluence_page', 'get_page', 'confluence_get_page_content']:
+        # Use discovered tools if available
+        if _CONFLUENCE_TOOLS:
+            page_tools = [name for name in _CONFLUENCE_TOOLS
+                         if 'page' in name.lower() or 'get' in name.lower() or 'content' in name.lower()]
+            if not page_tools:
+                page_tools = list(_CONFLUENCE_TOOLS.keys())
+        else:
+            page_tools = ['confluence_get_page', 'get_confluence_page', 'get_page', 'confluence_get_page_content']
+        for tool_name in page_tools:
             raw = _confluence_mcp_call(tool_name, {'page_id': page_id}, timeout=10)
             if raw:
                 try:
@@ -2885,12 +2976,16 @@ def api_confluence_by_labels():
 
 @app.route('/api/confluence/status')
 def api_confluence_status():
-    """Check Confluence integration status."""
+    rediscover = request.args.get('rediscover', '')
+    if rediscover:
+        _discover_confluence_mcp_tools()
     return jsonify({
         'configured': bool(CONFLUENCE_MCP_URL or CONFLUENCE_BASE_URL),
         'mcp_url': bool(CONFLUENCE_MCP_URL),
         'rest_url': bool(CONFLUENCE_BASE_URL),
         'spaces': CONFLUENCE_SPACES,
+        'discovered_tools': _CONFLUENCE_TOOLS,
+        'discovered_count': len(_CONFLUENCE_TOOLS),
     })
 
 

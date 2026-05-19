@@ -44,16 +44,16 @@ MOCK_SERVICE_MAP = {s['name']: s for s in MOCK_SERVICES}
 
 # ── Custom components (non-K8s: Spark/PySpark on Linux servers) ───────────────
 MOCK_CUSTOM_COMPONENTS = [
-    {"name": "ingestion-pipeline",       "type": "Spark",   "description": "Main data ingestion from source systems"},
-    {"name": "etl-transformer",          "type": "PySpark", "description": "Data transformation and enrichment"},
-    {"name": "data-validator",           "type": "PySpark", "description": "Data quality validation rules"},
-    {"name": "report-aggregator",        "type": "Spark",   "description": "Aggregation jobs for reporting"},
-    {"name": "event-stream-processor",   "type": "Spark",   "description": "Real-time event stream processing"},
-    {"name": "batch-reconciler",         "type": "PySpark", "description": "Batch reconciliation between systems"},
-    {"name": "data-archiver",            "type": "PySpark", "description": "Historical data archival jobs"},
-    {"name": "ml-feature-pipeline",      "type": "PySpark", "description": "ML feature extraction pipeline"},
-    {"name": "audit-log-processor",      "type": "Spark",   "description": "Audit log processing and indexing"},
-    {"name": "schema-migration-runner",  "type": "PySpark", "description": "Database schema migration runner"},
+    {"name": "ingestion-pipeline",       "type": "Spark",   "description": "Main data ingestion from source systems",  "artifactory_path": "libs-release/com/company/ingestion-pipeline"},
+    {"name": "etl-transformer",          "type": "PySpark", "description": "Data transformation and enrichment",       "artifactory_path": "libs-release/com/company/etl-transformer"},
+    {"name": "data-validator",           "type": "PySpark", "description": "Data quality validation rules",            "artifactory_path": "libs-release/com/company/data-validator"},
+    {"name": "report-aggregator",        "type": "Spark",   "description": "Aggregation jobs for reporting",           "artifactory_path": "libs-release/com/company/report-aggregator"},
+    {"name": "event-stream-processor",   "type": "Spark",   "description": "Real-time event stream processing",       "artifactory_path": "libs-release/com/company/event-stream-processor"},
+    {"name": "batch-reconciler",         "type": "PySpark", "description": "Batch reconciliation between systems",     "artifactory_path": "libs-release/com/company/batch-reconciler"},
+    {"name": "data-archiver",            "type": "PySpark", "description": "Historical data archival jobs",            "artifactory_path": "libs-release/com/company/data-archiver"},
+    {"name": "ml-feature-pipeline",      "type": "PySpark", "description": "ML feature extraction pipeline",          "artifactory_path": "libs-release/com/company/ml-feature-pipeline"},
+    {"name": "audit-log-processor",      "type": "Spark",   "description": "Audit log processing and indexing",       "artifactory_path": "libs-release/com/company/audit-log-processor"},
+    {"name": "schema-migration-runner",  "type": "PySpark", "description": "Database schema migration runner",        "artifactory_path": "libs-release/com/company/schema-migration-runner"},
 ]
 
 MOCK_CUSTOM_MAP = {c['name']: c for c in MOCK_CUSTOM_COMPONENTS}
@@ -967,6 +967,96 @@ def release_exceptions():
         'by_requester': by_req, 'by_approver': by_app,
         'release_date': board.get('release_date')
     })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Artifactory Versions (Mock)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _mock_artifactory_versions(component_name):
+    """Generate realistic mock Artifactory versions for a component."""
+    import hashlib
+    # Use component name as seed for deterministic but varied versions
+    seed = int(hashlib.md5(component_name.encode()).hexdigest()[:8], 16)
+    now = datetime.datetime.now()
+    versions = []
+    major = 2 + (seed % 3)
+    minor = 8 + (seed % 5)
+    for i in range(12):
+        patch = 12 - i + (seed % 3)
+        ver = f'{major}.{minor}.{patch}'
+        days_ago = i * 7 + (seed % 4)
+        date = (now - datetime.timedelta(days=days_ago)).strftime('%Y-%m-%dT%H:%M:%S')
+        size_mb = round(15 + (seed % 40) + random.uniform(-2, 2), 1)
+        if i == 0:
+            freshness = 'latest'
+        elif i < 3:
+            freshness = 'recent'
+        elif i < 6:
+            freshness = 'aging'
+        else:
+            freshness = 'old'
+        versions.append({
+            'version': ver,
+            'date': date,
+            'size_mb': size_mb,
+            'freshness': freshness,
+            'download_count': max(1, 150 - (i * 15) + random.randint(-5, 5)),
+            'path': f'libs-release/com/company/{component_name}/{ver}/{component_name}-{ver}.jar'
+        })
+    return versions
+
+@app.route('/api/artifactory/versions/<component_name>')
+def get_artifactory_versions(component_name):
+    """Fetch available versions from Artifactory for a custom component (mock)."""
+    comp = MOCK_CUSTOM_MAP.get(component_name)
+    if not comp:
+        return jsonify({'error': f'Component {component_name} not found'}), 404
+
+    art_path = comp.get('artifactory_path', '')
+    if not art_path:
+        return jsonify({
+            'component': component_name,
+            'artifactory_configured': False,
+            'message': 'No Artifactory path configured for this component',
+            'versions': []
+        })
+
+    versions = _mock_artifactory_versions(component_name)
+    latest = versions[0] if versions else None
+
+    return jsonify({
+        'component': component_name,
+        'artifactory_configured': True,
+        'artifactory_path': art_path,
+        'latest_version': latest['version'] if latest else None,
+        'latest_date': latest['date'] if latest else None,
+        'freshness': latest['freshness'] if latest else None,
+        'versions': versions
+    })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Async Release Notes Job (Mock)
+# ══════════════════════════════════════════════════════════════════════════════
+_release_notes_jobs = {}
+
+@app.route('/api/ai/release_notes/<job_id>')
+def release_notes_status(job_id):
+    """Poll for async release notes generation status."""
+    job = _release_notes_jobs.get(job_id)
+    if not job:
+        # In mock mode, return a synthetic 'done' response if job not found
+        # This handles cases where the frontend polls before the job is registered
+        return jsonify({'status': 'done', 'notes': '(Mock release notes — job expired)'})
+    if job['status'] == 'running':
+        return jsonify({'status': 'running'})
+    elif job['status'] == 'error':
+        return jsonify({'status': 'error', 'error': job['error']}), 500
+    else:
+        result = {k: v for k, v in job.items() if k != 'status'}
+        result['status'] = 'done'
+        return jsonify(result)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
