@@ -1041,17 +1041,23 @@ def _confluence_search(query, space_key=None, max_results=10):
     # Method 1: MCP server
     if CONFLUENCE_MCP_URL:
         print(f'[confluence] Searching via MCP: "{query}"')
-        # Use discovered tools if available, otherwise fall back to defaults
-        if _CONFLUENCE_TOOLS:
-            # Find search-related tools from discovered list
+        # Build CQL query (the MCP server only accepts 'cql' and 'limit')
+        cql_parts = [f'type=page AND text ~ "{query}"']
+        if space_key:
+            cql_parts.insert(0, f'space="{space_key}"')
+        cql = ' AND '.join(cql_parts) + ' ORDER BY lastModified DESC'
+
+        # Use discovered tools — only pick 'confluence_search' (not confluence_search_user)
+        if _CONFLUENCE_TOOLS and 'confluence_search' in _CONFLUENCE_TOOLS:
+            search_tools = ['confluence_search']
+        elif _CONFLUENCE_TOOLS:
             search_tools = [name for name in _CONFLUENCE_TOOLS
-                          if 'search' in name.lower() or 'find' in name.lower() or 'query' in name.lower()]
+                          if name == 'confluence_search' or (name.endswith('_search') and 'user' not in name)]
             if not search_tools:
-                # If no search tool found, try all discovered tools
-                search_tools = list(_CONFLUENCE_TOOLS.keys())
-            print(f'[confluence] Using discovered tools: {search_tools}')
+                search_tools = ['confluence_search']
         else:
-            search_tools = ['confluence_search', 'search_confluence', 'search_pages', 'confluence_search_pages']
+            search_tools = ['confluence_search']
+        print(f'[confluence] Using tool: {search_tools[0]}, CQL: {cql}')
 
         mcp_timed_out = False
         for tool_name in search_tools:
@@ -1059,9 +1065,8 @@ def _confluence_search(query, space_key=None, max_results=10):
                 print(f'[confluence] Skipping MCP tool {tool_name} — MCP already timed out')
                 break
             raw = _confluence_mcp_call(tool_name, {
-                'query': query,
-                'space_key': space_key or '',
-                'max_results': max_results
+                'cql': cql,
+                'limit': max_results
             }, timeout=8)
             if raw is None:
                 mcp_timed_out = True
@@ -1181,15 +1186,21 @@ def _confluence_get_page(page_id):
     # MCP
     if CONFLUENCE_MCP_URL:
         # Use discovered tools if available
-        if _CONFLUENCE_TOOLS:
+        # Use the exact tool name from discovery
+        if _CONFLUENCE_TOOLS and 'confluence_get_page' in _CONFLUENCE_TOOLS:
+            page_tools = ['confluence_get_page']
+        elif _CONFLUENCE_TOOLS:
             page_tools = [name for name in _CONFLUENCE_TOOLS
-                         if 'page' in name.lower() or 'get' in name.lower() or 'content' in name.lower()]
+                         if name.startswith('confluence_get_page') and 'children' not in name]
             if not page_tools:
-                page_tools = list(_CONFLUENCE_TOOLS.keys())
+                page_tools = ['confluence_get_page']
         else:
-            page_tools = ['confluence_get_page', 'get_confluence_page', 'get_page', 'confluence_get_page_content']
+            page_tools = ['confluence_get_page']
         for tool_name in page_tools:
+            # Try both 'page_id' and 'pageId' since different servers use different conventions
             raw = _confluence_mcp_call(tool_name, {'page_id': page_id}, timeout=10)
+            if raw is None:
+                raw = _confluence_mcp_call(tool_name, {'pageId': page_id}, timeout=10)
             if raw:
                 try:
                     if isinstance(raw, str):
@@ -3060,10 +3071,14 @@ def api_confluence_by_labels():
     if not labels:
         return jsonify({'results': [], 'error': 'No labels provided'}), 400
 
-    # Try MCP first
+    # Try MCP first — use confluence_search with CQL label= syntax
     if CONFLUENCE_MCP_URL:
-        for tool_name in ['confluence_search_by_label', 'search_by_label', 'confluence_label_search']:
-            raw = _confluence_mcp_call(tool_name, {'labels': labels, 'space_key': space or ''})
+        label_cql_parts = ' AND '.join([f'label="{l}"' for l in labels])
+        label_cql = f'type=page AND {label_cql_parts}'
+        if space:
+            label_cql += f' AND space="{space}"'
+        for tool_name in ['confluence_search']:
+            raw = _confluence_mcp_call(tool_name, {'cql': label_cql, 'limit': 20})
             if raw:
                 try:
                     data_parsed = json.loads(raw) if isinstance(raw, str) else raw
