@@ -1165,15 +1165,16 @@ def _confluence_search(query, space_key=None, max_results=10):
                     print(f'[confluence] MCP parse error ({tool_name}): {e}')
                     continue
 
-        # If MCP was configured and we attempted it, don't fall through to REST
-        # (REST typically times out behind proxy and returns HTML error pages)
-        if CONFLUENCE_MCP_URL:
-            if results:
-                return results
-            print('[confluence] MCP returned no results — returning empty (skipping REST to avoid timeout)')
-            _cache_set(cache_key, results)
+        # MCP was configured and attempted — always return here.
+        # Do NOT fall through to REST API (it times out behind proxy
+        # and returns HTML error pages, causing "unexpected token '<'" in UI).
+        if results:
             return results
+        print('[confluence] MCP returned no results — returning empty (skipping REST to avoid timeout)')
+        _cache_set(cache_key, results)
+        return results
 
+    # REST API path — only reached when CONFLUENCE_MCP_URL is NOT set
     if CONFLUENCE_BASE_URL:
         print(f'[confluence] Searching via REST API: "{query}"')
         cql = f'text ~ "{query}" AND type = "page"'
@@ -1289,7 +1290,17 @@ def _confluence_get_page(page_id):
                 except Exception as e:
                     print(f'[confluence] MCP page parse error: {e}')
 
-    # REST fallback
+        # MCP was configured and attempted — return whatever we have.
+        # Do NOT fall through to REST API (it times out behind proxy
+        # and returns HTML, causing "unexpected token '<'" in the UI).
+        if page:
+            print(f'[confluence] MCP get_page succeeded for {page_id}: {page.get("title", "?")}')
+            _cache_set(cache_key, page)
+        else:
+            print(f'[confluence] MCP get_page returned no usable data for {page_id} — skipping REST to avoid timeout')
+        return page
+
+    # REST fallback — only reached when CONFLUENCE_MCP_URL is NOT set
     if CONFLUENCE_BASE_URL:
         try:
             url = f'{CONFLUENCE_BASE_URL}/rest/api/content/{page_id}'
@@ -3037,40 +3048,41 @@ def fetch_jira_details():
 @app.route('/api/confluence/search', methods=['POST'])
 def api_confluence_search():
     """Search Confluence and optionally generate AI summary."""
-    data = request.json or {}
-    query = data.get('query', '').strip()
-    space = data.get('space_key', '').strip() or None
-    ai_summary = data.get('ai_summary', True)
+    try:
+        data = request.json or {}
+        query = data.get('query', '').strip()
+        space = data.get('space_key', '').strip() or None
+        ai_summary = data.get('ai_summary', True)
 
-    if not query:
-        return jsonify({'results': [], 'ai_summary': None, 'error': 'No query provided'}), 400
+        if not query:
+            return jsonify({'results': [], 'ai_summary': None, 'error': 'No query provided'}), 400
 
-    # Use CONFLUENCE_DEFAULT_SPACES as default if user didn't specify a space
-    if not space and CONFLUENCE_SPACES:
-        space = CONFLUENCE_SPACES[0]  # Use first configured default space
-        print(f'[confluence] No space specified by user, using default: {space}')
+        # Use CONFLUENCE_DEFAULT_SPACES as default if user didn't specify a space
+        if not space and CONFLUENCE_SPACES:
+            space = CONFLUENCE_SPACES[0]  # Use first configured default space
+            print(f'[confluence] No space specified by user, using default: {space}')
 
-    if not CONFLUENCE_MCP_URL and not CONFLUENCE_BASE_URL:
-        return jsonify({'results': [], 'ai_summary': None,
-                       'configured': False,
-                       'error': 'Confluence not configured. Set CONFLUENCE_MCP_URL or CONFLUENCE_BASE_URL.'})
+        if not CONFLUENCE_MCP_URL and not CONFLUENCE_BASE_URL:
+            return jsonify({'results': [], 'ai_summary': None,
+                           'configured': False,
+                           'error': 'Confluence not configured. Set CONFLUENCE_MCP_URL or CONFLUENCE_BASE_URL.'})
 
-    results = _confluence_search(query, space, max_results=10)
+        results = _confluence_search(query, space, max_results=10)
 
-    # AI summarization
-    summary = None
-    if ai_summary and results:
-        try:
-            pages_text = []
-            for r in results[:3]:
-                page = _confluence_get_page(r['id'])
-                if page and page.get('body_text'):
-                    pages_text.append(f"## {page['title']}\n{page['body_text'][:2000]}")
-                elif r.get('excerpt'):
-                    pages_text.append(f"## {r['title']}\n{r['excerpt']}")
+        # AI summarization
+        summary = None
+        if ai_summary and results:
+            try:
+                pages_text = []
+                for r in results[:3]:
+                    page = _confluence_get_page(r['id'])
+                    if page and page.get('body_text'):
+                        pages_text.append(f"## {page['title']}\n{page['body_text'][:2000]}")
+                    elif r.get('excerpt'):
+                        pages_text.append(f"## {r['title']}\n{r['excerpt']}")
 
-            if pages_text:
-                prompt = f"""Based on these Confluence documentation pages from the organization's wiki, answer the user's question concisely and accurately.
+                if pages_text:
+                    prompt = f"""Based on these Confluence documentation pages from the organization's wiki, answer the user's question concisely and accurately.
 
 User Question: {query}
 
@@ -3084,19 +3096,23 @@ Instructions:
 - Flag any warnings, caveats, or prerequisites.
 - Use markdown formatting (bold, lists, code blocks) for readability.
 - If the pages don't contain enough information to answer fully, say what's missing."""
-                response = gemini_generate_with_retry(prompt)
-                if response and response.text:
-                    summary = response.text
-        except Exception as e:
-            print(f'[confluence] AI summary error: {e}')
+                    response = gemini_generate_with_retry(prompt)
+                    if response and response.text:
+                        summary = response.text
+            except Exception as e:
+                print(f'[confluence] AI summary error: {e}')
 
-    return jsonify({
-        'results': results,
-        'ai_summary': summary,
-        'query': query,
-        'total': len(results),
-        'configured': True
-    })
+        return jsonify({
+            'results': results,
+            'ai_summary': summary,
+            'query': query,
+            'total': len(results),
+            'configured': True
+        })
+    except Exception as e:
+        print(f'[confluence] Search endpoint error: {e}')
+        return jsonify({'results': [], 'ai_summary': None, 'error': str(e),
+                       'configured': True}), 500
 
 
 @app.route('/api/confluence/page/<page_id>')
