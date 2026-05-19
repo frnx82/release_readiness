@@ -57,7 +57,7 @@ JIRA_PAT_TOKEN        = os.getenv('JIRA_PAT_TOKEN', '')          # Jira PAT toke
 # Confluence Configuration
 # ══════════════════════════════════════════════════════════════════════════════
 CONFLUENCE_MCP_URL    = os.getenv('CONFLUENCE_MCP_URL', '')        # MCP server endpoint URL
-CONFLUENCE_BASE_URL   = os.getenv('CONFLUENCE_BASE_URL', '')       # e.g. https://your-org.atlassian.net/wiki
+CONFLUENCE_BASE_URL   = os.getenv('CONFLUENCE_BASE_URL', '').rstrip('/')  # e.g. https://your-org.atlassian.net/wiki
 CONFLUENCE_EMAIL      = os.getenv('CONFLUENCE_EMAIL',
                         os.getenv('JIRA_EMAIL', ''))               # Reuse Jira email by default
 CONFLUENCE_PAT_TOKEN  = os.getenv('CONFLUENCE_PAT_TOKEN',
@@ -873,7 +873,33 @@ def _confluence_search(query, space_key=None, max_results=10):
             }, timeout=8)
             if raw:
                 try:
-                    data = json.loads(raw) if isinstance(raw, str) else raw
+                    # raw from _confluence_mcp_call may already be extracted text (not JSON)
+                    if isinstance(raw, str):
+                        raw_stripped = raw.strip()
+                        # Handle NDJSON (multiple JSON lines)
+                        if '\n' in raw_stripped and raw_stripped.startswith('{'):
+                            lines = [l.strip() for l in raw_stripped.split('\n') if l.strip()]
+                            data = None
+                            for line in lines:
+                                try:
+                                    data = json.loads(line)
+                                    if isinstance(data, (dict, list)):
+                                        break
+                                except json.JSONDecodeError:
+                                    continue
+                            if not data:
+                                print(f'[confluence] MCP could not parse NDJSON from {tool_name}')
+                                continue
+                        else:
+                            try:
+                                data = json.loads(raw_stripped)
+                            except json.JSONDecodeError:
+                                # Not JSON — treat as plain text, skip to next tool
+                                print(f'[confluence] MCP response from {tool_name} is not JSON, trying next tool')
+                                continue
+                    else:
+                        data = raw
+
                     items = data if isinstance(data, list) else data.get('results', data.get('pages', []))
                     if isinstance(items, list) and items:
                         for item in items:
@@ -928,6 +954,15 @@ def _confluence_search(query, space_key=None, max_results=10):
                                item.get('metadata', {}).get('labels', {}).get('results', [])],
                 })
             print(f'[confluence] REST API returned {len(results)} pages')
+        except requests.exceptions.SSLError as e:
+            print(f'[confluence] REST API SSL error: {e}')
+            print(f'[confluence]   → If using self-signed certs, set SSL_VERIFY=false')
+        except requests.exceptions.ConnectionError as e:
+            print(f'[confluence] REST API connection error: {e}')
+            print(f'[confluence]   → Check: is {CONFLUENCE_BASE_URL} reachable from this pod?')
+            print(f'[confluence]   → If behind a proxy, set PROXY_URL')
+        except requests.exceptions.Timeout:
+            print(f'[confluence] REST API timeout (>15s)')
         except Exception as e:
             print(f'[confluence] REST API search error: {e}')
 
@@ -950,7 +985,28 @@ def _confluence_get_page(page_id):
             raw = _confluence_mcp_call(tool_name, {'page_id': page_id}, timeout=10)
             if raw:
                 try:
-                    data = json.loads(raw) if isinstance(raw, str) else raw
+                    if isinstance(raw, str):
+                        raw_stripped = raw.strip()
+                        if '\n' in raw_stripped and raw_stripped.startswith('{'):
+                            lines = [l.strip() for l in raw_stripped.split('\n') if l.strip()]
+                            data = None
+                            for line in lines:
+                                try:
+                                    data = json.loads(line)
+                                    if isinstance(data, dict):
+                                        break
+                                except json.JSONDecodeError:
+                                    continue
+                            if not data:
+                                continue
+                        else:
+                            try:
+                                data = json.loads(raw_stripped)
+                            except json.JSONDecodeError:
+                                print(f'[confluence] MCP page response from {tool_name} is not JSON')
+                                continue
+                    else:
+                        data = raw
                     if isinstance(data, dict):
                         page = {
                             'id': str(data.get('id', page_id)),
