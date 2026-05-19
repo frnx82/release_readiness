@@ -62,6 +62,19 @@ async def main():
             tool_names = [t.name for t in tools]
             print("Available tools:", tool_names)
 
+            # Print full tool schemas so you can see the exact parameter names
+            print("\n─── Tool Schemas ───")
+            for t in tools:
+                schema = getattr(t, 'inputSchema', getattr(t, 'input_schema', None))
+                print(f"  {t.name}: {t.description[:80] if t.description else ''}")
+                if schema:
+                    props = schema.get('properties', {}) if isinstance(schema, dict) else {}
+                    for pname, pinfo in props.items():
+                        ptype = pinfo.get('type', '?') if isinstance(pinfo, dict) else '?'
+                        pdesc = pinfo.get('description', '')[:60] if isinstance(pinfo, dict) else ''
+                        print(f"    → {pname} ({ptype}): {pdesc}")
+            print("────────────────────\n")
+
             if "confluence_validate_auth" not in tool_names:
                 raise RuntimeError("confluence_validate_auth tool not found on this MCP endpoint.")
 
@@ -103,14 +116,34 @@ async def main():
             print(f"  Error: {exc}")
 
         # 3. List ALL pages in a specific space
+        #    NOTE: Different MCP servers use different limit param names.
+        #    We send both "limit" and "max_results" — the server ignores unknown params.
         print(f"\n═══ 3. List all pages in space '{SPACE_KEY}' ═══")
         try:
             result = await call_tool(
                 mcp,
                 "confluence_search",
-                {"cql": f'type=page AND space="{SPACE_KEY}" ORDER BY lastModified DESC', "limit": 20},
+                {
+                    "cql": f'type=page AND space="{SPACE_KEY}" ORDER BY lastModified DESC',
+                    "limit": 25,
+                    "max_results": 25,
+                    "maxResults": 25,
+                    "pageSize": 25,
+                },
             )
-            print(json.dumps(result, indent=2)[:500])
+            # Print FULL result (not truncated) to diagnose the 1-page issue
+            print(json.dumps(result, indent=2))
+            # Also show the count
+            if isinstance(result, dict):
+                results_list = result.get('results', result.get('pages', result.get('content', [])))
+                if isinstance(results_list, list):
+                    print(f"\n  → Got {len(results_list)} pages")
+                # Check if there's pagination info
+                size_info = result.get('size', result.get('totalSize', result.get('total', 'N/A')))
+                print(f"  → Total available: {size_info}")
+                start_info = result.get('start', result.get('startAt', 'N/A'))
+                limit_info = result.get('limit', result.get('maxResults', 'N/A'))
+                print(f"  → Start: {start_info}, Limit: {limit_info}")
         except Exception as exc:
             print(f"  Error: {exc}")
 
