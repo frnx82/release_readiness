@@ -1042,9 +1042,15 @@ def _confluence_search(query, space_key=None, max_results=10):
     if CONFLUENCE_MCP_URL:
         print(f'[confluence] Searching via MCP: "{query}"')
         # Build CQL query (the MCP server only accepts 'cql' and 'limit')
+        # Use CONFLUENCE_DEFAULT_SPACES if no explicit space_key provided
+        effective_space = space_key
+        if not effective_space and CONFLUENCE_SPACES:
+            effective_space = CONFLUENCE_SPACES[0]
+            print(f'[confluence] Using default space: {effective_space}')
+
         cql_parts = [f'type=page AND text ~ "{query}"']
-        if space_key:
-            cql_parts.insert(0, f'space="{space_key}"')
+        if effective_space:
+            cql_parts.insert(0, f'space="{effective_space}"')
         cql = ' AND '.join(cql_parts) + ' ORDER BY lastModified DESC'
 
         # Use discovered tools — only pick 'confluence_search' (not confluence_search_user)
@@ -1104,7 +1110,38 @@ def _confluence_search(query, space_key=None, max_results=10):
                     else:
                         data = raw
 
-                    items = data if isinstance(data, list) else data.get('results', data.get('pages', []))
+                    # Log the response shape for debugging
+                    if isinstance(data, dict):
+                        print(f'[confluence] MCP response keys: {list(data.keys())[:10]}')
+                    elif isinstance(data, list):
+                        print(f'[confluence] MCP response is a list with {len(data)} items')
+
+                    # Extract results from various response shapes
+                    items = []
+                    if isinstance(data, list):
+                        items = data
+                    elif isinstance(data, dict):
+                        # Try common result keys
+                        for key in ['results', 'pages', 'content', 'data', 'items', 'value']:
+                            candidate = data.get(key)
+                            if isinstance(candidate, list) and candidate:
+                                items = candidate
+                                print(f'[confluence] Found results under key: {key} ({len(items)} items)')
+                                break
+                            elif isinstance(candidate, dict):
+                                # Nested: data.results or data.data.results
+                                for subkey in ['results', 'pages', 'content']:
+                                    sub = candidate.get(subkey)
+                                    if isinstance(sub, list) and sub:
+                                        items = sub
+                                        print(f'[confluence] Found results under key: {key}.{subkey} ({len(items)} items)')
+                                        break
+                                if items:
+                                    break
+                        # If no list found but dict has 'id' and 'title', treat as single result
+                        if not items and data.get('id') and data.get('title'):
+                            items = [data]
+                            print(f'[confluence] Single page result: {data.get("title")}')
                     if isinstance(items, list) and items:
                         for item in items:
                             if isinstance(item, dict):
@@ -1128,7 +1165,15 @@ def _confluence_search(query, space_key=None, max_results=10):
                     print(f'[confluence] MCP parse error ({tool_name}): {e}')
                     continue
 
-    # Method 2: Direct REST API
+        # If MCP was configured and we attempted it, don't fall through to REST
+        # (REST typically times out behind proxy and returns HTML error pages)
+        if CONFLUENCE_MCP_URL:
+            if results:
+                return results
+            print('[confluence] MCP returned no results — returning empty (skipping REST to avoid timeout)')
+            _cache_set(cache_key, results)
+            return results
+
     if CONFLUENCE_BASE_URL:
         print(f'[confluence] Searching via REST API: "{query}"')
         cql = f'text ~ "{query}" AND type = "page"'
@@ -2999,6 +3044,11 @@ def api_confluence_search():
 
     if not query:
         return jsonify({'results': [], 'ai_summary': None, 'error': 'No query provided'}), 400
+
+    # Use CONFLUENCE_DEFAULT_SPACES as default if user didn't specify a space
+    if not space and CONFLUENCE_SPACES:
+        space = CONFLUENCE_SPACES[0]  # Use first configured default space
+        print(f'[confluence] No space specified by user, using default: {space}')
 
     if not CONFLUENCE_MCP_URL and not CONFLUENCE_BASE_URL:
         return jsonify({'results': [], 'ai_summary': None,
