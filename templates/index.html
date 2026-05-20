@@ -4108,10 +4108,25 @@
                 if (page.error) {
                     previewDiv.innerHTML = `<div style="padding:12px;color:var(--red);font-size:12px">❌ ${page.error}</div>`;
                 } else {
-                    const content = page.body_html || page.body_text || 'No content available';
+                    let content = '';
+                    if (page.body_html) {
+                        content = page.body_html;
+                    } else if (page.body_text) {
+                        // Render plain text as formatted HTML — preserve line breaks and structure
+                        content = '<div style="white-space:pre-wrap;font-family:inherit">' +
+                            _escHtml(page.body_text)
+                                .replace(/\n\n/g, '</p><p style="margin:8px 0">')
+                                .replace(/\n/g, '<br>') +
+                            '</div>';
+                    } else {
+                        content = '<div style="padding:20px;text-align:center;color:var(--text2)">' +
+                            '<div style="font-size:24px;margin-bottom:8px">📄</div>' +
+                            'Page content could not be loaded from Confluence.<br>' +
+                            '<span style="font-size:11px">Try opening the page directly in Confluence using the 🔗 link.</span></div>';
+                    }
                     previewDiv.innerHTML = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:16px;max-height:400px;overflow-y:auto;font-size:13px;line-height:1.7;color:var(--text)">
                         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)">
-                            <strong style="color:var(--accent2)">${_escHtml(page.title)}</strong>
+                            <strong style="color:var(--accent2)">${_escHtml(page.title || 'Untitled')}</strong>
                             <span style="font-size:11px;color:var(--text2)">Space: ${page.space || '?'}</span>
                         </div>
                         <div class="confluence-page-body">${content}</div>

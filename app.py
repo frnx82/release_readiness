@@ -1107,9 +1107,11 @@ def _confluence_search(query, space_key=None, max_results=20):
         else:
             search_tools = ['confluence_search']
 
-        # Build CQL queries — two strategies per space:
+        # Build CQL queries — multiple strategies per space:
         #   Strategy 1: title match (pages with relevant titles surface first)
-        #   Strategy 2: full-text match (catches content that isn't in the title)
+        #   Strategy 2: full-text match (exact keyword phrase in content)
+        #   Strategy 3: individual keyword OR (catches pages mentioning SOME keywords)
+        keyword_list = keywords.split()  # Split for individual keyword strategies
         cql_queries = []
         for sp in spaces_to_search:
             space_clause = f'space="{sp}" AND ' if sp else ''
@@ -1118,11 +1120,21 @@ def _confluence_search(query, space_key=None, max_results=20):
                 'cql': f'{space_clause}type=page AND title ~ "{keywords}" ORDER BY lastModified DESC',
                 'label': f'title~"{keywords}"' + (f' in {sp}' if sp else ''),
             })
-            # Strategy 2: full-text match using extracted keywords
+            # Strategy 2: full-text match using all keywords together
             cql_queries.append({
                 'cql': f'{space_clause}type=page AND text ~ "{keywords}" ORDER BY lastModified DESC',
                 'label': f'text~"{keywords}"' + (f' in {sp}' if sp else ''),
             })
+            # Strategy 3: individual keyword OR — catches pages that mention
+            # some keywords even if they don't appear together as a phrase.
+            # e.g. "openshift egress static ips" → finds page about "openshift migration"
+            # that also mentions "egress" somewhere in the body.
+            if len(keyword_list) > 1:
+                or_clauses = ' OR '.join([f'text ~ "{kw}"' for kw in keyword_list])
+                cql_queries.append({
+                    'cql': f'{space_clause}type=page AND ({or_clauses}) ORDER BY lastModified DESC',
+                    'label': f'text~OR({",".join(keyword_list)})' + (f' in {sp}' if sp else ''),
+                })
 
         seen_ids = set()  # Deduplicate across strategies and spaces
         mcp_timed_out = False
@@ -1413,48 +1425,94 @@ def _confluence_get_page(page_id):
         else:
             page_tools = ['confluence_get_page']
         for tool_name in page_tools:
-            # Try both 'page_id' and 'pageId' since different servers use different conventions
+            # Try multiple parameter names — different MCP servers use different conventions
             raw = _confluence_mcp_call(tool_name, {'page_id': page_id}, timeout=10)
             if raw is None:
                 raw = _confluence_mcp_call(tool_name, {'pageId': page_id}, timeout=10)
+            if raw is None:
+                raw = _confluence_mcp_call(tool_name, {'id': page_id}, timeout=10)
             if raw:
                 try:
+                    data = None
                     if isinstance(raw, str):
                         raw_stripped = raw.strip()
-                        if '\n' in raw_stripped and raw_stripped.startswith('{'):
-                            lines = [l.strip() for l in raw_stripped.split('\n') if l.strip()]
-                            data = None
-                            for line in lines:
+                        print(f'[confluence] MCP page response preview ({tool_name}): {raw_stripped[:200]}')
+                        # Try JSON parse first
+                        if raw_stripped.startswith('{'):
+                            if '\n' in raw_stripped:
+                                lines = [l.strip() for l in raw_stripped.split('\n') if l.strip()]
+                                for line in lines:
+                                    try:
+                                        data = json.loads(line)
+                                        if isinstance(data, dict):
+                                            break
+                                    except json.JSONDecodeError:
+                                        continue
+                            else:
                                 try:
-                                    data = json.loads(line)
-                                    if isinstance(data, dict):
-                                        break
+                                    data = json.loads(raw_stripped)
                                 except json.JSONDecodeError:
-                                    continue
-                            if not data:
-                                continue
-                        else:
+                                    data = None
+                        elif raw_stripped.startswith('['):
                             try:
-                                data = json.loads(raw_stripped)
+                                parsed_list = json.loads(raw_stripped)
+                                if isinstance(parsed_list, list) and parsed_list:
+                                    data = parsed_list[0] if isinstance(parsed_list[0], dict) else None
                             except json.JSONDecodeError:
-                                print(f'[confluence] MCP page response from {tool_name} is not JSON')
-                                continue
+                                data = None
+
+                        # If NOT JSON, treat the raw text as the page content itself
+                        # Many MCP servers return markdown/text directly instead of JSON
+                        if data is None and len(raw_stripped) > 10:
+                            print(f'[confluence] MCP page response is raw text ({len(raw_stripped)} chars) — using as body_text')
+                            page = {
+                                'id': str(page_id),
+                                'title': f'Page {page_id}',
+                                'space': '?',
+                                'body_html': '',
+                                'body_text': raw_stripped[:8000],
+                                'url': '',
+                                'labels': [],
+                                'last_modified': '',
+                                'author': '',
+                            }
+                            _cache_set(cache_key, page)
+                            return page
                     else:
                         data = raw
+
                     if isinstance(data, dict):
+                        # Extract body content — try multiple field names
+                        body_html = (data.get('body_html', '') or
+                                     data.get('body', {}).get('view', {}).get('value', '') if isinstance(data.get('body'), dict) else '' or
+                                     data.get('body', '') if isinstance(data.get('body'), str) else '' or
+                                     data.get('content', ''))
+                        body_text = (data.get('body_text', '') or
+                                     data.get('plainText', '') or
+                                     data.get('body_export', '') or
+                                     (data.get('body', '') if isinstance(data.get('body'), str) else ''))
+                        # If we have body_html but no body_text, strip HTML tags
+                        if body_html and not body_text:
+                            body_text = re.sub(r'<[^>]+>', ' ', body_html)
+                            body_text = re.sub(r'\s+', ' ', body_text).strip()
+
                         page = {
                             'id': str(data.get('id', page_id)),
                             'title': data.get('title', '?'),
                             'space': data.get('space', data.get('spaceKey', '?')),
-                            'body_html': data.get('body_html', data.get('body', data.get('content', ''))),
-                            'body_text': data.get('body_text', data.get('plainText',
-                                         data.get('body_export', data.get('body', '')))),
+                            'body_html': body_html,
+                            'body_text': body_text,
                             'url': data.get('url', data.get('webUrl', '')),
                             'labels': data.get('labels', []),
                             'last_modified': data.get('lastModified', data.get('last_modified', '')),
                             'author': data.get('author', data.get('lastModifiedBy', '')),
                         }
                         if page.get('title') and page['title'] != '?':
+                            _cache_set(cache_key, page)
+                            return page
+                        elif body_html or body_text:
+                            # Page has content but no title — still usable
+                            print(f'[confluence] MCP page has content but no title for {page_id}')
                             _cache_set(cache_key, page)
                             return page
                 except Exception as e:
