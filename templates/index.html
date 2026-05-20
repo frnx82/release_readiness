@@ -4077,8 +4077,8 @@
                         </div>
                     </div>
                     <div style="display:flex;gap:8px;margin-top:10px">
-                        <button class="btn btn-sm" onclick="previewConfluencePage('${page.id}', this)" style="font-size:11px">👁 Preview</button>
-                        ${page.url ? `<a href="${page.url}" target="_blank" class="btn btn-sm" style="font-size:11px;text-decoration:none">🔗 Open in Confluence</a>` : ''}
+                        <button class="btn btn-sm" onclick="previewConfluencePage('${page.id}', this, '${_escHtml(page.url || '')}')" style="font-size:11px">👁 Preview</button>
+                        <a href="${page.url || '#'}" target="_blank" class="btn btn-sm" style="font-size:11px;text-decoration:none">🔗 Open in Confluence</a>
                     </div>
                     <div id="confluence-preview-${page.id}" style="display:none;margin-top:12px"></div>
                 </div>`;
@@ -4087,7 +4087,7 @@
             div.innerHTML = html;
         }
 
-        async function previewConfluencePage(pageId, btn) {
+        async function previewConfluencePage(pageId, btn, pageUrl) {
             const previewDiv = document.getElementById('confluence-preview-' + pageId);
             if (!previewDiv) return;
 
@@ -4101,12 +4101,15 @@
             btn.textContent = '⏳ Loading...';
             btn.disabled = true;
 
+            // Build a fallback link for error messages
+            const confluenceLink = pageUrl ? `<a href="${pageUrl}" target="_blank" style="color:var(--accent);text-decoration:underline">🔗 Open in Confluence</a>` : '';
+
             try {
                 const r = await fetch(`/api/confluence/page/${pageId}`);
                 const page = await r.json();
 
                 if (page.error) {
-                    previewDiv.innerHTML = `<div style="padding:12px;color:var(--red);font-size:12px">❌ ${page.error}</div>`;
+                    previewDiv.innerHTML = `<div style="padding:12px;color:var(--red);font-size:12px">❌ ${page.error}<br>${confluenceLink}</div>`;
                 } else {
                     let content = '';
                     if (page.body_html) {
@@ -4121,8 +4124,10 @@
                     } else {
                         content = '<div style="padding:20px;text-align:center;color:var(--text2)">' +
                             '<div style="font-size:24px;margin-bottom:8px">📄</div>' +
-                            'Page content could not be loaded from Confluence.<br>' +
-                            '<span style="font-size:11px">Try opening the page directly in Confluence using the 🔗 link.</span></div>';
+                            'Page content could not be loaded inline.<br>' +
+                            (confluenceLink ? `<div style="margin-top:8px">${confluenceLink}</div>` :
+                             '<span style="font-size:11px">No Confluence link available.</span>') +
+                            '</div>';
                     }
                     previewDiv.innerHTML = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:16px;max-height:400px;overflow-y:auto;font-size:13px;line-height:1.7;color:var(--text)">
                         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)">
@@ -4134,7 +4139,7 @@
                 }
                 previewDiv.style.display = 'block';
             } catch (e) {
-                previewDiv.innerHTML = `<div style="padding:12px;color:var(--red);font-size:12px">❌ Failed to load page: ${e.message}</div>`;
+                previewDiv.innerHTML = `<div style="padding:12px;color:var(--red);font-size:12px">❌ Failed to load page: ${e.message}<br>${confluenceLink}</div>`;
                 previewDiv.style.display = 'block';
             } finally {
                 btn.textContent = '👁 Hide';

@@ -1349,6 +1349,28 @@ def _confluence_search(query, space_key=None, max_results=20):
         # Do NOT fall through to REST API (it times out behind proxy
         # and returns HTML error pages, causing "unexpected token '<'" in UI).
         if results:
+            # ── Ensure every result has a working Confluence URL ──────
+            # MCP search results often come without a URL, or with a relative path.
+            # Construct a direct link from CONFLUENCE_BASE_URL + page ID.
+            for r in results:
+                page_url = r.get('url', '')
+                if not page_url or page_url == '?':
+                    # Build URL from base URL + page ID (works for Confluence Cloud and Server)
+                    if CONFLUENCE_BASE_URL:
+                        r['url'] = f"{CONFLUENCE_BASE_URL}/pages/viewpage.action?pageId={r['id']}"
+                    elif CONFLUENCE_MCP_URL:
+                        # Extract base from MCP URL (e.g. https://confluence.company.com/...)
+                        from urllib.parse import urlparse
+                        parsed = urlparse(CONFLUENCE_MCP_URL)
+                        base = f"{parsed.scheme}://{parsed.hostname}"
+                        if parsed.port and parsed.port not in (80, 443):
+                            base += f":{parsed.port}"
+                        r['url'] = f"{base}/pages/viewpage.action?pageId={r['id']}"
+                elif page_url.startswith('/'):
+                    # Relative URL — prepend base URL
+                    if CONFLUENCE_BASE_URL:
+                        r['url'] = f"{CONFLUENCE_BASE_URL}{page_url}"
+
             print(f'[confluence] MCP search complete: {len(results)} unique pages found')
             _cache_set(cache_key, results)
             return results
