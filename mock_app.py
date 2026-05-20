@@ -716,46 +716,174 @@ MOCK_CONFLUENCE_PAGES = [
         'body_html': '<h2>Payment Gateway Integration Guide</h2><h3>Authentication</h3><p>All requests require an OAuth2 Bearer token from the auth-service. Use the <code>payment:write</code> scope for mutations and <code>payment:read</code> for queries.</p><h3>Endpoints</h3><table><tr><th>Method</th><th>Path</th><th>Description</th></tr><tr><td>POST</td><td>/api/v2/payments</td><td>Create a payment</td></tr><tr><td>GET</td><td>/api/v2/payments/{id}</td><td>Get payment status</td></tr><tr><td>POST</td><td>/api/v2/refunds</td><td>Process refund</td></tr><tr><td>GET</td><td>/api/v2/settlements</td><td>List settlements</td></tr></table><h3>Error Handling</h3><p>All errors follow RFC 7807 Problem Details format. Common codes:</p><ul><li><code>402</code> — Insufficient funds</li><li><code>409</code> — Duplicate payment (idempotency key conflict)</li><li><code>429</code> — Rate limited (100 req/min)</li></ul>',
         'body_text': 'Payment Gateway Integration Guide. Authentication: OAuth2 Bearer token, use payment:write for mutations, payment:read for queries. Endpoints: POST /api/v2/payments (create), GET /api/v2/payments/{id} (status), POST /api/v2/refunds (refund), GET /api/v2/settlements (list). Error Handling: RFC 7807 format. 402 Insufficient funds, 409 Duplicate payment, 429 Rate limited (100 req/min).'
     },
+    {
+        'id': '10007',
+        'title': 'Jenkins CI/CD — URLs and Access',
+        'space': 'DEV',
+        'url': 'https://confluence.example.com/display/DEV/Jenkins+CICD+URLs',
+        'excerpt': 'Jenkins server URLs, access setup, and pipeline configuration for all environments.',
+        'last_modified': (datetime.datetime.utcnow() - datetime.timedelta(days=2)).isoformat(),
+        'author': 'DevOps Team',
+        'labels': ['jenkins', 'ci-cd', 'urls', 'devops'],
+        'body_html': '<h2>Jenkins CI/CD — URLs and Access</h2><h3>Jenkins Server URLs</h3><table><tr><th>Environment</th><th>URL</th><th>Purpose</th></tr><tr><td>Production</td><td>https://jenkins.company.com</td><td>Production builds & deployments</td></tr><tr><td>UAT</td><td>https://jenkins-uat.company.com</td><td>UAT/Staging builds</td></tr><tr><td>Dev</td><td>https://jenkins-dev.company.com</td><td>Development & feature branch builds</td></tr></table><h3>Access Setup</h3><ol><li>Request access via IT ServiceDesk ticket (category: CI/CD)</li><li>Use your LDAP credentials to log in</li><li>Contact DevOps team for pipeline admin permissions</li></ol><h3>Key Pipelines</h3><ul><li><strong>build-and-test</strong> — Runs on every PR, executes unit/integration tests</li><li><strong>deploy-uat</strong> — Deploys tagged builds to UAT environment</li><li><strong>deploy-prod</strong> — Production deployment (requires approval gate)</li><li><strong>nightly-regression</strong> — Full regression suite, runs at 2 AM EST</li></ul><h3>API Token</h3><p>To trigger builds via API: <code>curl -X POST https://jenkins.company.com/job/deploy-uat/build --user $USER:$API_TOKEN</code></p>',
+        'body_text': 'Jenkins CI/CD URLs and Access. Jenkins Server URLs: Production: https://jenkins.company.com (production builds and deployments), UAT: https://jenkins-uat.company.com (UAT/Staging builds), Dev: https://jenkins-dev.company.com (development and feature branch builds). Access Setup: 1. Request access via IT ServiceDesk (category: CI/CD). 2. Use LDAP credentials. 3. Contact DevOps for admin permissions. Key Pipelines: build-and-test (PR builds), deploy-uat (UAT deployment), deploy-prod (production, requires approval), nightly-regression (2 AM EST). API Token: curl -X POST https://jenkins.company.com/job/deploy-uat/build --user $USER:$API_TOKEN'
+    },
+    {
+        'id': '10008',
+        'title': 'CI/CD Pipeline Architecture',
+        'space': 'DEV',
+        'url': 'https://confluence.example.com/display/DEV/CICD+Pipeline+Architecture',
+        'excerpt': 'Architecture overview of the CI/CD pipeline including Jenkins, Artifactory, and deployment workflows.',
+        'last_modified': (datetime.datetime.utcnow() - datetime.timedelta(days=12)).isoformat(),
+        'author': 'DevOps Team',
+        'labels': ['ci-cd', 'architecture', 'jenkins', 'artifactory'],
+        'body_html': '<h2>CI/CD Pipeline Architecture</h2><h3>Overview</h3><p>Our CI/CD pipeline is built on Jenkins (https://jenkins.company.com) with Artifactory for artifact storage and Helm for Kubernetes deployments.</p><h3>Pipeline Flow</h3><ol><li>Developer pushes code to GitHub</li><li>Jenkins webhook triggers build-and-test pipeline</li><li>Artifacts published to Artifactory (libs-release)</li><li>Docker image built and pushed to registry.example.com</li><li>Helm chart version bumped and deployed to UAT</li></ol><h3>Configuration</h3><p>Jenkins is configured via Jenkinsfile in each repo root. Shared libraries are in the jenkins-shared-lib repo.</p>',
+        'body_text': 'CI/CD Pipeline Architecture. Overview: Built on Jenkins (https://jenkins.company.com) with Artifactory for artifact storage and Helm for K8s deployments. Pipeline Flow: 1. Push to GitHub. 2. Jenkins webhook triggers build-and-test. 3. Artifacts to Artifactory. 4. Docker image to registry. 5. Helm deploy to UAT. Configuration: Jenkinsfile in repo root, shared libraries in jenkins-shared-lib repo.'
+    },
+    {
+        'id': '10009',
+        'title': 'Monitoring & Alerting Setup',
+        'space': 'OPS',
+        'url': 'https://confluence.example.com/display/OPS/Monitoring+Alerting+Setup',
+        'excerpt': 'Grafana dashboards, Prometheus metrics, and PagerDuty alerting configuration.',
+        'last_modified': (datetime.datetime.utcnow() - datetime.timedelta(days=8)).isoformat(),
+        'author': 'SRE Team',
+        'labels': ['monitoring', 'grafana', 'prometheus', 'alerting'],
+        'body_html': '<h2>Monitoring & Alerting</h2><h3>Dashboards</h3><ul><li>Grafana: https://grafana.company.com</li><li>Kibana: https://kibana.company.com</li></ul><h3>Key Metrics</h3><p>All services expose /metrics endpoint for Prometheus scraping. Key metrics: request_duration_seconds, error_rate, active_connections.</p>',
+        'body_text': 'Monitoring and Alerting. Dashboards: Grafana at https://grafana.company.com, Kibana at https://kibana.company.com. Key Metrics: All services expose /metrics for Prometheus. Key metrics: request_duration_seconds, error_rate, active_connections.'
+    },
 ]
+
+
+# ── Keyword extraction (same as app.py) ───────────────────────────────────────
+_STOP_WORDS = frozenset({
+    'what', 'where', 'when', 'which', 'who', 'whom', 'whose', 'why', 'how',
+    'a', 'an', 'the', 'this', 'that', 'these', 'those',
+    'i', 'me', 'my', 'we', 'our', 'you', 'your', 'he', 'she', 'it', 'they', 'them',
+    'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'do', 'does', 'did', 'doing',
+    'have', 'has', 'had', 'having',
+    'can', 'could', 'will', 'would', 'shall', 'should', 'may', 'might', 'must',
+    'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'about',
+    'and', 'or', 'but', 'not', 'if', 'so', 'as', 'up', 'out',
+    'please', 'tell', 'find', 'get', 'give', 'show', 'need', 'want', 'know',
+})
+
+def _extract_search_keywords(query):
+    """Extract meaningful search keywords from a natural-language question."""
+    tokens = re.findall(r'[a-zA-Z0-9_\-\.]+', query.lower())
+    keywords = [t for t in tokens if t not in _STOP_WORDS and len(t) > 1]
+    if not keywords:
+        keywords = [t for t in tokens if len(t) > 1]
+    return keywords
 
 
 @app.route('/api/confluence/search', methods=['POST'])
 def confluence_search():
-    """Mock: Search Confluence pages."""
+    """Mock: Search Confluence pages with keyword extraction + title-first matching."""
     data = request.json or {}
-    query = data.get('query', '').strip().lower()
+    query = data.get('query', '').strip()
     space_key = data.get('space_key', '').strip().upper()
     ai_summary = data.get('ai_summary', True)
 
     if not query:
         return jsonify({'results': [], 'ai_summary': None, 'error': 'No query provided'}), 400
 
-    # Simple keyword matching
-    results = []
-    for page in MOCK_CONFLUENCE_PAGES:
-        score = 0
-        searchable = f"{page['title']} {page['excerpt']} {' '.join(page['labels'])}".lower()
-        for word in query.split():
-            if word in searchable:
-                score += 1
-            if word in [l.lower() for l in page['labels']]:
-                score += 2  # Label matches weighted higher
-        if score > 0:
-            if not space_key or page['space'] == space_key:
-                results.append({**page, '_score': score})
+    # Extract keywords from natural-language query
+    keywords = _extract_search_keywords(query)
+    print(f'[mock-confluence] Query: "{query}" → keywords: {keywords}')
 
-    # Sort by relevance
-    results.sort(key=lambda x: x['_score'], reverse=True)
+    # Multi-strategy search: title match first (weighted higher), then content match
+    results = []
+    seen_ids = set()
+    for page in MOCK_CONFLUENCE_PAGES:
+        if space_key and page['space'] != space_key:
+            continue
+
+        title_lower = page['title'].lower()
+        content_lower = f"{page['excerpt']} {page.get('body_text', '')} {' '.join(page['labels'])}".lower()
+
+        title_score = 0
+        text_score = 0
+        for kw in keywords:
+            if kw in title_lower:
+                title_score += 5  # Title matches weighted heavily
+            if kw in [l.lower() for l in page['labels']]:
+                title_score += 3  # Label matches also high value
+            if kw in content_lower:
+                text_score += 1  # Content match
+
+        total_score = title_score + text_score
+        if total_score > 0 and page['id'] not in seen_ids:
+            seen_ids.add(page['id'])
+            results.append({**page, '_score': total_score, '_title_score': title_score})
+
+    # Sort by total score (title matches dominate)
+    results.sort(key=lambda x: (x['_title_score'], x['_score']), reverse=True)
     for r in results:
         del r['_score']
+        del r['_title_score']
 
-    # Generate mock AI summary
+    # Strategy 3: Browse ALL pages fallback — if keyword search returned few results,
+    # add remaining pages in the space so AI can scan their titles
+    if len(results) < 5:
+        print(f'[mock-confluence] Only {len(results)} keyword matches — browsing all pages in space')
+        for page in MOCK_CONFLUENCE_PAGES:
+            if space_key and page['space'] != space_key:
+                continue
+            if page['id'] not in seen_ids:
+                seen_ids.add(page['id'])
+                results.append({**page, '_browse_result': True})
+        print(f'[mock-confluence] After browse-all: {len(results)} total pages')
+
+    keyword_results = [r for r in results if not r.get('_browse_result')]
+    browse_results = [r for r in results if r.get('_browse_result')]
+    print(f'[mock-confluence] {len(keyword_results)} keyword matches + {len(browse_results)} browse results')
+
+    # Generate mock AI summary — reads actual page content
     summary = None
     if ai_summary and results:
-        top_titles = [r['title'] for r in results[:3]]
-        summary = f"Based on **{len(results)} matching page{'s' if len(results) != 1 else ''}** in Confluence, here's what I found:\n\n"
+        keyword_titles = [r['title'] for r in keyword_results]
+        browse_titles = [r['title'] for r in browse_results]
 
-        if 'runbook' in query or 'rollback' in query or 'deployment' in query:
+        # Read top 5 pages' body_text for the summary (keyword results first)
+        pages_to_read = keyword_results[:5]
+        if len(pages_to_read) < 5 and browse_results:
+            pages_to_read += browse_results[:5 - len(pages_to_read)]
+        pages_content = []
+        for r in pages_to_read:
+            body = r.get('body_text', r.get('excerpt', ''))
+            if body:
+                pages_content.append(f"Page: {r['title']}\n{body[:3000]}")
+
+        # Build a context-aware summary from actual page content
+        query_lower = query.lower()
+        kw_str = ' '.join(keywords)
+
+        # Show result counts in summary
+        total_found = len(results)
+        summary = f"Based on **{len(keyword_results)} matching page{'s' if len(keyword_results) != 1 else ''}**"
+        if browse_results:
+            summary += f" + **{len(browse_results)} other page{'s' if len(browse_results) != 1 else ''}** in the space"
+        summary += f" in Confluence:\n\n"
+
+        # Look for URLs/specific data in page content matching keywords
+        found_specific = False
+        if 'jenkins' in kw_str and 'url' in kw_str:
+            for r in results:
+                body = r.get('body_text', '')
+                if 'jenkins' in body.lower() and ('http' in body.lower() or 'url' in r['title'].lower()):
+                    summary += f"### 🔗 Jenkins URLs\n\n"
+                    summary += f"From **{r['title']}**:\n\n"
+                    summary += "| Environment | URL |\n|---|---|\n"
+                    summary += "| Production | `https://jenkins.company.com` |\n"
+                    summary += "| UAT | `https://jenkins-uat.company.com` |\n"
+                    summary += "| Dev | `https://jenkins-dev.company.com` |\n\n"
+                    summary += "**Access**: Use LDAP credentials. Request access via IT ServiceDesk (category: CI/CD).\n\n"
+                    summary += "**API**: `curl -X POST https://jenkins.company.com/job/<pipeline>/build --user $USER:$API_TOKEN`\n\n"
+                    found_specific = True
+                    break
+        elif 'runbook' in kw_str or 'rollback' in kw_str or 'deployment' in kw_str:
             summary += "### 📋 Deployment & Rollback Procedure\n\n"
             summary += "1. **Pre-deployment**: Verify all PRs are merged, CI/CD is green, and UAT sign-off is obtained\n"
             summary += "2. **Run database migrations**: `kubectl exec -it billing-db-0 -- /scripts/migrate.sh`\n"
@@ -763,36 +891,52 @@ def confluence_search():
             summary += "4. **Verify health**: Monitor `/actuator/health` for 5 minutes\n"
             summary += "5. **Rollback** (if needed): `kubectl rollout undo deployment/<service-name>`\n\n"
             summary += "> ⚠️ **Warning**: Database migrations cannot be automatically rolled back — contact the DBA team first.\n\n"
-        elif 'troubleshoot' in query:
+            found_specific = True
+        elif 'grafana' in kw_str or 'monitoring' in kw_str:
+            for r in results:
+                if 'monitoring' in r['title'].lower() or 'grafana' in r.get('body_text', '').lower():
+                    summary += f"### 📊 Monitoring URLs\n\n"
+                    summary += f"From **{r['title']}**:\n\n"
+                    summary += "- **Grafana**: `https://grafana.company.com`\n"
+                    summary += "- **Kibana**: `https://kibana.company.com`\n\n"
+                    found_specific = True
+                    break
+        elif 'troubleshoot' in kw_str:
             summary += "### 🔧 Common Issues & Resolutions\n\n"
-            summary += "**Pod CrashLoopBackOff**: Check logs with `kubectl logs <pod> --previous`, verify resource limits and config mounts.\n\n"
-            summary += "**Connection Pool Exhaustion**: Check active connections, scale horizontally, adjust pool size (default: 10, max: 50).\n\n"
-            summary += "**Certificate Expiry**: Check cert dates with openssl, renew via cert-manager by deleting the certificate resource.\n\n"
-        elif 'architecture' in query or 'design' in query:
+            summary += "**Pod CrashLoopBackOff**: Check logs with `kubectl logs <pod> --previous`, verify resource limits.\n\n"
+            summary += "**Connection Pool Exhaustion**: Scale horizontally, adjust pool size (default: 10, max: 50).\n\n"
+            found_specific = True
+        elif 'architecture' in kw_str or 'design' in kw_str:
             summary += "### 🏗️ Architecture Overview\n\n"
-            summary += "The platform uses a **microservices architecture** with the following key services:\n\n"
-            summary += "- **auth-service**: OAuth2 + JWT (Spring Boot), integrates with billing via gRPC\n"
-            summary += "- **payment-gateway**: REST APIs with OAuth2 scopes, RFC 7807 error format\n"
-            summary += "- **billing-service**: Core billing logic with database migrations\n\n"
-        elif 'onboarding' in query:
+            summary += "The platform uses a **microservices architecture** with key services:\n\n"
+            summary += "- **auth-service**: OAuth2 + JWT (Spring Boot)\n"
+            summary += "- **payment-gateway**: REST APIs with OAuth2 scopes\n"
+            summary += "- **billing-service**: Core billing with DB migrations\n\n"
+            found_specific = True
+        elif 'onboarding' in kw_str:
             summary += "### 🎓 Getting Started\n\n"
             summary += "**Day 1**: Request GitHub, Jira/Confluence, and VPN access. Set up 2FA.\n\n"
-            summary += "**Day 1-2**: Install Docker, kubectl, Helm, Node.js 18+. Clone mono-repo and run `make dev-setup`.\n\n"
-            summary += "**Week 1**: Read architecture docs, code review guidelines, and release process documentation.\n\n"
-        elif 'release' in query or 'checklist' in query:
+            summary += "**Day 1-2**: Install Docker, kubectl, Helm, Node.js 18+. Clone mono-repo, run `make dev-setup`.\n\n"
+            found_specific = True
+        elif 'release' in kw_str or 'checklist' in kw_str:
             summary += "### 📋 Release Process\n\n"
-            summary += "**T-2 Days**: Version drift check, AI readiness check, fix version in Jira, release notes\n\n"
-            summary += "**T-1 Day**: Lock board, final UAT smoke tests, stakeholder sign-off, ServiceNow change ticket\n\n"
-            summary += "**Release Day**: Deploy to prod, monitor 30 min, verify endpoints, send announcement\n\n"
-        else:
-            for t in top_titles[:2]:
-                summary += f"- **{t}** — contains relevant information about your query\n"
+            summary += "**T-2 Days**: Version drift check, AI readiness, fix version in Jira\n\n"
+            summary += "**T-1 Day**: Lock board, UAT smoke tests, stakeholder sign-off\n\n"
+            summary += "**Release Day**: Deploy to prod, monitor 30 min, send announcement\n\n"
+            found_specific = True
+
+        if not found_specific:
+            # Generic: show top page titles with excerpts
+            for r in keyword_results[:3] if keyword_results else results[:3]:
+                summary += f"- **{r['title']}** — {r.get('excerpt', '')[:100]}\n"
             summary += "\nClick 👁 Preview on any page card below for the full content.\n"
 
-        summary += f"\n*Sources: {', '.join(top_titles[:3])}*"
+        summary += f"\n*Sources: {', '.join(keyword_titles[:5])}*"
+        if browse_titles:
+            summary += f"\n\n📂 *Other pages in this space: {', '.join(browse_titles[:5])}*"
 
     return jsonify({
-        'results': results[:10],
+        'results': results[:20],
         'ai_summary': summary,
         'query': query,
         'total': len(results),
@@ -989,18 +1133,18 @@ def _mock_artifactory_versions(component_name):
         date = (now - datetime.timedelta(days=days_ago)).strftime('%Y-%m-%dT%H:%M:%S')
         size_mb = round(15 + (seed % 40) + random.uniform(-2, 2), 1)
         if i == 0:
-            freshness = 'latest'
+            freshness = 'current_week'
         elif i < 3:
-            freshness = 'recent'
-        elif i < 6:
-            freshness = 'aging'
+            freshness = 'previous_week'
         else:
-            freshness = 'old'
+            freshness = 'stale'
         versions.append({
             'version': ver,
             'date': date,
             'size_mb': size_mb,
             'freshness': freshness,
+            'is_latest': i == 0,  # First version (newest by date) is latest
+            '_date_source': 'folder_api',
             'download_count': max(1, 150 - (i * 15) + random.randint(-5, 5)),
             'path': f'libs-release/com/company/{component_name}/{ver}/{component_name}-{ver}.jar'
         })
@@ -1023,6 +1167,7 @@ def get_artifactory_versions(component_name):
         })
 
     versions = _mock_artifactory_versions(component_name)
+    # Latest is the first version (sorted by upload date, newest first)
     latest = versions[0] if versions else None
 
     return jsonify({
@@ -1031,6 +1176,7 @@ def get_artifactory_versions(component_name):
         'artifactory_path': art_path,
         'latest_version': latest['version'] if latest else None,
         'latest_date': latest['date'] if latest else None,
+        'latest_by_upload_date': True if latest else False,
         'freshness': latest['freshness'] if latest else None,
         'versions': versions
     })

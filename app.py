@@ -1026,8 +1026,51 @@ def _confluence_auth_headers():
     return headers
 
 
-def _confluence_search(query, space_key=None, max_results=10):
+_STOP_WORDS = frozenset({
+    # Question words
+    'what', 'where', 'when', 'which', 'who', 'whom', 'whose', 'why', 'how',
+    # Articles / determiners
+    'a', 'an', 'the', 'this', 'that', 'these', 'those',
+    # Pronouns
+    'i', 'me', 'my', 'we', 'our', 'you', 'your', 'he', 'she', 'it', 'they', 'them',
+    # Common verbs / auxiliaries
+    'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'do', 'does', 'did', 'doing',
+    'have', 'has', 'had', 'having',
+    'can', 'could', 'will', 'would', 'shall', 'should', 'may', 'might', 'must',
+    # Prepositions / conjunctions
+    'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'about',
+    'and', 'or', 'but', 'not', 'if', 'so', 'as', 'up', 'out',
+    # Filler
+    'please', 'tell', 'find', 'get', 'give', 'show', 'need', 'want', 'know',
+})
+
+
+def _extract_search_keywords(query):
+    """Extract meaningful search keywords from a natural-language question.
+
+    Strips stop words, question words, and filler so that CQL text/title
+    search gets targeted terms instead of a whole sentence.
+
+    Examples:
+        'what is the jenkins url' → 'jenkins url'
+        'how do I deploy to production' → 'deploy production'
+        'where can I find the runbook for payments' → 'runbook payments'
+    """
+    # Tokenise, lowercase, strip punctuation
+    tokens = re.findall(r'[a-zA-Z0-9_\-\.]+', query.lower())
+    keywords = [t for t in tokens if t not in _STOP_WORDS and len(t) > 1]
+    if not keywords:
+        # Fallback: use all alphanumeric tokens (user query was entirely stop words)
+        keywords = [t for t in tokens if len(t) > 1]
+    return ' '.join(keywords)
+
+
+def _confluence_search(query, space_key=None, max_results=20):
     """Search Confluence via MCP, with REST API fallback.
+
+    Uses multi-strategy search: title match first, then full-text,
+    with keyword extraction for natural-language queries.
 
     Returns list of page dicts: [{id, title, space, url, excerpt, labels, ...}]
     """
@@ -1038,20 +1081,20 @@ def _confluence_search(query, space_key=None, max_results=10):
 
     results = []
 
-    # Method 1: MCP server
+    # Method 1: MCP server — multi-strategy search
     if CONFLUENCE_MCP_URL:
-        print(f'[confluence] Searching via MCP: "{query}"')
-        # Build CQL query (the MCP server only accepts 'cql' and 'limit')
-        # Use CONFLUENCE_DEFAULT_SPACES if no explicit space_key provided
-        effective_space = space_key
-        if not effective_space and CONFLUENCE_SPACES:
-            effective_space = CONFLUENCE_SPACES[0]
-            print(f'[confluence] Using default space: {effective_space}')
+        # Extract keywords from natural-language question for better CQL matching
+        keywords = _extract_search_keywords(query)
+        print(f'[confluence] Searching via MCP: "{query}" → keywords: "{keywords}"')
 
-        cql_parts = [f'type=page AND text ~ "{query}"']
-        if effective_space:
-            cql_parts.insert(0, f'space="{effective_space}"')
-        cql = ' AND '.join(cql_parts) + ' ORDER BY lastModified DESC'
+        # Determine spaces to search — user-specified, or ALL configured defaults
+        if space_key:
+            spaces_to_search = [space_key]
+        elif CONFLUENCE_SPACES:
+            spaces_to_search = CONFLUENCE_SPACES
+            print(f'[confluence] Searching across {len(spaces_to_search)} default space(s): {", ".join(spaces_to_search)}')
+        else:
+            spaces_to_search = [None]  # No space filter
 
         # Use discovered tools — only pick 'confluence_search' (not confluence_search_user)
         if _CONFLUENCE_TOOLS and 'confluence_search' in _CONFLUENCE_TOOLS:
@@ -1063,112 +1106,239 @@ def _confluence_search(query, space_key=None, max_results=10):
                 search_tools = ['confluence_search']
         else:
             search_tools = ['confluence_search']
-        print(f'[confluence] Using tool: {search_tools[0]}, CQL: {cql}')
 
+        # Build CQL queries — two strategies per space:
+        #   Strategy 1: title match (pages with relevant titles surface first)
+        #   Strategy 2: full-text match (catches content that isn't in the title)
+        cql_queries = []
+        for sp in spaces_to_search:
+            space_clause = f'space="{sp}" AND ' if sp else ''
+            # Strategy 1: title match using extracted keywords
+            cql_queries.append({
+                'cql': f'{space_clause}type=page AND title ~ "{keywords}" ORDER BY lastModified DESC',
+                'label': f'title~"{keywords}"' + (f' in {sp}' if sp else ''),
+            })
+            # Strategy 2: full-text match using extracted keywords
+            cql_queries.append({
+                'cql': f'{space_clause}type=page AND text ~ "{keywords}" ORDER BY lastModified DESC',
+                'label': f'text~"{keywords}"' + (f' in {sp}' if sp else ''),
+            })
+
+        seen_ids = set()  # Deduplicate across strategies and spaces
         mcp_timed_out = False
-        for tool_name in search_tools:
+
+        for cql_info in cql_queries:
             if mcp_timed_out:
-                print(f'[confluence] Skipping MCP tool {tool_name} — MCP already timed out')
+                print(f'[confluence] Skipping CQL strategy "{cql_info["label"]}" — MCP already timed out')
                 break
-            raw = _confluence_mcp_call(tool_name, {
-                'cql': cql,
-                'limit': max_results
-            }, timeout=8)
-            if raw is None:
-                mcp_timed_out = True
-                continue
-            if raw:
-                try:
-                    # raw from _confluence_mcp_call may already be extracted text (not JSON)
-                    if isinstance(raw, str):
-                        raw_stripped = raw.strip()
-                        # Log first 200 chars on first attempt for debugging
-                        if tool_name == search_tools[0]:
-                            print(f'[confluence] MCP raw response preview: {raw_stripped[:200]}')
-                        # Handle NDJSON (multiple JSON lines)
-                        if '\n' in raw_stripped and raw_stripped.startswith('{'):
-                            lines = [l.strip() for l in raw_stripped.split('\n') if l.strip()]
-                            data = None
-                            for line in lines:
-                                try:
-                                    data = json.loads(line)
-                                    if isinstance(data, (dict, list)):
-                                        break
-                                except json.JSONDecodeError:
-                                    continue
-                            if not data:
-                                print(f'[confluence] MCP could not parse NDJSON from {tool_name}')
-                                continue
-                        else:
-                            try:
-                                data = json.loads(raw_stripped)
-                            except json.JSONDecodeError:
-                                # Not JSON — treat as plain text, skip to next tool
-                                print(f'[confluence] MCP response from {tool_name} is not JSON, trying next tool')
-                                print(f'[confluence]   response was: {raw_stripped[:200]}')
-                                continue
-                    else:
-                        data = raw
+            if len(results) >= max_results:
+                break
 
-                    # Log the response shape for debugging
-                    if isinstance(data, dict):
-                        print(f'[confluence] MCP response keys: {list(data.keys())[:10]}')
-                    elif isinstance(data, list):
-                        print(f'[confluence] MCP response is a list with {len(data)} items')
+            cql = cql_info['cql']
+            remaining = max_results - len(results)
+            print(f'[confluence] Strategy: {cql_info["label"]}, CQL: {cql}')
 
-                    # Extract results from various response shapes
-                    items = []
-                    if isinstance(data, list):
-                        items = data
-                    elif isinstance(data, dict):
-                        # Try common result keys
-                        for key in ['results', 'pages', 'content', 'data', 'items', 'value']:
-                            candidate = data.get(key)
-                            if isinstance(candidate, list) and candidate:
-                                items = candidate
-                                print(f'[confluence] Found results under key: {key} ({len(items)} items)')
-                                break
-                            elif isinstance(candidate, dict):
-                                # Nested: data.results or data.data.results
-                                for subkey in ['results', 'pages', 'content']:
-                                    sub = candidate.get(subkey)
-                                    if isinstance(sub, list) and sub:
-                                        items = sub
-                                        print(f'[confluence] Found results under key: {key}.{subkey} ({len(items)} items)')
-                                        break
-                                if items:
-                                    break
-                        # If no list found but dict has 'id' and 'title', treat as single result
-                        if not items and data.get('id') and data.get('title'):
-                            items = [data]
-                            print(f'[confluence] Single page result: {data.get("title")}')
-                    if isinstance(items, list) and items:
-                        for item in items:
-                            if isinstance(item, dict):
-                                results.append({
-                                    'id': str(item.get('id', item.get('pageId', ''))),
-                                    'title': item.get('title', item.get('name', '?')),
-                                    'space': item.get('space', item.get('spaceKey', item.get('space_key', '?'))),
-                                    'url': item.get('url', item.get('webUrl', item.get('_links', {}).get('webui', ''))),
-                                    'excerpt': (item.get('excerpt', item.get('snippet', item.get('body', ''))) or '')[:300],
-                                    'last_modified': item.get('lastModified', item.get('last_modified',
-                                                     item.get('version', {}).get('when', '') if isinstance(item.get('version'), dict) else '')),
-                                    'author': item.get('author', item.get('lastModifiedBy',
-                                              item.get('version', {}).get('by', {}).get('displayName', '') if isinstance(item.get('version'), dict) else '')),
-                                    'labels': item.get('labels', []),
-                                })
-                        if results:
-                            print(f'[confluence] MCP returned {len(results)} pages')
-                            _cache_set(cache_key, results)
-                            return results
-                except Exception as e:
-                    print(f'[confluence] MCP parse error ({tool_name}): {e}')
+            for tool_name in search_tools:
+                if mcp_timed_out:
+                    break
+                raw = _confluence_mcp_call(tool_name, {
+                    'cql': cql,
+                    'limit': remaining
+                }, timeout=8)
+                if raw is None:
+                    mcp_timed_out = True
                     continue
+                if raw:
+                    try:
+                        # raw from _confluence_mcp_call may already be extracted text (not JSON)
+                        if isinstance(raw, str):
+                            raw_stripped = raw.strip()
+                            # Log first 200 chars on first strategy for debugging
+                            if cql_info is cql_queries[0]:
+                                print(f'[confluence] MCP raw response preview: {raw_stripped[:200]}')
+                            # Handle NDJSON (multiple JSON lines)
+                            if '\n' in raw_stripped and raw_stripped.startswith('{'):
+                                lines = [l.strip() for l in raw_stripped.split('\n') if l.strip()]
+                                data = None
+                                for line in lines:
+                                    try:
+                                        data = json.loads(line)
+                                        if isinstance(data, (dict, list)):
+                                            break
+                                    except json.JSONDecodeError:
+                                        continue
+                                if not data:
+                                    print(f'[confluence] MCP could not parse NDJSON from {tool_name}')
+                                    continue
+                            else:
+                                try:
+                                    data = json.loads(raw_stripped)
+                                except json.JSONDecodeError:
+                                    # Not JSON — treat as plain text, skip to next tool
+                                    print(f'[confluence] MCP response from {tool_name} is not JSON, trying next tool')
+                                    print(f'[confluence]   response was: {raw_stripped[:200]}')
+                                    continue
+                        else:
+                            data = raw
+
+                        # Log the response shape for debugging
+                        if isinstance(data, dict):
+                            print(f'[confluence] MCP response keys: {list(data.keys())[:10]}')
+                        elif isinstance(data, list):
+                            print(f'[confluence] MCP response is a list with {len(data)} items')
+
+                        # Extract results from various response shapes
+                        items = []
+                        if isinstance(data, list):
+                            items = data
+                        elif isinstance(data, dict):
+                            # Try common result keys
+                            for key in ['results', 'pages', 'content', 'data', 'items', 'value']:
+                                candidate = data.get(key)
+                                if isinstance(candidate, list) and candidate:
+                                    items = candidate
+                                    print(f'[confluence] Found results under key: {key} ({len(items)} items)')
+                                    break
+                                elif isinstance(candidate, dict):
+                                    # Nested: data.results or data.data.results
+                                    for subkey in ['results', 'pages', 'content']:
+                                        sub = candidate.get(subkey)
+                                        if isinstance(sub, list) and sub:
+                                            items = sub
+                                            print(f'[confluence] Found results under key: {key}.{subkey} ({len(items)} items)')
+                                            break
+                                    if items:
+                                        break
+                            # If no list found but dict has 'id' and 'title', treat as single result
+                            if not items and data.get('id') and data.get('title'):
+                                items = [data]
+                                print(f'[confluence] Single page result: {data.get("title")}')
+                        if isinstance(items, list) and items:
+                            new_count = 0
+                            for item in items:
+                                if isinstance(item, dict):
+                                    page_id = str(item.get('id', item.get('pageId', '')))
+                                    if page_id in seen_ids:
+                                        continue  # Deduplicate
+                                    seen_ids.add(page_id)
+                                    results.append({
+                                        'id': page_id,
+                                        'title': item.get('title', item.get('name', '?')),
+                                        'space': item.get('space', item.get('spaceKey', item.get('space_key', '?'))),
+                                        'url': item.get('url', item.get('webUrl', item.get('_links', {}).get('webui', ''))),
+                                        'excerpt': (item.get('excerpt', item.get('snippet', item.get('body', ''))) or '')[:300],
+                                        'last_modified': item.get('lastModified', item.get('last_modified',
+                                                         item.get('version', {}).get('when', '') if isinstance(item.get('version'), dict) else '')),
+                                        'author': item.get('author', item.get('lastModifiedBy',
+                                                  item.get('version', {}).get('by', {}).get('displayName', '') if isinstance(item.get('version'), dict) else '')),
+                                        'labels': item.get('labels', []),
+                                    })
+                                    new_count += 1
+                            if new_count:
+                                print(f'[confluence] Strategy "{cql_info["label"]}" added {new_count} new pages (total: {len(results)})')
+                    except Exception as e:
+                        print(f'[confluence] MCP parse error ({tool_name}): {e}')
+                        continue
+
+        # ── Strategy 3: Browse ALL pages fallback ──────────────────────────
+        # If keyword search returned few results, list ALL pages in the space
+        # so the AI can scan titles and find relevant pages that CQL missed.
+        if len(results) < 5 and not mcp_timed_out:
+            print(f'[confluence] Keyword search returned only {len(results)} results — browsing all pages in space(s)')
+            for sp in spaces_to_search:
+                if mcp_timed_out or len(results) >= max_results:
+                    break
+                if not sp:
+                    continue  # Can't browse without a space key
+                browse_cql = f'space="{sp}" AND type=page ORDER BY lastModified DESC'
+                remaining = max_results - len(results)
+                print(f'[confluence] Strategy: browse-all in {sp}, CQL: {browse_cql}')
+                for tool_name in search_tools:
+                    if mcp_timed_out:
+                        break
+                    raw = _confluence_mcp_call(tool_name, {
+                        'cql': browse_cql,
+                        'limit': min(remaining, 50)  # Fetch up to 50 page titles
+                    }, timeout=10)
+                    if raw is None:
+                        mcp_timed_out = True
+                        continue
+                    if raw:
+                        try:
+                            if isinstance(raw, str):
+                                raw_stripped = raw.strip()
+                                if '\n' in raw_stripped and raw_stripped.startswith('{'):
+                                    lines_list = [l.strip() for l in raw_stripped.split('\n') if l.strip()]
+                                    data = None
+                                    for line in lines_list:
+                                        try:
+                                            data = json.loads(line)
+                                            if isinstance(data, (dict, list)):
+                                                break
+                                        except json.JSONDecodeError:
+                                            continue
+                                    if not data:
+                                        continue
+                                else:
+                                    try:
+                                        data = json.loads(raw_stripped)
+                                    except json.JSONDecodeError:
+                                        continue
+                            else:
+                                data = raw
+                            items = []
+                            if isinstance(data, list):
+                                items = data
+                            elif isinstance(data, dict):
+                                for key in ['results', 'pages', 'content', 'data', 'items', 'value']:
+                                    candidate = data.get(key)
+                                    if isinstance(candidate, list) and candidate:
+                                        items = candidate
+                                        break
+                                    elif isinstance(candidate, dict):
+                                        for subkey in ['results', 'pages', 'content']:
+                                            sub = candidate.get(subkey)
+                                            if isinstance(sub, list) and sub:
+                                                items = sub
+                                                break
+                                        if items:
+                                            break
+                                if not items and data.get('id') and data.get('title'):
+                                    items = [data]
+                            if isinstance(items, list) and items:
+                                new_count = 0
+                                for item in items:
+                                    if isinstance(item, dict):
+                                        page_id = str(item.get('id', item.get('pageId', '')))
+                                        if page_id in seen_ids:
+                                            continue
+                                        seen_ids.add(page_id)
+                                        results.append({
+                                            'id': page_id,
+                                            'title': item.get('title', item.get('name', '?')),
+                                            'space': item.get('space', item.get('spaceKey', item.get('space_key', sp))),
+                                            'url': item.get('url', item.get('webUrl', item.get('_links', {}).get('webui', ''))),
+                                            'excerpt': (item.get('excerpt', item.get('snippet', item.get('body', ''))) or '')[:300],
+                                            'last_modified': item.get('lastModified', item.get('last_modified',
+                                                             item.get('version', {}).get('when', '') if isinstance(item.get('version'), dict) else '')),
+                                            'author': item.get('author', item.get('lastModifiedBy',
+                                                      item.get('version', {}).get('by', {}).get('displayName', '') if isinstance(item.get('version'), dict) else '')),
+                                            'labels': item.get('labels', []),
+                                            '_browse_result': True,  # Mark as browse result (not keyword match)
+                                        })
+                                        new_count += 1
+                                if new_count:
+                                    print(f'[confluence] Browse-all in {sp} added {new_count} pages (total: {len(results)})')
+                        except Exception as e:
+                            print(f'[confluence] Browse-all parse error: {e}')
+                            continue
 
         # MCP was configured and attempted — always return here.
         # Do NOT fall through to REST API (it times out behind proxy
         # and returns HTML error pages, causing "unexpected token '<'" in UI).
         if results:
+            print(f'[confluence] MCP search complete: {len(results)} unique pages found')
+            _cache_set(cache_key, results)
             return results
         print('[confluence] MCP returned no results — returning empty (skipping REST to avoid timeout)')
         _cache_set(cache_key, results)
@@ -1880,15 +2050,19 @@ def _fetch_artifactory_versions(artifactory_path):
     # Or with ?list: {"files": [{"uri": "/1.2.3", "folder": true, "lastModified": "..."}]}
     versions = []
 
+    # Also capture the parent folder's lastModified as a fallback date
+    parent_last_modified = data.get('lastModified', data.get('created', ''))
+
     if 'files' in data:
-        # ?list response format
+        # ?list response format — dates are included inline
         for item in data.get('files', []):
             uri = item.get('uri', '').strip('/')
             if item.get('folder', False) and uri:
                 versions.append({
                     'version': uri,
                     'date': item.get('lastModified', ''),
-                    'size': item.get('size', 0)
+                    'size': item.get('size', 0),
+                    '_date_source': 'list_api',
                 })
             elif uri and not item.get('folder', False):
                 # File-based: extract version from filename
@@ -1899,41 +2073,106 @@ def _fetch_artifactory_versions(artifactory_path):
                     versions.append({
                         'version': match.group(1),
                         'date': item.get('lastModified', ''),
-                        'size': item.get('size', 0)
+                        'size': item.get('size', 0),
+                        '_date_source': 'list_api',
                     })
     elif 'children' in data:
-        # Standard /api/storage response format
+        # Standard /api/storage response format — NO dates in children
         for child in data.get('children', []):
             uri = child.get('uri', '').strip('/')
             if child.get('folder', False) and uri:
                 versions.append({
                     'version': uri,
-                    'date': '',  # No date in children response; need individual lookup
-                    'size': 0
+                    'date': '',  # Will be fetched individually below
+                    'size': 0,
+                    '_date_source': 'pending',
                 })
 
-    # If we have children but no dates, fetch the folder info for each (limited to top 10)
-    if versions and not any(v['date'] for v in versions):
-        for v in versions[:10]:
+    if not versions:
+        print(f'[artifactory] No versions found in response for {artifactory_path}')
+        _cache_set(cache_key, [])
+        return []
+
+    # ── Fetch upload dates for ALL versions missing dates ──────────────
+    # Use concurrent requests for speed (fetch ALL, not just top 10)
+    versions_needing_dates = [v for v in versions if not v['date']]
+    if versions_needing_dates:
+        print(f'[artifactory] Fetching dates for {len(versions_needing_dates)} versions...')
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _fetch_version_date(version_entry):
+            """Fetch lastModified/created date for a single version folder."""
+            ver = version_entry['version']
             try:
-                folder_url = f"{ARTIFACTORY_URL}/api/storage/{artifactory_path}/{v['version']}"
-                r2 = requests.get(folder_url, headers=headers, timeout=5, verify=ssl_verify)
+                folder_url = f"{ARTIFACTORY_URL}/api/storage/{artifactory_path}/{ver}"
+                r2 = requests.get(folder_url, headers=headers, timeout=8, verify=ssl_verify)
                 if r2.ok:
                     d2 = r2.json()
-                    v['date'] = d2.get('lastModified', d2.get('created', ''))
-            except Exception:
-                pass
+                    # Prefer lastModified (actual upload date), fall back to created
+                    date = d2.get('lastModified', '') or d2.get('created', '')
+                    if date:
+                        version_entry['date'] = date
+                        version_entry['_date_source'] = 'folder_api'
+                        return True
+            except Exception as e:
+                print(f'[artifactory] Date fetch failed for {ver}: {e}')
+            return False
 
-    # Add freshness labels
+        # Fetch concurrently — max 5 parallel requests to avoid hammering Artifactory
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(_fetch_version_date, v): v for v in versions_needing_dates}
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception:
+                    pass
+
+        dated_count = sum(1 for v in versions if v['date'])
+        print(f'[artifactory] Got dates for {dated_count}/{len(versions)} versions')
+
+    # ── Parse dates into comparable datetime objects for accurate sorting ──
+    def _parse_date(date_str):
+        """Parse various Artifactory date formats into a datetime object."""
+        if not date_str:
+            return None
+        try:
+            # ISO format: "2026-05-19T14:30:00.000Z" or "2026-05-19T14:30:00.000+00:00"
+            cleaned = date_str.replace('Z', '+00:00')
+            # Remove timezone for naive comparison
+            if '+' in cleaned and 'T' in cleaned:
+                cleaned = cleaned[:cleaned.rfind('+')]
+            elif cleaned.endswith('+00:00'):
+                cleaned = cleaned[:-6]
+            return datetime.datetime.fromisoformat(cleaned)
+        except (ValueError, TypeError):
+            pass
+        try:
+            # Fallback: "2026-05-19 14:30:00"
+            return datetime.datetime.strptime(date_str[:19], '%Y-%m-%d %H:%M:%S')
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    # ── Sort by upload date descending (newest first) ──────────────────
+    # Versions with dates sort first; versions without dates sort last
+    epoch = datetime.datetime(1970, 1, 1)  # For unknown dates
     for v in versions:
-        v['freshness'] = _version_freshness(v['date']) if v['date'] else 'unknown'
+        v['_parsed_date'] = _parse_date(v['date']) or epoch
 
-    # Sort by date descending (newest first), unknown dates at end
-    def sort_key(v):
-        if v['date']:
-            return v['date']
-        return '0000'  # Unknown dates sort last
-    versions.sort(key=sort_key, reverse=True)
+    versions.sort(key=lambda v: v['_parsed_date'], reverse=True)
+
+    # Mark the latest version (the one with the most recent upload date)
+    if versions and versions[0]['_parsed_date'] != epoch:
+        versions[0]['is_latest'] = True
+        print(f'[artifactory] Latest by upload date: {versions[0]["version"]} ({versions[0]["date"]})')
+    elif versions:
+        # No dates available at all — can't determine latest by date
+        print(f'[artifactory] ⚠ No upload dates available — cannot determine latest reliably')
+
+    # Clean up internal fields and add freshness labels
+    for v in versions:
+        del v['_parsed_date']
+        v['freshness'] = _version_freshness(v['date']) if v['date'] else 'unknown'
 
     # Limit to 20 most recent
     versions = versions[:20]
@@ -1968,7 +2207,9 @@ def get_artifactory_versions(component_name):
         })
 
     versions = _fetch_artifactory_versions(art_path)
+    # Latest is the first version (sorted by upload date, newest first)
     latest = versions[0] if versions else None
+    latest_has_date = latest and latest.get('is_latest', False) if latest else False
 
     return jsonify({
         'component': component_name,
@@ -1976,6 +2217,7 @@ def get_artifactory_versions(component_name):
         'artifactory_path': art_path,
         'latest_version': latest['version'] if latest else None,
         'latest_date': latest['date'] if latest else None,
+        'latest_by_upload_date': latest_has_date,
         'freshness': latest['freshness'] if latest else None,
         'versions': versions
     })
@@ -3057,42 +3299,65 @@ def api_confluence_search():
         if not query:
             return jsonify({'results': [], 'ai_summary': None, 'error': 'No query provided'}), 400
 
-        # Use CONFLUENCE_DEFAULT_SPACES as default if user didn't specify a space
-        if not space and CONFLUENCE_SPACES:
-            space = CONFLUENCE_SPACES[0]  # Use first configured default space
-            print(f'[confluence] No space specified by user, using default: {space}')
-
         if not CONFLUENCE_MCP_URL and not CONFLUENCE_BASE_URL:
             return jsonify({'results': [], 'ai_summary': None,
                            'configured': False,
                            'error': 'Confluence not configured. Set CONFLUENCE_MCP_URL or CONFLUENCE_BASE_URL.'})
 
-        results = _confluence_search(query, space, max_results=10)
+        # Multi-strategy search with keyword extraction (space defaults handled inside)
+        results = _confluence_search(query, space, max_results=20)
 
-        # AI summarization
+        # AI summarization — read top 5 keyword-matched pages in full,
+        # include all titles (including browse results) as context
         summary = None
         if ai_summary and results:
             try:
+                # Separate keyword-matched results from browse-all results
+                keyword_results = [r for r in results if not r.get('_browse_result')]
+                browse_results = [r for r in results if r.get('_browse_result')]
+
                 pages_text = []
-                for r in results[:3]:
+                # Read top 5 keyword-matched pages in full (these are the most relevant)
+                pages_to_read = keyword_results[:5]
+                # If we have fewer than 5 keyword results, supplement with browse results
+                if len(pages_to_read) < 5 and browse_results:
+                    pages_to_read += browse_results[:5 - len(pages_to_read)]
+
+                for r in pages_to_read:
                     page = _confluence_get_page(r['id'])
                     if page and page.get('body_text'):
-                        pages_text.append(f"## {page['title']}\n{page['body_text'][:2000]}")
+                        pages_text.append(f"## {page['title']}\n{page['body_text'][:3000]}")
                     elif r.get('excerpt'):
                         pages_text.append(f"## {r['title']}\n{r['excerpt']}")
+
+                # Build title lists for AI context
+                keyword_titles = [f"- {r['title']}" for r in keyword_results]
+                browse_titles = [f"- {r['title']}" for r in browse_results]
+                all_titles_section = ""
+                if keyword_titles:
+                    all_titles_section += f"Pages Matching Keywords ({len(keyword_results)}):\n" + '\n'.join(keyword_titles)
+                if browse_titles:
+                    all_titles_section += f"\n\nOther Pages in This Space ({len(browse_results)}):\n" + '\n'.join(browse_titles)
+                if not keyword_titles and not browse_titles:
+                    all_titles_section = "(no pages found)"
 
                 if pages_text:
                     prompt = f"""Based on these Confluence documentation pages from the organization's wiki, answer the user's question concisely and accurately.
 
 User Question: {query}
 
-Confluence Pages:
+{all_titles_section}
+
+Full Content of Top {len(pages_text)} Pages:
 {'---'.join(pages_text)}
 
 Instructions:
-- Provide a direct, actionable answer.
+- Extract and provide the SPECIFIC answer the user is looking for (URLs, commands, configuration values, steps, etc.).
+- If the question asks for a URL, path, or specific value, find it in the page content and present it prominently.
+- Provide a direct, actionable answer — do not just summarize the page topics.
 - If the question is about a procedure, give step-by-step instructions.
 - Cite which page each piece of information comes from.
+- IMPORTANT: Review the "Other Pages in This Space" list carefully. If any page TITLE looks like it could answer the user's question but its full content wasn't read, explicitly recommend the user check that page.
 - Flag any warnings, caveats, or prerequisites.
 - Use markdown formatting (bold, lists, code blocks) for readability.
 - If the pages don't contain enough information to answer fully, say what's missing."""
