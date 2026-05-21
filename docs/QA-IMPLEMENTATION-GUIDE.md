@@ -105,8 +105,9 @@ graph LR
 | Benefit | Description |
 |---|---|
 | 🎯 **Version accuracy** | Tests always run against the exact versions nominated on the release board — no mismatch |
-| 👁️ **Full visibility** | Everyone (QA, dev, management) sees test status on the same dashboard — no asking around |
+| 📡 **Full visibility** | Everyone (QA, dev, management) sees test status on the same dashboard — no asking around |
 | ⚡ **One-click execution** | "Run All" triggers smoke → e2e → regression sequentially, stops on first failure |
+| ⏰ **Auto-trigger after cutoff** | Tests start automatically when the board locks at cutoff (Wed 12 PM) — results ready when QA checks |
 | 🚦 **Clear go/no-go** | Quality Gate gives a single answer: "Can we release?" — no guessing |
 | 📝 **Audit trail** | QA sign-off is recorded: who, when, which runs passed — compliance-ready |
 | 📈 **Trend tracking** | See pass rate trends over the last 10 releases — catch regressions early |
@@ -291,8 +292,20 @@ _github_post('/repos/your-org/qa-tests/actions/workflows/test-pipeline.yml/dispa
 │                                                              │
 │  ⚡ Run All triggers 3 sequential GitHub Actions runs:       │
 │     1. smoke → 2. e2e → 3. regression                       │
+│                                                              │
+│  ⏰ Auto-Trigger: [ON ▼]                                     │
+│  ℹ️ Tests auto-run after board locks at cutoff (Wed 12 PM)   │
+│     Next scheduled: Wed, May 28 12:05 PM                     │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+**Auto-Trigger Flow**:
+1. Board auto-locks at cutoff (Wednesday 12 PM) — nominations are frozen
+2. Dashboard waits 5 minutes (configurable) for any last-minute changes
+3. Automatically triggers: smoke → e2e → regression
+4. Results appear on the QA tab as each suite completes
+5. QA checks the dashboard later — results are already there
+6. If all pass → Quality Gate shows ✅ PASSED, ready for sign-off
 
 ### Section 3: Test Results Cards
 
@@ -511,6 +524,14 @@ env:
     value: "your-org/qa-tests"          # Repo with test pipeline
   - name: QA_WORKFLOW_FILE
     value: "test-pipeline.yml"          # Single workflow filename
+
+  # ── Auto-Trigger After Cutoff ──
+  - name: QA_AUTO_TRIGGER
+    value: "true"                        # Enable auto-trigger when board locks
+  - name: QA_AUTO_TRIGGER_DELAY_MIN
+    value: "5"                           # Wait 5 min after cutoff before triggering
+  - name: QA_AUTO_TRIGGER_ORDER
+    value: "smoke,e2e,regression"        # Order of test suites
 
   # ── Allure Results ──
   - name: ALLURE_URL

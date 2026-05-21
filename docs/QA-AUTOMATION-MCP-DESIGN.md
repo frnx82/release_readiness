@@ -64,7 +64,91 @@ graph TB
 
 ### How It Works
 
-You have a **single test pipeline** that accepts a `test_type` flag to run different test suites. The dashboard triggers this same workflow with the appropriate flag.
+You have a **single test pipeline** that accepts a `test_type` flag to run different test suites. The dashboard triggers this same workflow:
+
+- **Manually**: QA clicks "▶ Run Tests" on the dashboard
+- **Automatically**: Tests auto-trigger after the board locks at cutoff time (Wednesday 12 PM)
+
+### Auto-Trigger After Cutoff
+
+When the board auto-locks at cutoff, the dashboard automatically kicks off the full test suite:
+
+```mermaid
+sequenceDiagram
+    participant Clock as ⏰ Cutoff Time<br/>(Wed 12:00 PM)
+    participant Dash as Dashboard
+    participant GHA as GitHub Actions
+
+    Clock->>Dash: Board auto-locks
+    Dash->>Dash: Check: tests_auto_trigger = true?
+
+    Dash->>GHA: workflow_dispatch (test_type=smoke)
+    GHA-->>Dash: smoke: ✅ PASSED
+
+    Dash->>GHA: workflow_dispatch (test_type=e2e)
+    GHA-->>Dash: e2e: ✅ PASSED
+
+    Dash->>GHA: workflow_dispatch (test_type=regression)
+    GHA-->>Dash: regression: ✅ PASSED
+
+    Dash-->>Dash: Quality Gate: ✅ ALL PASSED
+    Note over Dash: QA checks dashboard later,<br/>results already available
+```
+
+**How it works technically**:
+
+```python
+# In app.py — background scheduler
+from apscheduler.schedulers.background import BackgroundScheduler
+
+def _auto_trigger_tests():
+    """Called every minute. Checks if board just locked and triggers tests."""
+    board = _read_board()
+    if not board:
+        return
+
+    # Only trigger once per release cycle
+    if board.get('tests_auto_triggered'):
+        return
+
+    # Check if board just passed cutoff
+    cutoff = board.get('cutoff', '')
+    now = datetime.datetime.utcnow().isoformat()
+    if now > cutoff and board.get('status') != 'locked':
+        return  # Not past cutoff yet or already handled
+
+    # Trigger: smoke → e2e → regression (sequential)
+    for test_type in ['smoke', 'e2e', 'regression']:
+        _github_post(
+            f'/repos/{QA_TEST_REPO}/actions/workflows/{QA_WORKFLOW_FILE}/dispatches',
+            data={
+                "ref": "main",
+                "inputs": {
+                    "test_type": test_type,
+                    "environment": "uat",
+                }
+            }
+        )
+        time.sleep(5)  # Brief delay between triggers
+
+    # Mark as triggered (prevent re-trigger)
+    board['tests_auto_triggered'] = True
+    board['tests_auto_triggered_at'] = now
+    _write_board(board)
+    print(f"[QA Auto-Trigger] All test suites triggered at {now}")
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(_auto_trigger_tests, 'interval', minutes=1)
+scheduler.start()
+```
+
+### Configuration
+
+| Env Var | Default | Description |
+|---|---|---|
+| `QA_AUTO_TRIGGER` | `true` | Enable/disable auto-trigger after cutoff |
+| `QA_AUTO_TRIGGER_DELAY_MIN` | `5` | Minutes to wait after cutoff before triggering |
+| `QA_AUTO_TRIGGER_ORDER` | `smoke,e2e,regression` | Order of test suites to trigger |
 
 ### Your Test Pipeline (Existing)
 
