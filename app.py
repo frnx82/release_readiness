@@ -1620,7 +1620,7 @@ NAMESPACE = os.getenv('POD_NAMESPACE', 'default')
 DEPLOY_ENV = os.getenv('DEPLOY_ENV', 'uat').lower()  # 'uat' or 'prod' — determines which cluster is local
 RELEASE_CADENCE = os.getenv('RELEASE_CADENCE', 'friday')  # 'friday' or 'custom'
 CUTOFF_DAY = int(os.getenv('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
-CUTOFF_HOUR = int(os.getenv('CUTOFF_HOUR', '17'))  # 17:00
+CUTOFF_HOUR = int(os.getenv('CUTOFF_HOUR', '12'))  # 12:00 (noon EST)
 
 # ── Artifactory (Custom Component Version Detection) ─────────────────────────
 ARTIFACTORY_URL = os.getenv('ARTIFACTORY_URL', '').rstrip('/')
@@ -1694,7 +1694,7 @@ def _get_current_release_date():
 
 
 def _get_cutoff_datetime():
-    """Calculate the cutoff datetime (Wednesday 5 PM of the current release week)."""
+    """Calculate the cutoff datetime based on CUTOFF_DAY and CUTOFF_HOUR env vars."""
     today = datetime.date.today()
     days_until_friday = (4 - today.weekday()) % 7
     if days_until_friday == 0 and datetime.datetime.now().hour >= 18:
@@ -2241,13 +2241,10 @@ def _fetch_artifactory_versions(artifactory_path):
 
     versions.sort(key=lambda v: v['_parsed_date'], reverse=True)
 
-    # Mark the latest version (the one with the most recent upload date)
     if versions and versions[0]['_parsed_date'] != epoch:
-        versions[0]['is_latest'] = True
-        print(f'[artifactory] Latest by upload date: {versions[0]["version"]} ({versions[0]["date"]})')
+        print(f'[artifactory] Sorted by upload date. Newest: {versions[0]["version"]} ({versions[0]["date"]})')
     elif versions:
-        # No dates available at all — can't determine latest by date
-        print(f'[artifactory] ⚠ No upload dates available — cannot determine latest reliably')
+        print(f'[artifactory] ⚠ No upload dates available — version order may not reflect recency')
 
     # Clean up internal fields and add freshness labels
     for v in versions:
@@ -2287,18 +2284,12 @@ def get_artifactory_versions(component_name):
         })
 
     versions = _fetch_artifactory_versions(art_path)
-    # Latest is the first version (sorted by upload date, newest first)
-    latest = versions[0] if versions else None
-    latest_has_date = latest and latest.get('is_latest', False) if latest else False
 
     return jsonify({
         'component': component_name,
         'artifactory_configured': True,
         'artifactory_path': art_path,
-        'latest_version': latest['version'] if latest else None,
-        'latest_date': latest['date'] if latest else None,
-        'latest_by_upload_date': latest_has_date,
-        'freshness': latest['freshness'] if latest else None,
+        'version_count': len(versions),
         'versions': versions
     })
 
@@ -2585,6 +2576,14 @@ def get_current_release():
     board['is_past_cutoff'] = datetime.datetime.utcnow().isoformat() > board.get('cutoff', '')
     board['nominated_count'] = len(board.get('services', {}))
     board['exception_count'] = len(board.get('exception_nominations', []))
+
+    # Auto-reflect locked state in UI when past cutoff
+    # The nomination endpoint already blocks regular nominations past cutoff,
+    # but the UI needs status='locked' to show the correct buttons (Board Locked + Unlock).
+    if board['is_past_cutoff'] and board.get('status') == 'open':
+        board['status'] = 'locked'
+        board['auto_locked'] = True  # Flag so UI can distinguish manual vs auto lock
+
     return jsonify(board)
 
 
@@ -3092,13 +3091,41 @@ def get_exception_stats():
 # ── Version Drift Detection ──────────────────────────────────────────────────
 @app.route('/api/release/drift')
 def check_drift():
-    """Compare nominated versions against live cluster versions."""
+    """Compare nominated versions against UAT live cluster versions.
+
+    When DEPLOY_ENV=uat: reads from the LOCAL cluster (we're IN uat).
+    When DEPLOY_ENV=prod: connects REMOTELY to UAT via UAT_CLUSTER_API/TOKEN.
+    """
     board = _read_board()
     if not board or not board.get('services'):
         return jsonify({'drift_items': [], 'message': 'No nominations to check'})
 
     namespace = request.args.get('namespace', NAMESPACE)
     drift_items = []
+    cluster_label = 'UAT'
+
+    # ── Get the correct K8s API client for the UAT cluster ──
+    if DEPLOY_ENV == 'prod':
+        # App is in prod → connect REMOTELY to UAT
+        uat_ns = os.environ.get('UAT_NAMESPACE', namespace)
+        api_client, error = _get_uat_api_client()
+        if error:
+            print(f'[drift] ❌ Cannot connect to UAT cluster: {error}')
+            return jsonify({
+                'drift_items': [],
+                'error': f'Cannot connect to UAT cluster for drift check: {error}',
+                'cluster': 'uat-remote',
+                'deploy_env': DEPLOY_ENV,
+            })
+        apps_v1 = client.AppsV1Api(api_client)
+        namespace = uat_ns
+        cluster_label = f'UAT (remote: {os.environ.get("UAT_CLUSTER_API", "")[:40]})'
+        print(f'[drift] DEPLOY_ENV=prod → checking drift against REMOTE UAT cluster, ns={namespace}')
+    else:
+        # App is in UAT → read LOCAL cluster
+        apps_v1 = client.AppsV1Api()
+        cluster_label = 'UAT (local)'
+        print(f'[drift] DEPLOY_ENV=uat → checking drift against LOCAL cluster, ns={namespace}')
 
     for svc_name, svc_data in board.get('services', {}).items():
         nominated_tag = svc_data.get('image_tag', '')
@@ -3107,7 +3134,6 @@ def check_drift():
         live_image = ''
 
         try:
-            apps_v1 = client.AppsV1Api()
             if kind == 'Deployment':
                 d = _k8s_retry(apps_v1.read_namespaced_deployment, svc_name, namespace)
                 containers = d.spec.template.spec.containers or []
@@ -3137,7 +3163,12 @@ def check_drift():
             'drift_status': drift_status
         })
 
-    return jsonify({'drift_items': drift_items})
+    return jsonify({
+        'drift_items': drift_items,
+        'cluster': cluster_label,
+        'namespace': namespace,
+        'deploy_env': DEPLOY_ENV,
+    })
 
 
 def _is_major_version_change(tag_a, tag_b):
@@ -4426,24 +4457,38 @@ def _tool_get_service_status(service_name: str) -> str:
 
 
 def _tool_check_drift() -> str:
-    """Compare nominated versions against live cluster versions for all services."""
+    """Compare nominated versions against UAT live cluster versions."""
     try:
         board = _read_board()
         if not board or not board.get('services'):
             return "No nominations to check for drift."
         drift_items = []
+        namespace = NAMESPACE
+
+        # ── Get the correct K8s API client for the UAT cluster ──
+        if DEPLOY_ENV == 'prod':
+            uat_ns = os.environ.get('UAT_NAMESPACE', namespace)
+            api_client_obj, error = _get_uat_api_client()
+            if error:
+                return f'Cannot connect to UAT cluster for drift check: {error}'
+            apps_v1 = client.AppsV1Api(api_client_obj)
+            namespace = uat_ns
+            env_label = f'UAT (remote), ns={namespace}'
+        else:
+            apps_v1 = client.AppsV1Api()
+            env_label = f'UAT (local), ns={namespace}'
+
         for svc_name, svc_data in board['services'].items():
             nominated_tag = svc_data.get('image_tag', '')
             kind = svc_data.get('kind', 'Deployment')
             live_tag = ''
             try:
-                apps_v1 = client.AppsV1Api()
                 if kind == 'Deployment':
-                    d = _k8s_retry(apps_v1.read_namespaced_deployment, svc_name, NAMESPACE)
+                    d = _k8s_retry(apps_v1.read_namespaced_deployment, svc_name, namespace)
                     containers = d.spec.template.spec.containers or []
                     live_tag = _extract_image_tag(containers[0].image) if containers else '?'
                 elif kind == 'StatefulSet':
-                    s = _k8s_retry(apps_v1.read_namespaced_stateful_set, svc_name, NAMESPACE)
+                    s = _k8s_retry(apps_v1.read_namespaced_stateful_set, svc_name, namespace)
                     containers = s.spec.template.spec.containers or []
                     live_tag = _extract_image_tag(containers[0].image) if containers else '?'
             except Exception:
@@ -4451,7 +4496,7 @@ def _tool_check_drift() -> str:
             status = '✅ match' if live_tag == nominated_tag else '⚠️ DRIFT'
             drift_items.append(f"{svc_name} | nominated: {nominated_tag} | live: {live_tag} | {status}")
 
-        header = "Service | Nominated | Live | Status\n--------|-----------|------|-------\n"
+        header = f"Drift check against {env_label}\n\nService | Nominated | Live (UAT) | Status\n--------|-----------|------------|-------\n"
         return header + '\n'.join(drift_items)
     except Exception as e:
         return f'Error checking drift: {e}'

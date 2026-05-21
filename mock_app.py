@@ -89,13 +89,15 @@ def _get_release_date():
     return (today + datetime.timedelta(days=days)).isoformat()
 
 def _get_cutoff():
+    cutoff_day = int(os.environ.get('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
+    cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '12'))  # 12:00 (noon)
     today = datetime.date.today()
     days = (4 - today.weekday()) % 7
     if days == 0 and datetime.datetime.now().hour >= 18:
         days = 7
     friday = today + datetime.timedelta(days=days)
-    cutoff = friday - datetime.timedelta(days=2)  # Wednesday
-    return datetime.datetime.combine(cutoff, datetime.time(17, 0)).isoformat()
+    cutoff = friday - datetime.timedelta(days=(4 - cutoff_day) % 7)
+    return datetime.datetime.combine(cutoff, datetime.time(cutoff_hour, 0)).isoformat()
 
 def _generate_fix_version(release_date_str):
     """Generate Jira fix version from release date.
@@ -252,6 +254,12 @@ def get_current():
     board['is_past_cutoff'] = datetime.datetime.utcnow().isoformat() > board.get('cutoff', '')
     board['nominated_count'] = len(board.get('services', {}))
     board['exception_count'] = len(board.get('exception_nominations', []))
+
+    # Auto-reflect locked state in UI when past cutoff
+    if board['is_past_cutoff'] and board.get('status') == 'open':
+        board['status'] = 'locked'
+        board['auto_locked'] = True
+
     return jsonify(board)
 
 @app.route('/api/release/nominate', methods=['POST'])
@@ -1143,8 +1151,6 @@ def _mock_artifactory_versions(component_name):
             'date': date,
             'size_mb': size_mb,
             'freshness': freshness,
-            'is_latest': i == 0,  # First version (newest by date) is latest
-            '_date_source': 'folder_api',
             'download_count': max(1, 150 - (i * 15) + random.randint(-5, 5)),
             'path': f'libs-release/com/company/{component_name}/{ver}/{component_name}-{ver}.jar'
         })
@@ -1167,17 +1173,12 @@ def get_artifactory_versions(component_name):
         })
 
     versions = _mock_artifactory_versions(component_name)
-    # Latest is the first version (sorted by upload date, newest first)
-    latest = versions[0] if versions else None
 
     return jsonify({
         'component': component_name,
         'artifactory_configured': True,
         'artifactory_path': art_path,
-        'latest_version': latest['version'] if latest else None,
-        'latest_date': latest['date'] if latest else None,
-        'latest_by_upload_date': True if latest else False,
-        'freshness': latest['freshness'] if latest else None,
+        'version_count': len(versions),
         'versions': versions
     })
 

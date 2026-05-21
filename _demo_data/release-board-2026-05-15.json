@@ -1,0 +1,12 @@
+{
+  "release_date": "2026-05-15",
+  "cutoff": "2026-05-13T17:00:00",
+  "fix_version": "P26.05.15",
+  "status": "open",
+  "services": {},
+  "audit_trail": [],
+  "exception_nominations": [],
+  "created_at": "2026-05-11T22:35:42.014257",
+  "finalized_by": null,
+  "finalized_at": null
+}

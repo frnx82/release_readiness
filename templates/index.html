@@ -1029,7 +1029,7 @@
                             </div>
                             <div style="display:flex;gap:10px;align-items:flex-start">
                                 <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">4</span>
-                                <div><strong style="color:var(--text)">Wednesday 5 PM — Cutoff:</strong> Release Manager clicks <strong>🔒 Lock Board</strong>. No more regular nominations accepted. <strong style="color:#f59e0b">⚠️ Exception Nominations</strong> are still possible with approver and reason (for Thursday hotfixes).</div>
+                                <div><strong style="color:var(--text)">Cutoff Time — Board Auto-Locks:</strong> At the configured cutoff time, the board auto-locks. No more regular nominations accepted. <strong style="color:#f59e0b">⚠️ Exception Nominations</strong> are still possible with approver and reason (for late hotfixes).</div>
                             </div>
                             <div style="display:flex;gap:10px;align-items:flex-start">
                                 <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">5</span>
@@ -1169,8 +1169,8 @@
                     <div style="background:var(--surface2);border:1px solid rgba(245,158,11,.3);border-radius:var(--radius);padding:20px;margin-bottom:16px">
                         <h3 style="font-size:15px;margin-bottom:8px;color:#f59e0b">⚠️ Exception Nominations (Post-Cutoff)</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            After the board is <strong>locked</strong> (Wednesday 5 PM cutoff), developers can still nominate services
-                            as <strong>exceptions</strong>. This is for Thursday hotfixes or critical changes that must go into the Friday release.
+                            After the board is <strong>locked</strong> (at the configured cutoff time), developers can still nominate services
+                            as <strong>exceptions</strong>. This is for late hotfixes or critical changes that must go into the release.
                             Every exception is tracked and reported for weekly review.
                         </p>
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
@@ -1410,8 +1410,8 @@
                         <h3 style="font-size:15px;margin-bottom:8px">🔒 Board Lifecycle Controls</h3>
                         <div style="margin-top:8px;font-size:13px;line-height:1.8">
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li><strong>🔒 Lock Board (Cutoff)</strong> — Freezes nominations. Typically done Wednesday 5 PM.
-                                    Only Release Manager should use this. All nomination buttons are disabled after locking.</li>
+                                <li><strong>🔒 Lock Board (Cutoff)</strong> — Freezes nominations. The board auto-locks at the configured cutoff time.
+                                    Can also be manually locked by a Release Manager. All regular nomination buttons are disabled after locking.</li>
                                 <li><strong>✅ Mark Released</strong> — Archives the board as read-only. The release date
                                     advances to the next Friday and a fresh board is created for the new cycle.</li>
                             </ul>
@@ -2365,7 +2365,24 @@
         function updateSidebar() {
             if (!_board) return;
             document.getElementById('info-release-date').textContent = _board.release_date || '--';
-            document.getElementById('info-cutoff').textContent = (_board.cutoff || '').replace('T', ' ');
+            // Format cutoff as readable: "Wed, May 21 12:00 PM"
+            const cutoffRaw = _board.cutoff || '';
+            if (cutoffRaw) {
+                const cd = new Date(cutoffRaw);
+                if (!isNaN(cd)) {
+                    const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+                    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                    const h = cd.getHours(); const m = cd.getMinutes();
+                    const ampm = h >= 12 ? 'PM' : 'AM';
+                    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+                    const timeStr = `${h12}:${m.toString().padStart(2,'0')} ${ampm}`;
+                    document.getElementById('info-cutoff').textContent = `${days[cd.getDay()]}, ${months[cd.getMonth()]} ${cd.getDate()} ${timeStr}`;
+                } else {
+                    document.getElementById('info-cutoff').textContent = cutoffRaw.replace('T', ' ');
+                }
+            } else {
+                document.getElementById('info-cutoff').textContent = '--';
+            }
             document.getElementById('info-svc-count').textContent = Object.keys(_board.services || {}).length;
             document.getElementById('info-namespace').textContent = _namespace;
             // Exception count
@@ -2470,24 +2487,17 @@
                 // Build version dropdown with colored options
                 selEl.innerHTML = '<option value="">— Select version —</option>' +
                     d.versions.map((v, idx) => {
-                        const badge = (v.freshness === 'current_week' || v.freshness === 'latest') ? '🟢' :
-                                      (v.freshness === 'previous_week' || v.freshness === 'recent') ? '🟡' :
-                                      (v.freshness === 'stale' || v.freshness === 'aging' || v.freshness === 'old') ? '🔴' : '⚪';
+                        const badge = (v.freshness === 'current_week') ? '🟢' :
+                                      (v.freshness === 'previous_week') ? '🟡' :
+                                      (v.freshness === 'stale') ? '🔴' : '⚪';
                         const dateStr = v.date ? ` (${v.date.substring(0, 10)})` : '';
                         // Color-code the option background based on freshness
-                        const optBg = (v.freshness === 'current_week' || v.freshness === 'latest') ? 'background:rgba(16,185,129,.12);color:#059669;font-weight:600' :
-                                      (v.freshness === 'previous_week' || v.freshness === 'recent') ? 'background:rgba(245,158,11,.1);color:#d97706' :
-                                      (v.freshness === 'stale' || v.freshness === 'aging' || v.freshness === 'old') ? 'background:rgba(239,68,68,.08);color:#b91c1c' : '';
-                        const isLatest = (idx === 0 && d.latest_version === v.version) ? ' ★ LATEST' : '';
-                        return `<option value="${v.version}" data-freshness="${v.freshness}" data-date="${v.date}" style="${optBg}">${badge} ${v.version}${dateStr}${isLatest}</option>`;
+                        const optBg = (v.freshness === 'current_week') ? 'background:rgba(16,185,129,.12);color:#059669;font-weight:600' :
+                                      (v.freshness === 'previous_week') ? 'background:rgba(245,158,11,.1);color:#d97706' :
+                                      (v.freshness === 'stale') ? 'background:rgba(239,68,68,.08);color:#b91c1c' : '';
+                        return `<option value="${v.version}" data-freshness="${v.freshness}" data-date="${v.date}" style="${optBg}">${badge} ${v.version}${dateStr}</option>`;
                     }).join('');
                 selEl.style.display = '';
-
-                // Auto-select latest
-                if (d.latest_version) {
-                    selEl.value = d.latest_version;
-                    onArtifactoryVersionSelect();
-                }
             } catch (e) {
                 loadEl.style.display = 'none';
                 console.error('Artifactory fetch error:', e);
@@ -2512,13 +2522,9 @@
                 const date = opt.getAttribute('data-date') || '';
                 const labels = {
                     'current_week':  { text: '🟢 Current Week', bg: 'rgba(16,185,129,.1)', color: '#10b981', border: 'rgba(16,185,129,.25)' },
-                    'latest':        { text: '🟢 Latest', bg: 'rgba(16,185,129,.1)', color: '#10b981', border: 'rgba(16,185,129,.25)' },
                     'previous_week': { text: '🟡 Previous Week', bg: 'rgba(245,158,11,.1)', color: '#f59e0b', border: 'rgba(245,158,11,.25)' },
-                    'recent':        { text: '🟡 Recent', bg: 'rgba(245,158,11,.1)', color: '#f59e0b', border: 'rgba(245,158,11,.25)' },
-                    'stale':         { text: '🔴 Stale (2+ weeks)', bg: 'rgba(239,68,68,.08)', color: '#ef4444', border: 'rgba(239,68,68,.2)' },
-                    'aging':         { text: '🟠 Aging', bg: 'rgba(249,115,22,.08)', color: '#f97316', border: 'rgba(249,115,22,.2)' },
-                    'old':           { text: '🔴 Old', bg: 'rgba(239,68,68,.08)', color: '#ef4444', border: 'rgba(239,68,68,.2)' },
-                    'unknown':       { text: '⚪ Unknown', bg: 'var(--surface2)', color: 'var(--text2)', border: 'var(--border)' }
+                    'stale':         { text: '🔴 Older (2+ weeks)', bg: 'rgba(239,68,68,.08)', color: '#ef4444', border: 'rgba(239,68,68,.2)' },
+                    'unknown':       { text: '⚪ Unknown Age', bg: 'var(--surface2)', color: 'var(--text2)', border: 'var(--border)' }
                 };
                 const l = labels[freshness] || labels['unknown'];
                 badgeEl.innerHTML = `<span style="font-size:11px;padding:2px 8px;background:${l.bg};color:${l.color};border:1px solid ${l.border};border-radius:4px;font-weight:600">${l.text}</span>`
@@ -3053,6 +3059,7 @@
 
         // ═══ Prod Environment ════════════════════════════════════════════════════════
         let _lastProdNotNominated = []; // store for export
+        let _lastProdAllServices = [];  // store ALL prod services for full export
 
         async function loadProdServices() {
             const container = document.getElementById('prod-services-list');
@@ -3092,6 +3099,7 @@
                 const boardSvcs = (_board && _board.services) ? _board.services : {};
                 let nominatedCount = 0;
                 _lastProdNotNominated = [];
+                _lastProdAllServices = svcs; // Store ALL for full export
 
                 const rows = svcs.map((s, i) => {
                     const status = s.available ? '<span style="color:var(--green)">● Running</span>' : '<span style="color:var(--red)">● Down</span>';
@@ -3139,10 +3147,11 @@
                             ❌ Not Nominated: <strong style="color:#ef4444">${notNominatedCount}</strong>
                         </div>
                     </div>
-                    <div style="margin-bottom:14px;display:flex;gap:10px">
-                        <button class="btn btn-primary" onclick="exportNotNominated('table')" ${notNominatedCount === 0 ? 'disabled style="opacity:0.5"' : ''}>📋 Show Not Nominated</button>
-                        <button class="btn" onclick="exportNotNominated('csv')" ${notNominatedCount === 0 ? 'disabled style="opacity:0.5"' : ''}>📥 Export CSV</button>
-                        <button class="btn" onclick="exportNotNominated('json')" ${notNominatedCount === 0 ? 'disabled style="opacity:0.5"' : ''}>📥 Export JSON</button>
+                    <div style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap">
+                        <button class="btn btn-primary" onclick="exportAllProdCSV()">📥 Export All Prod Versions (CSV)</button>
+                        <button class="btn" onclick="exportNotNominated('table')" ${notNominatedCount === 0 ? 'disabled style="opacity:0.5"' : ''}>📋 Show Not Nominated</button>
+                        <button class="btn" onclick="exportNotNominated('csv')" ${notNominatedCount === 0 ? 'disabled style="opacity:0.5"' : ''}>📥 Not Nominated CSV</button>
+                        <button class="btn" onclick="exportNotNominated('json')" ${notNominatedCount === 0 ? 'disabled style="opacity:0.5"' : ''}>📥 Not Nominated JSON</button>
                     </div>
                     <table class="list-view-table">
                         <thead><tr><th>Service</th><th>Kind</th><th>Image</th><th>Tag</th><th>Helm Chart</th><th>Replicas</th><th>Status</th><th>Board Status</th></tr></thead>
@@ -3154,6 +3163,23 @@
             }
         }
 
+        function exportAllProdCSV() {
+            if (!_lastProdAllServices.length) { showToast('No prod services loaded', 'warn'); return; }
+            const boardSvcs = (_board && _board.services) ? _board.services : {};
+            const header = 'Service,Kind,Image,Tag,Helm Chart,Replicas,Status,Board Status';
+            const csvRows = _lastProdAllServices.map(s => {
+                const boardStatus = boardSvcs[s.name] ? 'Nominated' : 'Not Nominated';
+                return `"${s.name}","${s.kind}","${s.image}","'${s.image_tag || ''}","'${s.helm_version || ''}","'${s.replicas}/${s.desired_replicas}","${s.available ? 'Running' : 'Down'}","${boardStatus}"`;
+            });
+            const csv = [header, ...csvRows].join('\n');
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `prod-all-versions-${new Date().toISOString().slice(0,10)}.csv`;
+            a.click(); URL.revokeObjectURL(url);
+            showToast(`📥 Exported ${_lastProdAllServices.length} prod services to CSV`);
+        }
+
         function exportNotNominated(format) {
             if (!_lastProdNotNominated.length) { showToast('All prod services are nominated!', 'info'); return; }
 
@@ -3161,7 +3187,7 @@
                 // Download as CSV
                 const header = 'Service,Kind,Image,Tag,Helm Chart,Replicas,Status';
                 const csvRows = _lastProdNotNominated.map(s =>
-                    `"${s.name}","${s.kind}","${s.image}","${s.image_tag || ''}","${s.helm_version || ''}","${s.replicas}/${s.desired_replicas}","${s.available ? 'Running' : 'Down'}"`
+                    `"${s.name}","${s.kind}","${s.image}","'${s.image_tag || ''}","'${s.helm_version || ''}","'${s.replicas}/${s.desired_replicas}","${s.available ? 'Running' : 'Down'}"`
                 );
                 const csv = [header, ...csvRows].join('\n');
                 const blob = new Blob([csv], { type: 'text/csv' });
