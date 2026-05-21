@@ -25,6 +25,96 @@ A new **"🧪 QA" tab** on the Release Readiness Dashboard that lets the QA team
 
 ---
 
+## Why This Matters — Current vs. New
+
+### The Current Workflow (Today)
+
+```mermaid
+graph LR
+    subgraph "Current: Manual & Disconnected"
+        A["QA opens GitHub"] --> B["Navigate to Actions tab"]
+        B --> C["Select workflow"]
+        C --> D["Fill in inputs manually"]
+        D --> E["Click 'Run workflow'"]
+        E --> F["Wait... check back later"]
+        F --> G["Open Allure separately"]
+        G --> H["Copy results into Slack/email"]
+        H --> I["Tell team: ready to release"]
+    end
+
+    style A fill:#ef4444,color:#fff
+    style F fill:#ef4444,color:#fff
+    style H fill:#ef4444,color:#fff
+```
+
+**Pain points with the current approach:**
+
+1. 🔀 **Context switching** — QA has to jump between GitHub Actions, Allure, Slack, release board
+2. ⏳ **No visibility** — Team can't see test status without asking QA or checking GitHub themselves
+3. 📋 **Manual tracking** — QA manually tracks which suites passed/failed, copies results to Slack
+4. 🔗 **Disconnected from release** — Test results live in GitHub/Allure, release decisions happen on the board — no link between them
+5. 🎯 **Wrong versions** — QA might test against versions different from what's being released
+6. ❓ **"Are we ready?"** — Everyone asks QA this question, and QA has to manually check all suites before answering
+7. 📊 **No trend data** — Hard to see if test pass rates are improving or degrading over time
+
+### The New Workflow (With Dashboard)
+
+```mermaid
+graph LR
+    subgraph "New: One-Click & Centralized"
+        A["QA opens Dashboard"] --> B["Click 'Run All Tests'"]
+        B --> C["Watch live progress"]
+        C --> D["Results appear automatically"]
+        D --> E["Quality Gate shows ✅ PASSED"]
+        E --> F["Click 'QA Sign-Off'"]
+        F --> G["Everyone sees it on the board"]
+    end
+
+    style A fill:#10b981,color:#fff
+    style E fill:#10b981,color:#fff
+    style G fill:#10b981,color:#fff
+```
+
+### Side-by-Side Comparison
+
+| Aspect | Current (GitHub) | New (Dashboard) |
+|---|---|---|
+| **Trigger tests** | Go to GitHub → Actions → Select workflow → Fill inputs → Run | One click: "▶ Run E2E" on the dashboard |
+| **Which version to test?** | QA manually checks the release board, copies image tags | Auto-populated from the release board nominations |
+| **Monitor progress** | Keep refreshing GitHub Actions page | Live progress bar on the dashboard |
+| **View results** | Open Allure in a separate tab, navigate to the report | Results appear right on the dashboard with Allure link |
+| **Track all suites** | QA mentally tracks: "E2E ✅, Regression ✅, Smoke ❓" | Quality Gate banner: all suites aggregated in one view |
+| **Communicate readiness** | Copy results → paste in Slack → "@team we're good to go" | "✅ QA Sign-Off" button — visible to everyone on the board |
+| **Historical trends** | Dig through GitHub Actions run history | Trend sparklines right on the dashboard |
+| **Team visibility** | Only QA knows the test status | Everyone on the board sees 🚦 Quality Gate status |
+| **Environment setup** | Manually coordinate with DevOps for test environments | One-click on-demand environments from the dashboard |
+| **Audit trail** | Scattered across Slack messages and GHA logs | Built-in: who signed off, when, which runs passed |
+
+### Time Savings
+
+| Activity | Current | New | Saved |
+|---|---|---|---|
+| Trigger 3 test suites | ~10 min (navigate, fill inputs ×3) | ~30 sec (one click "Run All") | **~9 min** |
+| Check all results | ~15 min (open 3 Allure reports, compare) | ~0 min (auto-displayed) | **~15 min** |
+| Communicate status | ~10 min (screenshot, Slack, explain) | ~5 sec (click "QA Sign-Off") | **~10 min** |
+| Answer "are we ready?" | ~5 min (check each suite, respond) | ~0 min (Quality Gate visible to all) | **~5 min** |
+| **Per release cycle** | **~40 min of manual work** | **~1 min** | **~39 min** |
+
+### Key Benefits Summary
+
+| Benefit | Description |
+|---|---|
+| 🎯 **Version accuracy** | Tests always run against the exact versions nominated on the release board — no mismatch |
+| 👁️ **Full visibility** | Everyone (QA, dev, management) sees test status on the same dashboard — no asking around |
+| ⚡ **One-click execution** | "Run All" triggers smoke → e2e → regression sequentially, stops on first failure |
+| 🚦 **Clear go/no-go** | Quality Gate gives a single answer: "Can we release?" — no guessing |
+| 📝 **Audit trail** | QA sign-off is recorded: who, when, which runs passed — compliance-ready |
+| 📈 **Trend tracking** | See pass rate trends over the last 10 releases — catch regressions early |
+| 🖥️ **On-demand envs** | Spin up isolated test environments for specific versions without DevOps help |
+| ♻️ **Same pipeline** | Zero changes to existing tests — dashboard triggers the same GitHub Actions workflow |
+
+---
+
 ## How It Works — The Big Picture
 
 Your QA pipeline is a **single GitHub Actions workflow** that takes a `test_type` flag to run different suites. The dashboard simply triggers this same workflow.
@@ -547,8 +637,6 @@ A cleanup CronJob runs every hour and deletes namespaces past their TTL (default
   - [ ] E2E minimum pass rate: ____%
   - [ ] Regression minimum pass rate: ____%
   - [ ] Smoke minimum pass rate: ____%
-  - [ ] Max critical CVEs: ____
-  - [ ] Max high CVEs: ____
 - [ ] **On-demand env permissions** — can dashboard create namespaces?
 - [ ] **Environment TTL** — default 4 hours OK? ____
 
