@@ -1,107 +1,103 @@
 # QA Automation — Implementation Guide
 
-> Step-by-step guide for the QA team: how to build, deploy, and integrate QA test pipelines into the Release Readiness Dashboard.
+> Step-by-step guide for the QA team: how the test pipeline integrates with the Release Readiness Dashboard.
 
 ---
+
+## Your Application Stack
+
+| Layer | Count | Technology |
+|---|---|---|
+| **UI Apps** | 3+ | Node.js |
+| **API Services** | 25+ | Python |
+| **Total** | ~28+ services | Full stack |
 
 ## What We're Building
 
 A new **"🧪 QA" tab** on the Release Readiness Dashboard that lets the QA team:
 
-1. **Run test suites** (E2E, regression, performance, smoke) with one click
-2. **See test results** from Allure — pass/fail breakdown, trends, failure details
-3. **View quality gate** — a single go/no-go decision combining all test suites + Xray scans
+1. **Run tests** (E2E, smoke, regression) with one click — triggers your existing single pipeline
+2. **See results** from Allure — pass/fail breakdown, trends, failure details
+3. **View quality gate** — a go/no-go for QA sign-off
 4. **Manage test environments** — run against standing UAT or spin up on-demand
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Release Readiness Dashboard                                            │
-│ ┌──────┬──────┬──────┬──────┬───────┬──────┬──────┬──────┬────────────┐ │
-│ │Board │ UAT  │ Prod │Drift │Export │Audit │Deploy│ Chat │   🧪 QA   │ │
-│ └──────┴──────┴──────┴──────┴───────┴──────┴──────┴──────┴────────────┘ │
-│                                                                         │
-│  🧪 QA — NEW TAB                                                       │
-│ ┌──────────────────────────────────────────────────────────────────────┐ │
-│ │  🚦 Quality Gate: PASSED                                            │ │
-│ │  ✅ E2E: 97.2%  ✅ Regression: 99.1%  ⚠️ Perf P99: 480ms         │ │
-│ │  ✅ Smoke: 100%  ✅ Xray: 0 critical CVEs                          │ │
-│ ├──────────────────────────────────────────────────────────────────────┤ │
-│ │  ▶ Run E2E Tests   ▶ Run Regression   ▶ Run Perf   ▶ Run Smoke    │ │
-│ │  Environment: [UAT ▼]   Version: [auto from board]                 │ │
-│ ├──────────────────────────────────────────────────────────────────────┤ │
-│ │  📊 Latest Results                                                  │ │
-│ │  ┌────────────┬────────────┬────────────┬────────────┐              │ │
-│ │  │ E2E        │ Regression │ Performance│ Smoke      │              │ │
-│ │  │ ✅ 147/150 │ ✅ 298/300 │ ✅ P99:480 │ ✅ 50/50   │              │ │
-│ │  │ 97.2%      │ 99.1%      │ <500ms     │ 100%       │              │ │
-│ │  │ 12m ago    │ 3h ago     │ 1d ago     │ 2h ago     │              │ │
-│ │  │ [Allure ↗] │ [Allure ↗] │ [Allure ↗] │ [Allure ↗] │              │ │
-│ │  └────────────┴────────────┴────────────┴────────────┘              │ │
-│ ├──────────────────────────────────────────────────────────────────────┤ │
-│ │  📈 Trend (Last 10 Runs)                                           │ │
-│ │  E2E:  ████████▓█ 97%                                              │ │
-│ │  Regr: █████████▓ 99%                                              │ │
-│ │  Perf: ████████▓█ 96%                                              │ │
-│ └──────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+> **Not included**: Performance testing (LoadRunner) and security scanning (Xray) both already run in your CI pipeline and are not integrated into the dashboard.
 
 ---
 
 ## How It Works — The Big Picture
 
+Your QA pipeline is a **single GitHub Actions workflow** that takes a `test_type` flag to run different suites. The dashboard simply triggers this same workflow.
+
 ```mermaid
 sequenceDiagram
     participant QA as QA Engineer
-    participant Dash as Dashboard (Flask)
-    participant GHA as GitHub Actions
+    participant Dash as Dashboard
+    participant GHA as GitHub Actions<br/>(test-pipeline.yml)
     participant Allure as Allure Reports
-    participant Xray as Xray Scans
 
-    QA->>Dash: Click "▶ Run E2E Tests"
-    Dash->>GHA: Trigger workflow_dispatch (e2e-tests.yml)
-    GHA-->>Dash: Run ID #12345
+    QA->>Dash: Click "▶ Run E2E" (or smoke, regression)
+    Dash->>GHA: workflow_dispatch (test_type=e2e)
+    GHA-->>Dash: Run #12345
     Dash-->>QA: "Tests running..." (live progress)
-    
-    loop Poll every 10s
-        Dash->>GHA: Check run status
-        GHA-->>Dash: in_progress (60%)
-        Dash-->>QA: Update progress bar
-    end
 
-    GHA-->>GHA: Tests finish → publish Allure report
-    Dash->>Allure: Fetch test results
+    GHA->>GHA: pytest --test-type=e2e → Allure report
+    Dash->>Allure: Fetch results
     Allure-->>Dash: 147/150 passed (97.2%)
-    Dash->>Xray: Fetch vulnerability scan
-    Xray-->>Dash: 0 critical CVEs
-    Dash-->>QA: Show results + Quality Gate: ✅ PASSED
+    Dash-->>QA: Results + Quality Gate: ✅ PASSED
+
+    QA->>Dash: Click "✅ QA Sign-Off"
+    Dash-->>Dash: Board updated with QA approval
+```
+
+### Key Point: One Pipeline, Three Test Types
+
+```
+┌──────────────────────────────────────────────────────┐
+│  test-pipeline.yml                                    │
+│                                                       │
+│  inputs:                                              │
+│    test_type: [e2e | smoke | regression]              │
+│    environment: [uat | on-demand]                     │
+│                                                       │
+│  Dashboard triggers the SAME workflow                 │
+│  that already runs on push/schedule.                  │
+│  No changes to your tests needed.                     │
+└──────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Step 1: What QA Needs to Prepare
 
-### Your Test Workflows (GitHub Actions)
+### Your Test Pipeline
 
-Your existing test workflows need a `workflow_dispatch` trigger so the dashboard can invoke them. Most teams already have this.
-
-**Check**: Do your workflows already have `workflow_dispatch`?
+Your existing pipeline needs a `workflow_dispatch` trigger. Check if it already has one:
 
 ```bash
-# Check your existing workflow files
-grep -r "workflow_dispatch" .github/workflows/
+grep "workflow_dispatch" .github/workflows/test-pipeline.yml
 ```
 
-If not, add this to each test workflow:
+If not, add it to the existing `on:` section:
 
 ```yaml
-# .github/workflows/e2e-tests.yml
-name: E2E Tests
+# .github/workflows/test-pipeline.yml (your existing file)
+name: Test Pipeline
 on:
-  push:              # ← keep your existing triggers
+  push:                    # ← keep existing triggers
     branches: [main]
-  workflow_dispatch:  # ← ADD THIS LINE
+  schedule:                # ← keep if you have scheduled runs
+    - cron: '0 6 * * *'
+  workflow_dispatch:       # ← ADD THIS BLOCK
     inputs:
+      test_type:
+        description: 'Test type to run'
+        required: true
+        type: choice
+        options:
+          - e2e
+          - smoke
+          - regression
       environment:
         description: 'Target environment'
         required: true
@@ -109,260 +105,324 @@ on:
         type: choice
         options:
           - uat
-          - staging
-      version:
-        description: 'Image tag to test (optional — uses latest if empty)'
+          - on-demand
+      target_namespace:
+        description: 'Namespace (for on-demand envs)'
         required: false
         type: string
 
-# ... rest of your existing workflow
+# Rest of your pipeline stays exactly the same
+jobs:
+  test:
+    runs-on: [self-hosted]
+    steps:
+      # ... your existing test steps ...
 ```
 
-That's it. **No changes to your tests.** The dashboard just triggers the same workflow that already runs on push/schedule.
+**That's it.** No changes to your tests. The dashboard triggers the exact same workflow.
 
-### Required Secrets / Tokens
+### Required Tokens
 
-| What | Where to Get | Used By |
+| What | Scope Needed | Who Creates It |
 |---|---|---|
-| `GITHUB_TOKEN` (PAT) | GitHub Settings → Developer Settings → Personal Access Tokens | Dashboard → trigger workflows |
-| `ALLURE_URL` | Your Allure server URL | Dashboard → fetch results |
-| `ALLURE_TOKEN` | Allure TestOps → API Tokens | Dashboard → authenticate |
-| `XRAY_URL` | JFrog Platform → Xray | Dashboard → vulnerability results |
-| `XRAY_TOKEN` | JFrog → API Keys | Dashboard → authenticate |
+| `GITHUB_TOKEN` | `actions:write` + `repo:read` | DevOps (may already exist — used by Deploy tab) |
+| `ALLURE_TOKEN` | API read access | QA team |
 
-> **Note**: The dashboard already uses `GITHUB_TOKEN` for the Deploy tab. The same token works for triggering workflows — it just needs `actions:write` scope added.
+> **Note**: The dashboard already uses `GITHUB_TOKEN` for the Deploy tab. The same token works — just needs `actions:write` scope added if not already present.
 
 ---
 
-## Step 2: Where to Store the MCP Servers
+## Step 2: Where This Gets Built
 
-### Option A: Inside Release Readiness (Recommended — Fastest)
+### Recommended: Add directly to the dashboard (fastest)
 
-Since the dashboard already has GitHub API integration (`_github_get`, `_github_post` helpers), the simplest approach is to add the QA endpoints **directly into `app.py`** — no separate MCP server needed for v1.
+Since the dashboard already has GitHub API helpers, the QA endpoints go **directly into `app.py`** — no separate server needed for v1.
 
 ```
 release_readiness/
 ├── app.py                    ← Add /api/qa/* endpoints here
 ├── templates/
-│   └── index.html            ← Add QA tab UI here
+│   └── index.html            ← Add QA tab here
 └── docs/
-    └── QA-AUTOMATION-MCP-DESIGN.md
+    ├── QA-AUTOMATION-MCP-DESIGN.md
+    └── QA-IMPLEMENTATION-GUIDE.md   ← This file
 ```
 
-**Why this is fastest**:
-- Reuses existing `GITHUB_TOKEN`, `_github_get()`, `_github_post()` helpers
-- No new deployment, no new container, no new service
-- QA tab is just another tab like UAT/Prod/Deploy
+The dashboard already has `_github_get()` and `_github_post()` helper functions. QA endpoints just reuse them:
 
-### Option B: Separate MCP Server (Production Scale)
-
-For production with multiple teams, build dedicated MCP servers:
-
+```python
+# Already exists in app.py
+_github_post('/repos/your-org/qa-tests/actions/workflows/test-pipeline.yml/dispatches', {
+    "ref": "main",
+    "inputs": {"test_type": "e2e", "environment": "uat"}
+})
 ```
-enterprise-mcp-servers/        ← Your existing MCP repo
-├── test-runner-mcp/
-│   ├── server.py              ← GitHub Actions trigger
-│   ├── config.py              ← Workflow file mapping
-│   ├── Dockerfile
-│   └── requirements.txt
-├── test-results-mcp/
-│   ├── server.py              ← Allure API client
-│   ├── allure_client.py
-│   ├── Dockerfile
-│   └── requirements.txt
-└── xray-security-mcp/
-    ├── server.py              ← Xray scan results
-    ├── xray_client.py
-    ├── Dockerfile
-    └── requirements.txt
-```
-
-Deploy each as a separate pod on OpenShift. The dashboard connects via `QA_MCP_URL` (same pattern as `CONFLUENCE_MCP_URL`).
-
-### Recommendation
-
-> **Start with Option A** (add to app.py). If the QA team loves it and usage grows, refactor into separate MCP servers (Option B) later. The API endpoints stay the same either way.
 
 ---
 
-## Step 3: The API Endpoints (What Gets Built)
+## Step 3: The QA Tab UI
 
-These endpoints go into `app.py` (Option A) or the MCP server (Option B):
+### What the QA team sees on the dashboard:
 
-### Test Runner Endpoints
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Release Readiness Dashboard                                            │
+│ ┌──────┬──────┬──────┬──────┬───────┬──────┬──────┬──────┬────────────┐ │
+│ │Board │ UAT  │ Prod │Drift │Export │Audit │Deploy│ Chat │   🧪 QA   │ │
+│ └──────┴──────┴──────┴──────┴───────┴──────┴──────┴──────┴────────────┘ │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Section 1: Quality Gate Banner
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  🚦 QUALITY GATE: ✅ PASSED — Ready for QA Sign-Off         │
+│                                                              │
+│  ✅ E2E Pass Rate       97.2%  ≥ 95%   ✓                    │
+│  ✅ Regression          99.1%  ≥ 98%   ✓                    │
+│  ✅ Smoke Tests         100%   ≥ 100%  ✓                    │
+│                                                              │
+│  [📋 Full Report]  [✅ QA Sign-Off]                          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Section 2: Run Tests
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  ▶ Run Tests                                                 │
+│                                                              │
+│  Test Type: [E2E ▼]   Environment: [Standing UAT ▼]         │
+│                                                              │
+│  Versions auto-populated from the release board              │
+│                                                              │
+│  [▶ Run Selected]  [▶▶ Run All (E2E + Smoke + Regression)]  │
+│                                                              │
+│  ⚡ Run All triggers 3 sequential GitHub Actions runs:       │
+│     1. smoke → 2. e2e → 3. regression                       │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Section 3: Test Results Cards
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  📊 Latest Results                                           │
+│                                                              │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────┐ │
+│  │ 🧪 E2E          │  │ 🧪 Regression   │  │ 🧪 Smoke     │ │
+│  │                 │  │                 │  │              │ │
+│  │   97.2%         │  │   99.1%         │  │   100%       │ │
+│  │   147/150       │  │   298/300       │  │   50/50      │ │
+│  │                 │  │                 │  │              │ │
+│  │ 🟢 3 failed     │  │ 🟢 2 failed     │  │ 🟢 0 failed  │ │
+│  │ ⏱ 14 min        │  │ ⏱ 45 min        │  │ ⏱ 3 min      │ │
+│  │ 12 min ago      │  │ 3 hrs ago       │  │ 2 hrs ago    │ │
+│  │                 │  │                 │  │              │ │
+│  │ [📊 Allure ↗]   │  │ [📊 Allure ↗]   │  │ [📊 Allure ↗]│ │
+│  │ [🔗 GHA Run ↗]  │  │ [🔗 GHA Run ↗]  │  │ [🔗 GHA ↗]  │ │
+│  └─────────────────┘  └─────────────────┘  └──────────────┘ │
+│                                                              │
+│  ❌ Failed Tests (5 total)                                   │
+│  ├── test_checkout_flow — Timeout 30s        [Allure ↗]     │
+│  ├── test_payment_retry — 500 Error          [Allure ↗]     │
+│  ├── test_email_notify — SMTP refused        [Allure ↗]     │
+│  ├── test_user_signup  — Assertion failed    [Allure ↗]     │
+│  └── test_order_cancel — Connection reset    [Allure ↗]     │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Section 4: On-Demand Environments
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  🖥️ Test Environments                                       │
+│                                                              │
+│  Standing UAT: ✅ uat-prod (25+ services running)           │
+│                                                              │
+│  On-Demand Environments:                                     │
+│  ┌────────────────┬────────────┬──────────┬────────────────┐│
+│  │ Namespace       │ Services   │ Expires  │ Actions        ││
+│  ├────────────────┼────────────┼──────────┼────────────────┤│
+│  │ test-env-a1b2c3│ 4 deployed │ 2h left  │ [▶Test][🗑️Del]││
+│  │                │ 24 → UAT   │          │                ││
+│  └────────────────┴────────────┴──────────┴────────────────┘│
+│                                                              │
+│  [🚀 Create Full Clone (28 services)]                       │
+│  [🎯 Create Targeted (board nominated only)]                │
+│                                                              │
+│  ℹ️ Full Clone: copies all 25+ Python + 3+ Node.js apps     │
+│  ℹ️ Targeted: deploys only changed services, routes rest    │
+│     to standing UAT via DNS                                  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Step 4: On-Demand Environments — How It Works
+
+### The Challenge
+
+Your app has **28+ services**. Spinning up a full copy is expensive. Here are two approaches:
+
+### Approach 1: Targeted Deploy (Recommended for daily use)
+
+Only deploy the **services being released** (from the board). Route everything else to the standing UAT.
+
+```mermaid
+graph LR
+    subgraph "On-Demand Namespace: test-env-abc123"
+        A["billing-service<br/>v2.4.1 (new)"]
+        B["payment-gateway<br/>v3.1.0 (new)"]
+        C["user-service →<br/>ExternalName → UAT"]
+        D["order-service →<br/>ExternalName → UAT"]
+        E["... 24 others →<br/>ExternalName → UAT"]
+    end
+
+    subgraph "Standing UAT"
+        F["user-service v3.2.0"]
+        G["order-service v1.8.0"]
+        H["... 24 other services"]
+    end
+
+    C -->|DNS| F
+    D -->|DNS| G
+    E -->|DNS| H
+
+    style A fill:#10b981,color:#fff
+    style B fill:#10b981,color:#fff
+    style C fill:#6b7280,color:#fff
+    style D fill:#6b7280,color:#fff
+    style E fill:#6b7280,color:#fff
+```
+
+**How it works**:
+1. Dashboard reads the release board → 4 services nominated
+2. Creates new OpenShift namespace `test-env-abc123`
+3. Deploys only those 4 services at the board versions
+4. Creates `ExternalName` services for the other 24 → routes to UAT
+5. Runs tests against `test-env-abc123`
+6. Auto-deletes after tests complete or 4h TTL
+
+**Resources**: Only 4 pods instead of 28+
+
+### Approach 2: Full Clone (For major releases)
+
+Clone the entire UAT namespace. All 28+ services deployed at 1 replica each.
+
+**How it works**:
+1. Creates new namespace
+2. Copies all secrets, configmaps, services from UAT
+3. Clones all 28+ deployments (1 replica each)
+4. Overrides image tags for nominated services
+5. Takes 3-5 minutes to fully start up
+6. Auto-deletes after 4h
+
+**Resources**: 28+ pods (but only 1 replica each)
+
+### Which to use?
+
+| Scenario | Approach |
+|---|---|
+| Weekly release, 3-5 services changed | **Targeted** (fast, efficient) |
+| Major release, 15+ services changed | **Full Clone** (complete isolation) |
+| Quick smoke test before cutoff | **Standing UAT** (no provisioning) |
+
+---
+
+## Step 5: API Endpoints
+
+### Test Runner
 
 ```
 POST /api/qa/run
-  Body: { "suite": "e2e", "environment": "uat", "version": "2.4.1" }
-  Response: { "run_id": 12345, "status": "triggered", "html_url": "https://github.com/..." }
+  Body: { "test_type": "e2e", "environment": "uat" }
+  Response: { "run_id": 12345, "status": "triggered", "html_url": "..." }
 
 GET /api/qa/status/<run_id>
-  Response: { "status": "in_progress", "conclusion": null, "started_at": "..." }
+  Response: { "status": "in_progress", "conclusion": null }
 
 POST /api/qa/cancel/<run_id>
   Response: { "cancelled": true }
 
-GET /api/qa/history/<suite>?limit=10
-  Response: [{ "run_id": 12345, "status": "completed", "conclusion": "success", ... }]
+POST /api/qa/run-all
+  Body: { "environment": "uat" }
+  Response: { "runs": [
+    { "test_type": "smoke", "run_id": 12345 },
+    { "test_type": "e2e", "run_id": 12346 },
+    { "test_type": "regression", "run_id": 12347 }
+  ]}
 ```
 
-### Test Results Endpoints
+### Test Results
 
 ```
 GET /api/qa/results/<run_id>
   Response: {
-    "total": 150, "passed": 147, "failed": 3, "skipped": 0,
+    "total": 150, "passed": 147, "failed": 3,
     "pass_rate": 97.2, "duration_seconds": 840,
     "report_url": "https://allure.company.com/launch/456",
-    "failures": [
-      { "name": "test_checkout_flow", "message": "Timeout after 30s", "category": "broken" }
-    ]
+    "failures": [{ "name": "test_checkout", "message": "Timeout 30s" }]
   }
 
-GET /api/qa/results/latest?suite=e2e&environment=uat
-  Response: { ... same as above, for the latest run ... }
-
-GET /api/qa/results/trend?suite=e2e&days=30
-  Response: [{ "date": "2026-05-21", "pass_rate": 97.2, "total": 150 }, ...]
+GET /api/qa/results/latest?test_type=e2e
+  Response: { ... same as above ... }
 ```
 
-### Quality Gate Endpoint
+### Quality Gate
 
 ```
 GET /api/qa/quality-gate
   Response: {
     "overall": "PASSED",
     "checks": [
-      { "name": "E2E Pass Rate", "value": 97.2, "threshold": 95, "status": "passed" },
-      { "name": "Regression Pass Rate", "value": 99.1, "threshold": 98, "status": "passed" },
-      { "name": "Performance P99", "value": 480, "threshold": 500, "status": "warning" },
-      { "name": "Xray Critical CVEs", "value": 0, "threshold": 0, "status": "passed" },
+      { "name": "E2E", "value": 97.2, "threshold": 95, "status": "passed" },
+      { "name": "Regression", "value": 99.1, "threshold": 98, "status": "passed" },
+      { "name": "Smoke", "value": 100, "threshold": 100, "status": "passed" }
     ],
-    "can_release": true,
-    "last_updated": "2026-05-21T14:30:00Z"
+    "can_release": true
   }
+
+POST /api/qa/signoff
+  Body: { "signed_off_by": "qa-lead", "notes": "All suites green" }
+  Response: { "signed_off": true, "at": "2026-05-21T15:00:00Z" }
 ```
 
-### Xray Security Endpoints
+### On-Demand Environments
 
 ```
-GET /api/qa/xray/scan?image=billing-service&tag=v2.4.1
+POST /api/qa/env/provision
+  Body: { "mode": "targeted", "ttl_hours": 4 }
   Response: {
-    "critical": 0, "high": 3, "medium": 12, "low": 45,
-    "total_cves": 60,
-    "policy_status": "PASSED",
-    "violations": [
-      { "cve": "CVE-2026-1234", "severity": "high", "component": "log4j", "fixed_version": "2.20.0" }
-    ]
+    "namespace": "test-env-abc123",
+    "changed_services": ["billing-service", "payment-gateway"],
+    "routed_to_uat": 26,
+    "status": "provisioning"
   }
+
+GET /api/qa/env/list
+  Response: [{ "namespace": "test-env-abc123", "services": 4, "expires_in": "2h" }]
+
+DELETE /api/qa/env/<namespace>
+  Response: { "deleted": true }
 ```
 
 ---
 
-## Step 4: How It Integrates with Existing GitHub Auth
+## Step 6: Configuration
 
-The dashboard already has GitHub integration. Here's how QA reuses it:
-
-```mermaid
-graph TB
-    subgraph "Already Built (in app.py)"
-        Token["GITHUB_TOKEN<br/>(PAT or OAuth)"]
-        Helper1["_github_get(path)"]
-        Helper2["_github_post(path, data)"]
-        Deploy["Deploy Tab<br/>/api/deploy/*"]
-        GHStatus["GitHub Status<br/>/api/github/status"]
-    end
-
-    subgraph "New QA Endpoints (same pattern)"
-        RunTests["/api/qa/run<br/>→ _github_post('/repos/.../actions/workflows/.../dispatches')"]
-        GetStatus["/api/qa/status/<run_id><br/>→ _github_get('/repos/.../actions/runs/...')"]
-        GetHistory["/api/qa/history<br/>→ _github_get('/repos/.../actions/workflows/.../runs')"]
-    end
-
-    Token --> Helper1
-    Token --> Helper2
-    Helper1 --> Deploy
-    Helper1 --> GHStatus
-    Helper2 --> Deploy
-
-    Helper1 --> GetStatus
-    Helper1 --> GetHistory
-    Helper2 --> RunTests
-
-    style RunTests fill:#10b981,color:#fff
-    style GetStatus fill:#10b981,color:#fff
-    style GetHistory fill:#10b981,color:#fff
-```
-
-**Key point**: No new GitHub tokens needed. The existing `GITHUB_TOKEN` just needs the `actions:write` scope added (if not already present).
-
-```python
-# Existing code in app.py (already there)
-GITHUB_TOKEN = os.getenv('GITHUB_TOKEN', '')
-GITHUB_API   = 'https://api.github.com'  # or GitHub Enterprise URL
-
-def _github_get(path, params=None):
-    """GET request to GitHub API."""
-    url = f'{GITHUB_API}{path}'
-    r = gh_http.get(url, headers=_github_headers(), params=params, timeout=15)
-    return r.json()
-
-def _github_post(path, data=None):
-    """POST request to GitHub API."""
-    url = f'{GITHUB_API}{path}'
-    r = gh_http.post(url, headers=_github_headers(), json=data, timeout=15)
-    return r
-
-# NEW: QA endpoints use the same helpers
-@app.route('/api/qa/run', methods=['POST'])
-def qa_run_tests():
-    data = request.json
-    suite = data.get('suite', 'e2e')
-    workflow_file = QA_SUITE_WORKFLOWS.get(suite)
-    
-    # Trigger using existing GitHub helper
-    resp = _github_post(
-        f'/repos/{QA_REPO}/actions/workflows/{workflow_file}/dispatches',
-        data={
-            "ref": "main",
-            "inputs": {
-                "environment": data.get('environment', 'uat'),
-                "version": data.get('version', ''),
-            }
-        }
-    )
-    # ... return run_id
-```
-
----
-
-## Step 5: Configuration
-
-Add these environment variables to the dashboard deployment:
+Add to the dashboard's environment variables:
 
 ```yaml
-# deployment.yaml (add to existing env section)
 env:
-  # ── Existing (already configured) ──
-  - name: GITHUB_TOKEN
-    valueFrom:
-      secretKeyRef:
-        name: release-readiness-secrets
-        key: github-token
-
-  # ── NEW: QA Test Runner ──
+  # ── QA Test Runner (reuses existing GITHUB_TOKEN) ──
   - name: QA_TEST_REPO
-    value: "your-org/qa-tests"          # GitHub repo with test workflows
-  - name: QA_WORKFLOW_E2E
-    value: "e2e-tests.yml"              # Workflow filename for E2E
-  - name: QA_WORKFLOW_REGRESSION
-    value: "regression-suite.yml"       # Workflow filename for regression
-  - name: QA_WORKFLOW_PERFORMANCE
-    value: "performance-tests.yml"      # Workflow filename for perf
-  - name: QA_WORKFLOW_SMOKE
-    value: "smoke-tests.yml"            # Workflow filename for smoke
+    value: "your-org/qa-tests"          # Repo with test pipeline
+  - name: QA_WORKFLOW_FILE
+    value: "test-pipeline.yml"          # Single workflow filename
 
-  # ── NEW: Allure Results ──
+  # ── Allure Results ──
   - name: ALLURE_URL
     value: "https://allure.company.com"
   - name: ALLURE_TOKEN
@@ -371,99 +431,9 @@ env:
         name: release-readiness-secrets
         key: allure-token
 
-  # ── NEW: Xray Security ──
-  - name: XRAY_URL
-    value: "https://xray.company.com"
-  - name: XRAY_TOKEN
-    valueFrom:
-      secretKeyRef:
-        name: release-readiness-secrets
-        key: xray-token
-```
-
----
-
-## Step 6: The QA Tab UI
-
-### What the QA team sees
-
-The QA tab has 4 sections:
-
-#### Section 1: Quality Gate (top)
-
-A big status banner showing the release readiness verdict:
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  🚦 QUALITY GATE: ✅ PASSED — Ready for Release             │
-│                                                              │
-│  ✅ E2E Pass Rate       97.2%  ≥ 95%   ✓                    │
-│  ✅ Regression          99.1%  ≥ 98%   ✓                    │
-│  ⚠️ Performance P99    480ms  ≤ 500ms  ⚠ close to threshold │
-│  ✅ Smoke Tests         100%   ≥ 100%  ✓                    │
-│  ✅ Xray Critical       0      ≤ 0     ✓                    │
-│  ⚠️ Xray High          3      ≤ 5     ⚠                    │
-│                                                              │
-│  [📋 Full Report]  [🔓 Override Gate]                        │
-└──────────────────────────────────────────────────────────────┘
-```
-
-#### Section 2: Run Tests (action bar)
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  ▶ Run Tests                                                 │
-│                                                              │
-│  Suite: [E2E ▼]  Environment: [UAT ▼]  Version: [auto ▼]   │
-│                                                              │
-│  [▶ Run Selected Suite]  [▶▶ Run All Suites]                │
-│                                                              │
-│  ℹ️ Versions auto-populated from the release board           │
-└──────────────────────────────────────────────────────────────┘
-```
-
-#### Section 3: Live Test Results
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  📊 Test Results                                             │
-│                                                              │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐        │
-│  │ 🧪 E2E       │ │ 🧪 Regression│ │ 🧪 Performance│        │
-│  │              │ │              │ │              │        │
-│  │   97.2%      │ │   99.1%      │ │   P99: 480ms │        │
-│  │  147/150     │ │  298/300     │ │   avg: 120ms │        │
-│  │              │ │              │ │              │        │
-│  │ 🟢 3 failed  │ │ 🟢 2 failed  │ │ 🟢 passed    │        │
-│  │ ⏱ 14 min     │ │ ⏱ 45 min     │ │ ⏱ 22 min     │        │
-│  │ 12 min ago   │ │ 3 hrs ago    │ │ 1 day ago    │        │
-│  │              │ │              │ │              │        │
-│  │ [Allure ↗]   │ │ [Allure ↗]   │ │ [Allure ↗]   │        │
-│  │ [GHA Run ↗]  │ │ [GHA Run ↗]  │ │ [GHA Run ↗]  │        │
-│  └──────────────┘ └──────────────┘ └──────────────┘        │
-│                                                              │
-│  ❌ Failed Tests (3)                                         │
-│  ├── test_checkout_flow — Timeout after 30s     [Allure ↗]  │
-│  ├── test_payment_retry — 500 Internal Error    [Allure ↗]  │
-│  └── test_email_notify — SMTP connection refused[Allure ↗]  │
-└──────────────────────────────────────────────────────────────┘
-```
-
-#### Section 4: Xray Security Summary
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  🛡️ Xray Security Scan                                      │
-│                                                              │
-│  Critical: 0  High: 3  Medium: 12  Low: 45                  │
-│                                                              │
-│  ⚠️ High Severity (3)                                       │
-│  ├── CVE-2026-1234 — log4j 2.17.0 (fix: 2.20.0)           │
-│  ├── CVE-2026-5678 — spring-core 5.3.20 (fix: 5.3.27)     │
-│  └── CVE-2026-9012 — jackson-databind (fix: 2.15.0)        │
-│                                                              │
-│  [View Full Xray Report ↗]                                   │
-└──────────────────────────────────────────────────────────────┘
+  # ── On-Demand Environments ──
+  - name: UAT_NAMESPACE
+    value: "uat-prod"                    # Source namespace to clone from
 ```
 
 ---
@@ -472,175 +442,115 @@ A big status banner showing the release readiness verdict:
 
 ### Phase 1 — Test Runner (Week 1)
 
-**Goal**: QA can trigger GitHub Actions workflows from the dashboard
-
 ```
-What to build:
-1. Add QA config to app.py (QA_TEST_REPO, QA_SUITE_WORKFLOWS)
-2. Add /api/qa/run endpoint (trigger workflow_dispatch)
-3. Add /api/qa/status/<run_id> endpoint (poll GHA run status)
-4. Add /api/qa/history/<suite> endpoint (recent runs)
-5. Add QA tab UI with suite selector + "Run" button + progress bar
-6. Add live polling (every 10s while tests run)
-```
+Build:
+✅ Add QA_TEST_REPO, QA_WORKFLOW_FILE config to app.py
+✅ Add POST /api/qa/run endpoint (triggers workflow_dispatch with test_type)
+✅ Add GET /api/qa/status/<run_id> endpoint (polls GHA run)
+✅ Add QA tab UI with test type selector + "Run" button
+✅ Add live polling (every 10s while tests run)
 
-**QA team action**: Share your workflow filenames (e.g., `e2e-tests.yml`)
+QA team action:
+→ Share workflow filename (test-pipeline.yml or similar)
+→ Confirm workflow_dispatch trigger is added
+→ Verify GITHUB_TOKEN has actions:write scope
+```
 
 ### Phase 2 — Allure Results (Week 2)
 
-**Goal**: Test results appear on the dashboard with Allure links
-
 ```
-What to build:
-1. Add /api/qa/results/<run_id> endpoint (fetch from Allure API)
-2. Add /api/qa/results/latest endpoint (latest per suite)
-3. Add test result cards (pass/fail gauges) to QA tab
-4. Add failure list with stack traces
-5. Add "Open Allure Report" links
-6. Add trend sparklines (last 10 runs)
-```
+Build:
+✅ Add GET /api/qa/results/<run_id> endpoint (fetch from Allure)
+✅ Add test result cards (pass/fail gauges) to QA tab
+✅ Add failure list with stack traces
+✅ Add "Open Allure Report" links
+✅ Add trend sparklines
 
-**QA team action**: Provide Allure server URL and API token
-
-### Phase 3 — Quality Gate (Week 3)
-
-**Goal**: Single go/no-go verdict for release sign-off
-
-```
-What to build:
-1. Add quality gate rules config (thresholds per suite)
-2. Add /api/qa/quality-gate endpoint (aggregate check)
-3. Add quality gate banner to QA tab (and also to Board tab)
-4. Add override mechanism (QA lead can override with reason)
-5. Log gate decisions to audit trail
+QA team action:
+→ Provide Allure server URL
+→ Provide Allure API token
 ```
 
-**QA team action**: Define pass/fail thresholds for each suite
-
-### Phase 4 — Xray Integration (Week 3-4)
-
-**Goal**: CVE visibility on the release board
+### Phase 3 — Quality Gate + QA Sign-Off (Week 3)
 
 ```
-What to build:
-1. Add /api/qa/xray/scan endpoint (fetch from Xray API)
-2. Add security badge next to each nominated service
-3. Add Xray summary to Quality Gate checks
-4. Block release if critical CVEs > 0
+Build:
+✅ Add quality gate rules config
+✅ Add GET /api/qa/quality-gate endpoint
+✅ Add quality gate banner to QA tab
+✅ Add POST /api/qa/signoff endpoint
+✅ Log sign-off to audit trail
+
+QA team action:
+→ Define pass/fail thresholds per test type
+→ Decide who can sign off (any QA? QA lead only?)
 ```
 
-**QA team action**: Provide Xray API URL and token
-
-### Phase 5 — On-Demand Environments (Week 4-5)
-
-**Goal**: Spin up isolated test environments for specific versions
+### Phase 4 — On-Demand Environments (Week 4-5)
 
 ```
-What to build:
-1. Add /api/qa/env/provision endpoint (create OpenShift namespace)
-2. Deploy services at board-nominated versions
-3. Auto-delete after test completion or 4h TTL
-4. Add environment management UI to QA tab
-```
+Build:
+✅ Add POST /api/qa/env/provision endpoint (targeted mode)
+✅ Add POST /api/qa/env/provision endpoint (full clone mode)
+✅ Add GET /api/qa/env/list, DELETE /api/qa/env/<ns>
+✅ Add environment management UI to QA tab
+✅ Deploy cleanup CronJob (auto-delete expired envs)
 
-**QA team action**: Provide namespace permissions, base deployment specs
+QA team action:
+→ Provide OpenShift namespace permissions
+→ Decide on TTL (default 4 hours)
+```
 
 ---
 
 ## FAQ for QA Team
 
 ### Q: Do we need to change our tests?
-**No.** Your tests stay exactly as they are. The dashboard just triggers the same GitHub Actions workflows that already run. The only change is adding `workflow_dispatch` to the trigger list (if not already there).
+**No.** The dashboard triggers the same `test-pipeline.yml` workflow you already use. Just make sure `workflow_dispatch` is in the trigger list.
 
-### Q: Does this replace our existing CI/CD?
-**No.** This is an additional way to trigger tests — from the dashboard UI. Your existing push/PR triggers, scheduled runs, etc. all continue working.
+### Q: Does this replace our test pipeline?
+**No.** This is an additional way to trigger it — from the dashboard UI. Your existing push/PR/scheduled triggers continue working exactly as before.
 
-### Q: What if a test fails?
-The dashboard shows the failure with a link to the Allure report. QA investigates using Allure just like today. The quality gate prevents release sign-off until the issue is resolved.
+### Q: What about performance tests (LoadRunner)?
+Performance tests run separately via LoadRunner and are **not** included in the dashboard. Similarly, Xray security scans already run in your CI pipeline. The QA tab covers E2E, smoke, and regression testing only.
+
+### Q: How does the single pipeline know which test type to run?
+Your pipeline already accepts a `test_type` input (e2e / smoke / regression). The dashboard sends this as a `workflow_dispatch` input — same as selecting it manually in GitHub Actions UI.
+
+### Q: How does "Run All" work?
+It triggers the pipeline **3 times sequentially**: smoke first (fast gate), then e2e, then regression. If smoke fails, it stops and doesn't run the others.
 
 ### Q: Can we still run tests from GitHub?
-**Yes.** The dashboard triggers the exact same workflows. You can still go to GitHub Actions → Run workflow manually, or let them run on push. Results show up on the dashboard either way.
+**Yes.** The dashboard triggers the exact same workflow. You can still go to GitHub Actions → Run workflow manually.
 
 ### Q: What permissions does the GitHub token need?
-The existing `GITHUB_TOKEN` needs the `actions:write` scope added. Everything else (`repo:read`, etc.) is already configured for the Deploy tab.
+The existing `GITHUB_TOKEN` needs `actions:write` scope. Everything else (`repo:read`, etc.) is already configured.
 
-### Q: How does version auto-populate?
-When a service is nominated on the Release Board (e.g., `billing-service v2.4.1`), the QA tab automatically picks up those versions. So when you click "Run E2E Tests", it tests the exact versions being released.
+### Q: How does the on-demand environment deploy 28+ services?
+Two options:
+- **Targeted**: Only deploys the 3-5 changed services, routes the rest to standing UAT via DNS
+- **Full Clone**: Copies all 28+ services from UAT into a new namespace (1 replica each)
 
-### Q: What happens if Allure is down?
-The dashboard falls back to GitHub Actions' built-in test report (JUnit XML). Results are less detailed but still show pass/fail counts.
-
----
-
-## Architecture Comparison: Current vs. With QA
-
-```mermaid
-graph TB
-    subgraph "Current Dashboard"
-        D1["Release Board"]
-        D2["UAT / Prod Tabs"]
-        D3["Deploy Tab"]
-        D4["Confluence"]
-        D5["AI Chat"]
-    end
-
-    subgraph "With QA Tab (NEW)"
-        D6["🧪 QA Tab"]
-        D6a["▶ Run Tests"]
-        D6b["📊 Results"]
-        D6c["🚦 Quality Gate"]
-        D6d["🛡️ Xray"]
-    end
-
-    subgraph "External Systems"
-        GH["GitHub"]
-        K8s["OpenShift"]
-        Conf["Confluence"]
-        GHA["GitHub Actions"]
-        Allure["Allure"]
-        Xray["Xray"]
-    end
-
-    D1 --> K8s
-    D2 --> K8s
-    D3 --> GH
-    D4 --> Conf
-    
-    D6a --> GHA
-    D6b --> Allure
-    D6c --> D6b
-    D6c --> D6d
-    D6d --> Xray
-
-    style D6 fill:#6366f1,color:#fff
-    style D6a fill:#10b981,color:#fff
-    style D6b fill:#10b981,color:#fff
-    style D6c fill:#10b981,color:#fff
-    style D6d fill:#10b981,color:#fff
-```
+### Q: What happens when a test environment expires?
+A cleanup CronJob runs every hour and deletes namespaces past their TTL (default 4 hours).
 
 ---
 
 ## Checklist: What QA Team Needs to Provide
 
-- [ ] **Test repo name** — GitHub org/repo where test workflows live (e.g., `your-org/qa-tests`)
-- [ ] **Workflow filenames** — The `.yml` files for each suite:
-  - [ ] E2E: `__________.yml`
-  - [ ] Regression: `__________.yml`
-  - [ ] Performance: `__________.yml`
-  - [ ] Smoke: `__________.yml`
+- [ ] **Test repo name** — e.g., `your-org/qa-tests`
+- [ ] **Workflow filename** — e.g., `test-pipeline.yml`
+- [ ] **Confirm `test_type` input values** — e2e, smoke, regression (exact strings)
 - [ ] **Allure server URL** — e.g., `https://allure.company.com`
-- [ ] **Allure API token** — for fetching results
-- [ ] **Xray API URL** — e.g., `https://xray.company.com`
-- [ ] **Xray API token** — for fetching scan results
+- [ ] **Allure API token**
 - [ ] **Quality gate thresholds**:
   - [ ] E2E minimum pass rate: ____%
   - [ ] Regression minimum pass rate: ____%
-  - [ ] Performance P99 max: ____ms
   - [ ] Smoke minimum pass rate: ____%
-  - [ ] Max critical CVEs allowed: ____
-  - [ ] Max high CVEs allowed: ____
-- [ ] **GitHub PAT scope** — confirm `actions:write` is enabled on the existing token
+  - [ ] Max critical CVEs: ____
+  - [ ] Max high CVEs: ____
+- [ ] **On-demand env permissions** — can dashboard create namespaces?
+- [ ] **Environment TTL** — default 4 hours OK? ____
 
 ---
 
