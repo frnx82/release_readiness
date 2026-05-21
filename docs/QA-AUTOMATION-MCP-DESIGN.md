@@ -324,234 +324,292 @@ async def test_results_latest(test_type: str, environment: str = "uat"):
 
 ## MCP Server #4: Environment Manager
 
-**Purpose**: Manage on-demand test environments for the full application stack (25+ Python microservices + 3+ Node.js UI apps).
+**Purpose**: Provision a full QA test environment with all 28+ services — nominated services at release candidate versions, non-nominated services at production live versions — deployed into a **pre-provisioned namespace** via GitHub Actions → ArgoCD MetaApp.
 
 ### The Challenge
 
-With 25+ Python services and 3+ UI apps, spinning up a full environment is not trivial. Here's the practical strategy:
+With 25+ Python services and 3+ UI apps, QA needs a complete environment that mirrors production **but** includes the release candidate versions being tested. Manually setting this up takes 2-3 hours. The Environment Manager automates this to ~10 minutes.
+
+### Infrastructure Constraints
+
+| Constraint | Detail |
+|---|---|
+| **Namespace** | Pre-provisioned by the platform team (not auto-created by dashboard) |
+| **Current platform** | OpenShift with GitHub CI/CD pipelines |
+| **Future platform** | Google Distributed Cloud (GDC) with GitHub CI + ArgoCD |
+| **Deployment method** | GitHub Actions workflow → ArgoCD MetaApp sync |
+| **Cluster topology** | QA namespace is on the **same cluster** as UAT |
+| **ArgoCD MetaApp** | Single ArgoCD YAML that deploys all applications at once (App-of-Apps pattern) |
 
 ### On-Demand Environment Strategy
 
 ![On-Demand Environment Strategy](images/ondemand-env-diagram.png)
 
-### Option A: Clone Namespace (Full Stack) — Simplest
+The dashboard deploys **all 28+ services** into a dedicated `qa-testing` namespace:
 
-Clone the entire UAT namespace into a new namespace. All services, configs, and secrets are copied, then image tags are overridden with the release board versions.
+- **Nominated services** (from the release board) → deployed with **release candidate versions**
+- **Non-nominated services** → deployed with **production live versions**
+
+This gives QA a complete, isolated environment that mirrors what production will look like **after** the release.
+
+```
+Standing UAT (uat-prod)                    QA Testing (qa-testing)
+┌──────────────────────────────┐           ┌──────────────────────────────┐
+│ billing-service    v2.3.3    │           │ billing-service    v2.3.4   │ ← board (release candidate)
+│ payment-gateway    v2.0.0    │           │ payment-gateway    v2.1.0   │ ← board (release candidate)
+│ auth-service       v2.7.0    │           │ auth-service       v2.7.0   │ ← prod version (unchanged)
+│ user-service       v3.2.0    │           │ user-service       v3.2.0   │ ← prod version (unchanged)
+│ order-service      v1.5.2    │           │ order-service      v1.5.3   │ ← board (release candidate)
+│ ... (25+ total)              │           │ ... (all 28+ services)      │
+└──────────────────────────────┘           └──────────────────────────────┘
+```
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  QA clicks "Prepare QA Environment" on the dashboard                │
+│                                                                      │
+│  Step 1: Dashboard reads the release board                          │
+│          → 8 services nominated with release candidate versions     │
+│                                                                      │
+│  Step 2: Dashboard reads production cluster (read-only)             │
+│          → Gets live versions of all 28+ services in prod           │
+│                                                                      │
+│  Step 3: Merge version manifest                                     │
+│          • 8 nominated services  → use board versions               │
+│          • 20 remaining services → use prod live versions           │
+│          → Full manifest: 28 services with target image tags        │
+│                                                                      │
+│  Step 4: Trigger GitHub Actions deployment workflow                 │
+│          → Input: environment=qa-testing, version manifest           │
+│                                                                      │
+│  Step 5: GitHub Actions → ArgoCD MetaApp                            │
+│          → ArgoCD syncs all 28 services to qa-testing namespace     │
+│                                                                      │
+│  Step 6: Dashboard monitors sync status via ArgoCD API              │
+│          → Reports progress: "15/28 services synced..."             │
+│                                                                      │
+│  Step 7: QA team notified: "QA environment ready"                   │
+│          → Full replica of prod + release candidates available      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Production Version Source
+
+The dashboard needs to read production service versions (read-only). Options:
+
+| Source | How It Works | Recommended |
+|---|---|---|
+| **ArgoCD API** | Query ArgoCD REST API for deployed app versions | ✅ Best for GDC (already using ArgoCD) |
+| **Shared Version Manifest** | CI/CD writes `prod-versions.json` to Git after each deploy | ✅ Simplest — works with any platform |
+| **K8s API (read-only)** | Direct read of prod namespace deployments | Works on OpenShift today |
 
 ```python
-@server.tool()
-async def env_provision(release_version: str = "", ttl_hours: int = 4):
-    """Create an on-demand test environment by cloning UAT."""
-    import uuid
-    env_name = f"test-env-{uuid.uuid4().hex[:6]}"
-    
-    v1 = client.CoreV1Api()
-    apps_v1 = client.AppsV1Api()
-    
-    # 1. Create namespace with TTL
-    v1.create_namespace(client.V1Namespace(
-        metadata=client.V1ObjectMeta(
-            name=env_name,
-            labels={"purpose": "qa-testing", "managed-by": "release-readiness"},
-            annotations={
-                "expires-at": (datetime.utcnow() + timedelta(hours=ttl_hours)).isoformat(),
+# Option 1: ArgoCD API (recommended for GDC)
+def fetch_prod_versions_argocd():
+    """Fetch deployed versions from ArgoCD (read-only)."""
+    headers = {'Authorization': f'Bearer {ARGOCD_READ_TOKEN}'}
+    response = requests.get(
+        f'{ARGOCD_URL}/api/v1/applications',
+        headers=headers,
+        params={'projects': 'prod'}
+    )
+    apps = response.json()['items']
+    versions = {}
+    for app in apps:
+        name = app['metadata']['name']
+        images = app.get('status', {}).get('summary', {}).get('images', [])
+        versions[name] = {
+            'image_tag': extract_tag(images[0]) if images else 'latest',
+            'chart': app['spec']['source'].get('chart', ''),
+            'chart_version': app['spec']['source'].get('targetRevision', ''),
+        }
+    return versions
+
+# Option 2: Shared version manifest (simplest)
+def fetch_prod_versions_manifest():
+    """Read version manifest from Git repo."""
+    response = requests.get(
+        f'{GIT_API_URL}/repos/org/config-repo/contents/prod-versions.json',
+        headers={'Authorization': f'token {GIT_TOKEN}'}
+    )
+    manifest = json.loads(base64.b64decode(response.json()['content']))
+    return manifest['services']
+```
+
+### Version Manifest Merge Logic
+
+```python
+def build_qa_manifest():
+    """Build the full QA environment manifest by merging board + prod versions."""
+    board = get_current_board()
+    prod_versions = fetch_prod_versions()  # All 28+ services from prod
+
+    qa_manifest = {}
+
+    # All services get deployed
+    for service_name, prod_info in prod_versions.items():
+        if service_name in board['services']:
+            # Nominated service → use release candidate version from board
+            nomination = board['services'][service_name]
+            qa_manifest[service_name] = {
+                'image_tag': nomination['image_tag'],
+                'source': 'board',
+                'nominated_by': nomination['nominated_by'],
             }
-        )
-    ))
-    
-    # 2. Copy secrets and configmaps from UAT
-    source_ns = os.getenv('UAT_NAMESPACE', 'uat')
-    for secret in v1.list_namespaced_secret(source_ns).items:
-        if secret.metadata.name.startswith('default-token'):
-            continue  # Skip service account tokens
-        secret.metadata = client.V1ObjectMeta(
-            name=secret.metadata.name, namespace=env_name
-        )
-        v1.create_namespaced_secret(env_name, secret)
-    
-    for cm in v1.list_namespaced_config_map(source_ns).items:
-        cm.metadata = client.V1ObjectMeta(
-            name=cm.metadata.name, namespace=env_name
-        )
-        v1.create_namespaced_config_map(env_name, cm)
-    
-    # 3. Clone all deployments, override image tags from release board
-    board_versions = _get_board_versions()  # From release board
-    deployments = apps_v1.list_namespaced_deployment(source_ns).items
-    
-    for deploy in deployments:
-        svc_name = deploy.metadata.name
-        deploy.metadata = client.V1ObjectMeta(
-            name=svc_name, namespace=env_name,
-            labels=deploy.metadata.labels
-        )
-        # Override image tag if nominated on the board
-        if svc_name in board_versions:
-            for container in deploy.spec.template.spec.containers:
-                base_image = container.image.rsplit(':', 1)[0]
-                container.image = f"{base_image}:{board_versions[svc_name]}"
-        
-        # Scale down to 1 replica (save resources)
-        deploy.spec.replicas = 1
-        deploy.metadata.resource_version = None
-        apps_v1.create_namespaced_deployment(env_name, deploy)
-    
-    # 4. Clone services (networking)
-    for svc in v1.list_namespaced_service(source_ns).items:
-        svc.metadata = client.V1ObjectMeta(
-            name=svc.metadata.name, namespace=env_name,
-            labels=svc.metadata.labels
-        )
-        svc.spec.cluster_ip = None  # Let K8s assign new IP
-        v1.create_namespaced_service(env_name, svc)
-    
-    return {
-        "environment": env_name,
-        "services_deployed": len(deployments),
-        "ttl_hours": ttl_hours,
-        "status": "provisioning",
-        "note": "All 25+ Python services + 3+ UI apps deployed at 1 replica each"
-    }
+        else:
+            # Non-nominated service → use production live version
+            qa_manifest[service_name] = {
+                'image_tag': prod_info['image_tag'],
+                'source': 'production',
+            }
+
+    return qa_manifest
 ```
 
-**Pros**: Complete environment, exact copy of UAT  
-**Cons**: Resource heavy (25+ pods), takes 3-5 min to spin up  
-**Mitigation**: Scale all to 1 replica, auto-delete after 4h TTL
+### GitHub Actions Deployment Workflow
 
-### Option B: Override Subset (Targeted Testing) — Most Practical
-
-Only deploy the **changed services** into a new namespace. Route unchanged services to the standing UAT via service mesh or DNS.
+The dashboard triggers the existing deployment workflow with the QA namespace as target:
 
 ```python
-@server.tool()
-async def env_provision_targeted(services: list, versions: dict, ttl_hours: int = 4):
-    """Create an on-demand env with only the changed services.
-    Unchanged services route to standing UAT via ExternalName services.
-    """
-    env_name = f"test-env-{uuid.uuid4().hex[:6]}"
-    source_ns = os.getenv('UAT_NAMESPACE', 'uat')
-    
-    # 1. Create namespace
-    v1.create_namespace(...)
-    
-    # 2. Deploy ONLY the nominated/changed services
-    for svc_name in services:
-        version = versions.get(svc_name)
-        deploy = apps_v1.read_namespaced_deployment(svc_name, source_ns)
-        # Override image tag
-        for container in deploy.spec.template.spec.containers:
-            base_image = container.image.rsplit(':', 1)[0]
-            container.image = f"{base_image}:{version}"
-        deploy.spec.replicas = 1
-        deploy.metadata = client.V1ObjectMeta(name=svc_name, namespace=env_name)
-        apps_v1.create_namespaced_deployment(env_name, deploy)
-    
-    # 3. For all OTHER services, create ExternalName services → UAT
-    all_services = v1.list_namespaced_service(source_ns).items
-    for svc in all_services:
-        if svc.metadata.name not in services:
-            # Point to UAT via DNS (service mesh routing)
-            ext_svc = client.V1Service(
-                metadata=client.V1ObjectMeta(name=svc.metadata.name, namespace=env_name),
-                spec=client.V1ServiceSpec(
-                    type="ExternalName",
-                    external_name=f"{svc.metadata.name}.{source_ns}.svc.cluster.local"
-                )
-            )
-            v1.create_namespaced_service(env_name, ext_svc)
-    
-    return {
-        "environment": env_name,
-        "changed_services": services,
-        "routed_to_uat": len(all_services) - len(services),
-        "status": "provisioning",
-        "note": f"Only {len(services)} services deployed. Others route to UAT."
-    }
+def trigger_qa_env_deploy(qa_manifest, namespace='qa-testing'):
+    """Trigger GitHub Actions → ArgoCD to deploy all services."""
+    _github_post(
+        f'/repos/{DEPLOY_REPO}/actions/workflows/{DEPLOY_WORKFLOW}/dispatches',
+        data={
+            "ref": "main",
+            "inputs": {
+                "environment": namespace,          # Pre-provisioned QA namespace
+                "manifest": json.dumps(qa_manifest),  # All 28 services + versions
+                "triggered_by": "release-readiness-dashboard",
+            }
+        }
+    )
 ```
 
-**Pros**: Fast (deploy only 2-5 services), resource efficient  
-**Cons**: Requires service-to-service DNS resolution across namespaces  
-**Best for**: Testing specific services before release (the common case)
-
-### Option C: Helm/Kustomize + ArgoCD (GitOps) — Production Grade
-
-If you use Helm charts or Kustomize, create on-demand environments via ArgoCD ApplicationSet:
+The GitHub Actions workflow receives the manifest and updates the ArgoCD MetaApp:
 
 ```yaml
-# argocd/applicationset-on-demand.yaml
-apiVersion: argoproj.io/v1alpha1
-kind: ApplicationSet
-metadata:
-  name: qa-test-environments
-spec:
-  generators:
-    - list:
-        elements: []  # Dashboard adds entries via ArgoCD API
-  template:
-    metadata:
-      name: "test-env-{{name}}"
-    spec:
-      project: qa-testing
-      source:
-        repoURL: https://github.com/your-org/helm-charts
-        path: full-stack
-        helm:
-          values: |
-            global.imageTag: "{{version}}"
-            replicas: 1
-      destination:
-        namespace: "test-env-{{name}}"
+# .github/workflows/deploy-qa-env.yml
+name: Deploy QA Environment
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target namespace (pre-provisioned by platform team)'
+        required: true
+        type: string
+        default: 'qa-testing'
+      manifest:
+        description: 'JSON manifest of all services and target versions'
+        required: true
+        type: string
+      triggered_by:
+        description: 'Who triggered this deployment'
+        required: false
+        type: string
+
+jobs:
+  deploy:
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse manifest and update ArgoCD MetaApp
+        run: |
+          echo '${{ inputs.manifest }}' | jq -r 'to_entries[] | "\(.key) \(.value.image_tag)"' | \
+          while read service version; do
+            argocd app set $service \
+              --helm-set image.tag=$version \
+              --helm-set-string targetEnv=${{ inputs.environment }}
+          done
+
+      - name: Sync all applications
+        run: |
+          argocd app sync metaapp-${{ inputs.environment }} --prune --force
+
+      - name: Wait for healthy
+        run: |
+          argocd app wait metaapp-${{ inputs.environment }} --health --timeout 600
 ```
-
-**Pros**: GitOps, declarative, reproducible  
-**Cons**: Requires ArgoCD setup, Helm charts for all 28+ services  
-**Best for**: Mature platform teams
-
-### Recommendation
-
-> Start with **Option B** (targeted) for day-to-day testing, with **Option A** (full clone) available for major releases. Option C is a future improvement when you adopt GitOps.
 
 ### Tools
 
 | Tool Name | Parameters | What It Does |
 |---|---|---|
-| `env_provision_full` | `ttl_hours` | Clone entire UAT namespace (all 28+ services) |
-| `env_provision_targeted` | `services`, `versions`, `ttl_hours` | Deploy only changed services, route rest to UAT |
-| `env_status` | `name` | Check environment health (pods ready?) |
-| `env_teardown` | `name` | Delete an on-demand environment |
-| `env_list` | | List active on-demand environments |
+| `env_prepare` | `namespace` | Build manifest (board + prod versions) and trigger deploy via GitHub Actions → ArgoCD |
+| `env_status` | `namespace` | Check deployment progress — how many services are synced and healthy |
+| `env_diff` | `namespace` | Show what will change: board versions vs. prod versions side by side |
+| `env_teardown` | `namespace` | Scale down all deployments in the QA namespace to 0 replicas |
 
-### Auto-Cleanup
+### Dashboard UI — "Prepare QA Environment" Button
 
-A CronJob runs every hour and deletes expired test environments:
+On the QA tab, QA clicks **"🧪 Prepare QA Environment"** and sees:
 
-```yaml
-# cleanup-cronjob.yaml
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: qa-env-cleanup
-spec:
-  schedule: "0 * * * *"  # Every hour
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          containers:
-          - name: cleanup
-            image: bitnami/kubectl
-            command:
-            - /bin/sh
-            - -c
-            - |
-              NOW=$(date -u +%Y-%m-%dT%H:%M:%S)
-              for ns in $(kubectl get ns -l purpose=qa-testing -o jsonpath='{.items[*].metadata.name}'); do
-                EXPIRES=$(kubectl get ns $ns -o jsonpath='{.metadata.annotations.expires-at}')
-                if [ "$NOW" \> "$EXPIRES" ]; then
-                  echo "Deleting expired namespace: $ns"
-                  kubectl delete ns $ns
-                fi
-              done
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  🧪 Prepare QA Environment                                      │
+│                                                                  │
+│  Target Namespace: [ qa-testing        ]  (pre-provisioned)     │
+│                                                                  │
+│  📋 From Release Board (8 services — release candidate versions) │
+│  ┌──────────────────────┬──────────┬─────────────────────────┐  │
+│  │ Service              │ Version  │ Source                   │  │
+│  ├──────────────────────┼──────────┼─────────────────────────┤  │
+│  │ billing-service      │ v2.3.4   │ 📋 Board (nominated)    │  │
+│  │ payment-gateway      │ v2.1.0   │ 📋 Board (nominated)    │  │
+│  │ order-service        │ v1.5.3   │ 📋 Board (nominated)    │  │
+│  │ ... (5 more)         │          │                         │  │
+│  └──────────────────────┴──────────┴─────────────────────────┘  │
+│                                                                  │
+│  🏭 From Production (20 services — prod live versions)           │
+│  ┌──────────────────────┬──────────┬─────────────────────────┐  │
+│  │ auth-service         │ v2.7.0   │ 🏭 Production           │  │
+│  │ user-service         │ v3.2.0   │ 🏭 Production           │  │
+│  │ ... (18 more)        │          │                         │  │
+│  └──────────────────────┴──────────┴─────────────────────────┘  │
+│                                                                  │
+│  Total: 28 services will be deployed to qa-testing               │
+│                                                                  │
+│  [🚀 Deploy QA Environment]  [Cancel]                            │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+After clicking Deploy, a progress panel shows real-time status:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  QA Environment Setup — In Progress                              │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━ 65%                                 │
+│                                                                  │
+│  ✅ billing-service v2.3.4 — synced (board)                      │
+│  ✅ auth-service v2.7.0 — synced (prod)                          │
+│  ✅ user-service v3.2.0 — synced (prod)                          │
+│  ⏳ payment-gateway v2.1.0 — syncing... (board)                  │
+│  ⏳ order-service v1.5.3 — pending (board)                       │
+│  ...                                                             │
+│                                                                  │
+│  18/28 services synced                                           │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Teardown
+
+Since the namespace is pre-provisioned (not auto-created), teardown means **scaling down** rather than deleting the namespace:
+
+```python
+def teardown_qa_env(namespace='qa-testing'):
+    """Scale all deployments to 0 in the QA namespace."""
+    apps_v1 = client.AppsV1Api()
+    deployments = apps_v1.list_namespaced_deployment(namespace).items
+    for deploy in deployments:
+        apps_v1.patch_namespaced_deployment_scale(
+            name=deploy.metadata.name,
+            namespace=namespace,
+            body={'spec': {'replicas': 0}}
+        )
+    return {'namespace': namespace, 'services_scaled_down': len(deployments)}
 ```
 
 ---
@@ -563,9 +621,7 @@ spec:
 | **P0** | 🧪 Test Runner | 2-3 days | Trigger e2e/smoke/regression from dashboard |
 | **P0** | 📊 Test Results | 2-3 days | Show Allure results on the board |
 | **P1** | ✅ Quality Gate | 1-2 days | Go/no-go for QA sign-off |
-
-| **P2** | 🖥️ Env Manager (Targeted) | 3-4 days | On-demand envs for changed services |
-| **P3** | 🖥️ Env Manager (Full Clone) | 2-3 days | Full stack clone for major releases |
+| **P2** | 🖥️ Env Manager | 3-5 days | Full QA env: board versions + prod versions via GitHub Actions → ArgoCD |
 
 ---
 
@@ -593,9 +649,9 @@ enterprise-mcp-servers/
 │   ├── rules_engine.py       # Configurable threshold checks
 │   └── Dockerfile
 └── env-manager-mcp/
-    ├── server.py             # MCP server — namespace provisioning
-    ├── openshift_client.py   # K8s API for clone/targeted deploy
-    ├── cleanup_cronjob.yaml  # Auto-delete expired namespaces
+    ├── server.py             # MCP server — QA env provisioning
+    ├── argocd_client.py      # ArgoCD API client (read prod versions, monitor sync)
+    ├── manifest_builder.py   # Merges board + prod versions into deploy manifest
     └── Dockerfile
 ```
 
@@ -615,9 +671,17 @@ ALLURE_URL=https://allure.company.com
 ALLURE_TOKEN=xxx
 
 # Environment Manager MCP
-OPENSHIFT_API=https://api.ocp.company.com:6443
-OPENSHIFT_TOKEN=xxx
-UAT_NAMESPACE=uat-prod
+DEPLOY_REPO=your-org/app-deployments  # Repo with deploy workflows
+DEPLOY_WORKFLOW=deploy-qa-env.yml     # QA env deployment workflow
+QA_NAMESPACE=qa-testing               # Pre-provisioned QA namespace
+UAT_NAMESPACE=uat-prod                # Standing UAT namespace
+
+# Production Version Source (choose one)
+PROD_VERSION_SOURCE=argocd            # argocd | manifest | k8s-api
+ARGOCD_URL=https://argocd.internal    # ArgoCD server URL
+ARGOCD_READ_TOKEN=xxx                 # ArgoCD read-only API token
+# OR
+PROD_MANIFEST_REPO=your-org/config-repo  # Git repo with prod-versions.json
 ```
 
 ---
@@ -633,6 +697,9 @@ UAT_NAMESPACE=uat-prod
 | Test reporting | **Allure** |
 | Test management tool | **None** — tests live in GitHub repos |
 | Security scanning | **Xray** — already runs in CI pipeline, not in dashboard scope |
-| Environment strategy | **Both**: standing UAT + on-demand (targeted or full clone) |
+| Environment strategy | **Standing UAT** + **on-demand QA namespace** (pre-provisioned by platform team). Full environment: board versions + prod versions. Deployed via GitHub Actions → ArgoCD MetaApp |
+| Platform (current) | **OpenShift** with GitHub CI/CD |
+| Platform (future) | **Google Distributed Cloud (GDC)** with GitHub CI + ArgoCD |
+| Namespace provisioning | **Platform team** creates namespaces — dashboard deploys into them, does not create/delete namespaces |
 | Test suite priority | **All equal** — QA runs e2e, smoke, regression. All must pass |
 | Release sign-off | **QA team** signs off the release (no dedicated release managers) |
