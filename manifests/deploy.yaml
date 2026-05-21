@@ -80,6 +80,7 @@ spec:
       # Ensure the old pod fully terminates before the new one starts
       terminationGracePeriodSeconds: 30
       serviceAccountName: release-readiness    # ← needs RBAC for ConfigMaps + read Deployments
+      automountServiceAccountToken: true         # ← Required: mounts SA token so K8s API calls authenticate
       containers:
       - name: release-readiness
         image: YOUR_REGISTRY/release-readiness:latest   # ← Replace with your image
