@@ -18,41 +18,7 @@
 
 ## Architecture
 
-```mermaid
-graph TB
-    subgraph "Release Readiness Dashboard"
-        UI["Dashboard UI<br/>QA Tab"]
-        API["Flask Backend"]
-    end
-
-    subgraph "MCP Servers"
-        TR["🧪 Test Runner MCP"]
-        TRes["📊 Test Results MCP"]
-        QG["✅ Quality Gate MCP"]
-        ENV["🖥️ Environment Manager MCP"]
-    end
-
-    subgraph "Your Infrastructure"
-        GHA["GitHub Actions<br/>(Single Test Pipeline)"]
-        Allure["Allure Reports<br/>(Test Results)"]
-        K8s["OpenShift / K8s<br/>(25+ Python + 3+ Node.js)"]
-        GitHub["GitHub<br/>(Test Repos)"]
-    end
-
-    UI --> API
-    API --> TR
-    API --> TRes
-    API --> QG
-    API --> ENV
-
-    TR --> GHA
-    TR --> GitHub
-    TRes --> Allure
-    TRes --> GHA
-    QG --> TRes
-    QG --> TR
-    ENV --> K8s
-```
+![MCP Architecture](images/mcp-architecture.png)
 
 > **Note**: Performance testing (LoadRunner) and security scanning (Xray) both run independently in your CI pipeline and are not triggered from the dashboard. The dashboard focuses on E2E, smoke, and regression testing.
 
@@ -73,27 +39,7 @@ You have a **single test pipeline** that accepts a `test_type` flag to run diffe
 
 When the board auto-locks at cutoff, the dashboard automatically kicks off the full test suite:
 
-```mermaid
-sequenceDiagram
-    participant Clock as ⏰ Cutoff Time<br/>(Wed 12:00 PM)
-    participant Dash as Dashboard
-    participant GHA as GitHub Actions
-
-    Clock->>Dash: Board auto-locks
-    Dash->>Dash: Check: tests_auto_trigger = true?
-
-    Dash->>GHA: workflow_dispatch (test_type=smoke)
-    GHA-->>Dash: smoke: ✅ PASSED
-
-    Dash->>GHA: workflow_dispatch (test_type=e2e)
-    GHA-->>Dash: e2e: ✅ PASSED
-
-    Dash->>GHA: workflow_dispatch (test_type=regression)
-    GHA-->>Dash: regression: ✅ PASSED
-
-    Dash-->>Dash: Quality Gate: ✅ ALL PASSED
-    Note over Dash: QA checks dashboard later,<br/>results already available
-```
+![Auto-Trigger Flow](images/qa-auto-trigger-flow.png)
 
 **How it works technically**:
 
@@ -386,27 +332,7 @@ With 25+ Python services and 3+ UI apps, spinning up a full environment is not t
 
 ### On-Demand Environment Strategy
 
-```mermaid
-graph TB
-    subgraph "Template (Source of Truth)"
-        UAT["Standing UAT Namespace<br/>25+ Python services<br/>3+ Node.js UI apps<br/>Databases, Redis, etc."]
-    end
-
-    subgraph "On-Demand Approach"
-        direction TB
-        A["Option A: Clone Namespace<br/>(Full Stack)"]
-        B["Option B: Override Subset<br/>(Targeted Testing)"]
-        C["Option C: Helm/Kustomize Deploy<br/>(GitOps)"]
-    end
-
-    UAT -->|"Clone all deployments"| A
-    UAT -->|"Deploy only changed services"| B
-    UAT -->|"ArgoCD ApplicationSet"| C
-
-    style A fill:#10b981,color:#fff
-    style B fill:#6366f1,color:#fff
-    style C fill:#f59e0b,color:#fff
-```
+![On-Demand Environment Strategy](images/ondemand-env-diagram.png)
 
 ### Option A: Clone Namespace (Full Stack) — Simplest
 
@@ -645,40 +571,7 @@ spec:
 
 ## Sequence: Full Flow
 
-```mermaid
-sequenceDiagram
-    participant QA as QA Engineer
-    participant UI as Dashboard UI
-    participant API as Flask Backend
-    participant GHA as GitHub Actions
-    participant Allure as Allure Reports
-
-    QA->>UI: Click "▶ Run E2E Tests" (against UAT)
-    UI->>API: POST /api/qa/run {test_type: "e2e", env: "uat"}
-    API->>GHA: POST workflow_dispatch (test-pipeline.yml, test_type=e2e)
-    GHA-->>API: HTTP 204 (accepted)
-    API->>GHA: GET /actions/workflows/test-pipeline.yml/runs?per_page=1
-    GHA-->>API: {run_id: 12345}
-    API-->>UI: {run_id: 12345, status: "triggered"}
-    UI-->>QA: Show "Tests Running..." with progress
-
-    loop Every 10 seconds
-        UI->>API: GET /api/qa/status/12345
-        API->>GHA: GET /actions/runs/12345
-        GHA-->>API: {status: "in_progress"}
-        API-->>UI: Update progress spinner
-    end
-
-    GHA-->>GHA: Tests complete → publish Allure report
-    UI->>API: GET /api/qa/results/12345
-    API->>Allure: GET /api/rs/launch/latest
-    Allure-->>API: {total: 150, passed: 147, failed: 3}
-    API-->>UI: Show results card + Allure link
-
-    QA->>UI: Click "✅ QA Sign-Off"
-    UI->>API: POST /api/qa/signoff
-    API-->>UI: Release board updated with QA approval
-```
+![QA Full Sequence Flow](images/qa-sequence-flow.png)
 
 ---
 

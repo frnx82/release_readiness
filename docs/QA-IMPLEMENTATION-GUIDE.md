@@ -29,23 +29,7 @@ A new **"🧪 QA" tab** on the Release Readiness Dashboard that lets the QA team
 
 ### The Current Workflow (Today)
 
-```mermaid
-graph LR
-    subgraph "Current: Manual & Disconnected"
-        A["QA opens GitHub"] --> B["Navigate to Actions tab"]
-        B --> C["Select workflow"]
-        C --> D["Fill in inputs manually"]
-        D --> E["Click 'Run workflow'"]
-        E --> F["Wait... check back later"]
-        F --> G["Open Allure separately"]
-        G --> H["Copy results into Slack/email"]
-        H --> I["Tell team: ready to release"]
-    end
-
-    style A fill:#ef4444,color:#fff
-    style F fill:#ef4444,color:#fff
-    style H fill:#ef4444,color:#fff
-```
+![Current vs New QA Workflow](images/qa-current-vs-new.png)
 
 **Pain points with the current approach:**
 
@@ -59,21 +43,7 @@ graph LR
 
 ### The New Workflow (With Dashboard)
 
-```mermaid
-graph LR
-    subgraph "New: One-Click & Centralized"
-        A["QA opens Dashboard"] --> B["Click 'Run All Tests'"]
-        B --> C["Watch live progress"]
-        C --> D["Results appear automatically"]
-        D --> E["Quality Gate shows ✅ PASSED"]
-        E --> F["Click 'QA Sign-Off'"]
-        F --> G["Everyone sees it on the board"]
-    end
-
-    style A fill:#10b981,color:#fff
-    style E fill:#10b981,color:#fff
-    style G fill:#10b981,color:#fff
-```
+The new workflow reduces 9 manual steps to a single click:
 
 ### Side-by-Side Comparison
 
@@ -120,26 +90,7 @@ graph LR
 
 Your QA pipeline is a **single GitHub Actions workflow** that takes a `test_type` flag to run different suites. The dashboard simply triggers this same workflow.
 
-```mermaid
-sequenceDiagram
-    participant QA as QA Engineer
-    participant Dash as Dashboard
-    participant GHA as GitHub Actions<br/>(test-pipeline.yml)
-    participant Allure as Allure Reports
-
-    QA->>Dash: Click "▶ Run E2E" (or smoke, regression)
-    Dash->>GHA: workflow_dispatch (test_type=e2e)
-    GHA-->>Dash: Run #12345
-    Dash-->>QA: "Tests running..." (live progress)
-
-    GHA->>GHA: pytest --test-type=e2e → Allure report
-    Dash->>Allure: Fetch results
-    Allure-->>Dash: 147/150 passed (97.2%)
-    Dash-->>QA: Results + Quality Gate: ✅ PASSED
-
-    QA->>Dash: Click "✅ QA Sign-Off"
-    Dash-->>Dash: Board updated with QA approval
-```
+![QA Sequence Flow](images/qa-sequence-flow.png)
 
 ### Key Point: One Pipeline, Three Test Types
 
@@ -373,32 +324,7 @@ Your app has **28+ services**. Spinning up a full copy is expensive. Here are tw
 
 Only deploy the **services being released** (from the board). Route everything else to the standing UAT.
 
-```mermaid
-graph LR
-    subgraph "On-Demand Namespace: test-env-abc123"
-        A["billing-service<br/>v2.4.1 (new)"]
-        B["payment-gateway<br/>v3.1.0 (new)"]
-        C["user-service →<br/>ExternalName → UAT"]
-        D["order-service →<br/>ExternalName → UAT"]
-        E["... 24 others →<br/>ExternalName → UAT"]
-    end
-
-    subgraph "Standing UAT"
-        F["user-service v3.2.0"]
-        G["order-service v1.8.0"]
-        H["... 24 other services"]
-    end
-
-    C -->|DNS| F
-    D -->|DNS| G
-    E -->|DNS| H
-
-    style A fill:#10b981,color:#fff
-    style B fill:#10b981,color:#fff
-    style C fill:#6b7280,color:#fff
-    style D fill:#6b7280,color:#fff
-    style E fill:#6b7280,color:#fff
-```
+![On-Demand Environment Diagram](images/ondemand-env-diagram.png)
 
 **How it works**:
 1. Dashboard reads the release board → 4 services nominated
