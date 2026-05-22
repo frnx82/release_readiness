@@ -1955,13 +1955,25 @@ def list_services():
     if cached:
         return jsonify(cached)
 
+    print(f'[services] DEPLOY_ENV=uat → reading LOCAL cluster, namespace={namespace}')
+
+    # Check if in-cluster config was loaded
+    try:
+        _cfg = client.Configuration.get_default_copy()
+        print(f'[services] K8s API host: {_cfg.host}')
+        print(f'[services] K8s API key set: {bool(_cfg.api_key)}')
+    except Exception as _e:
+        print(f'[services] ⚠️  Cannot read K8s config: {_e}')
+
     services = []
+    errors = []
     try:
         apps_v1 = client.AppsV1Api()
 
         # Deployments
         try:
             deploys = _k8s_retry(apps_v1.list_namespaced_deployment, namespace).items
+            print(f'[services] ✅ Deployments: {len(deploys)} found')
             for d in deploys:
                 containers = d.spec.template.spec.containers or []
                 image = containers[0].image if containers else ''
@@ -1977,11 +1989,14 @@ def list_services():
                     'created': d.metadata.creation_timestamp.isoformat() if d.metadata.creation_timestamp else None
                 })
         except Exception as e:
-            print(f"[services] Deployments error: {e}")
+            err_msg = f'Deployments: {type(e).__name__}: {str(e)[:200]}'
+            errors.append(err_msg)
+            print(f"[services] ❌ {err_msg}")
 
         # StatefulSets
         try:
             sts = _k8s_retry(apps_v1.list_namespaced_stateful_set, namespace).items
+            print(f'[services] ✅ StatefulSets: {len(sts)} found')
             for s in sts:
                 containers = s.spec.template.spec.containers or []
                 image = containers[0].image if containers else ''
@@ -1997,11 +2012,14 @@ def list_services():
                     'created': s.metadata.creation_timestamp.isoformat() if s.metadata.creation_timestamp else None
                 })
         except Exception as e:
-            print(f"[services] StatefulSets error: {e}")
+            err_msg = f'StatefulSets: {type(e).__name__}: {str(e)[:200]}'
+            errors.append(err_msg)
+            print(f"[services] ❌ {err_msg}")
 
         # DaemonSets
         try:
             dss = _k8s_retry(apps_v1.list_namespaced_daemon_set, namespace).items
+            print(f'[services] ✅ DaemonSets: {len(dss)} found')
             for d in dss:
                 containers = d.spec.template.spec.containers or []
                 image = containers[0].image if containers else ''
@@ -2017,12 +2035,18 @@ def list_services():
                     'created': d.metadata.creation_timestamp.isoformat() if d.metadata.creation_timestamp else None
                 })
         except Exception as e:
-            print(f"[services] DaemonSets error: {e}")
+            err_msg = f'DaemonSets: {type(e).__name__}: {str(e)[:200]}'
+            errors.append(err_msg)
+            print(f"[services] ❌ {err_msg}")
 
     except Exception as e:
+        print(f'[services] ❌ Fatal K8s error: {e}')
         return jsonify({'error': str(e)}), 500
 
+    print(f'[services] Total: {len(services)} services, {len(errors)} errors')
     result = {'services': services, 'namespace': namespace, 'count': len(services)}
+    if errors:
+        result['error'] = ' | '.join(errors)
     _cache_set(cache_key, result)
     return jsonify(result)
 
