@@ -3338,9 +3338,14 @@
                     fetch('/api/services'),
                     fetch('/api/prod/services').catch(() => null)
                 ]);
+                if (!uatResp.ok) {
+                    const errText = await uatResp.text();
+                    container.innerHTML = `<div class="empty-state"><p>❌ /api/services returned HTTP ${uatResp.status}</p><pre style="text-align:left;font-size:11px;max-height:200px;overflow:auto;margin-top:8px">${errText.substring(0, 500)}</pre></div>`;
+                    return;
+                }
                 const d = await uatResp.json();
                 const svcs = d.services || [];
-                if (!svcs.length) { container.innerHTML = '<div class="empty-state"><p>No services found in UAT namespace</p></div>'; return; }
+                if (!svcs.length) { container.innerHTML = `<div class="empty-state"><p>No services found in UAT namespace</p><p style="font-size:12px;color:var(--text2);margin-top:8px">Namespace: <code>${d.namespace || 'unknown'}</code> | Error: <code>${d.error || 'none'}</code></p></div>`; return; }
 
                 // Build prod version map for cross-reference
                 let prodVersionMap = {};
