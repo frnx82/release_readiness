@@ -1599,11 +1599,24 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent',
 
 try:
     config.load_incluster_config()
+    print("[k8s] ✅ In-cluster config loaded")
 except config.ConfigException:
     try:
         config.load_kube_config()
+        print("[k8s] ✅ Kube config loaded (local dev)")
     except config.ConfigException:
-        print("[k8s] Could not configure kubernetes client")
+        print("[k8s] ⚠️  Could not configure kubernetes client")
+
+# ── Build a dedicated local-cluster ApiClient ─────────────────────────────────
+# We store an explicit ApiClient so that calls to _get_prod_api_client() or
+# _get_uat_api_client() cannot corrupt the local cluster credentials.
+_local_api_client = None
+try:
+    _local_cfg = client.Configuration.get_default_copy()
+    _local_api_client = client.ApiClient(_local_cfg)
+    print(f"[k8s] Local ApiClient ready — host: {_local_cfg.host}")
+except Exception as _e:
+    print(f"[k8s] ⚠️  Could not build local ApiClient: {_e}")
 
 
 # ── K8s retry helper ──────────────────────────────────────────────────────────
@@ -1654,7 +1667,7 @@ def _detect_storage_mode():
 
     # Auto-detect: try creating a probe ConfigMap
     try:
-        v1 = client.CoreV1Api()
+        v1 = client.CoreV1Api(api_client=_local_api_client)
         probe_name = 'release-readiness-probe'
         probe = client.V1ConfigMap(
             metadata=client.V1ObjectMeta(name=probe_name,
@@ -1748,7 +1761,7 @@ def _read_board(release_date=None):
     """Read the release board. Uses ConfigMap or file based on detected storage mode."""
     if _STORAGE_MODE == 'configmap':
         try:
-            v1 = client.CoreV1Api()
+            v1 = client.CoreV1Api(api_client=_local_api_client)
             cm_name = _board_configmap_name(release_date)
             cm = _k8s_retry(v1.read_namespaced_config_map, cm_name, NAMESPACE)
             return json.loads(cm.data.get('manifest.json', '{}'))
@@ -1776,7 +1789,7 @@ def _write_board(board_data, release_date=None):
     # Also write to ConfigMap if permissions exist
     if _STORAGE_MODE == 'configmap':
         try:
-            v1 = client.CoreV1Api()
+            v1 = client.CoreV1Api(api_client=_local_api_client)
             cm_name = _board_configmap_name(release_date)
             body = client.V1ConfigMap(
                 metadata=client.V1ObjectMeta(
@@ -1968,7 +1981,8 @@ def list_services():
     services = []
     errors = []
     try:
-        apps_v1 = client.AppsV1Api()
+        # Use dedicated local ApiClient to avoid config corruption from remote clients
+        apps_v1 = client.AppsV1Api(api_client=_local_api_client)
 
         # Deployments
         try:
@@ -2703,7 +2717,7 @@ def nominate_service():
                     print(f"[nominate] DEPLOY_ENV=prod → reading version from REMOTE UAT cluster, ns={uat_ns}")
             else:
                 # Deployed in UAT → read version from local cluster
-                apps_v1 = client.AppsV1Api()
+                apps_v1 = client.AppsV1Api(api_client=_local_api_client)
                 print(f"[nominate] DEPLOY_ENV=uat → reading version from LOCAL cluster, ns={namespace}")
 
             if apps_v1:
@@ -3158,7 +3172,7 @@ def check_drift():
         print(f'[drift] DEPLOY_ENV=prod → checking drift against REMOTE UAT cluster, ns={namespace}')
     else:
         # App is in UAT → read LOCAL cluster
-        apps_v1 = client.AppsV1Api()
+        apps_v1 = client.AppsV1Api(api_client=_local_api_client)
         cluster_label = 'UAT (local)'
         print(f'[drift] DEPLOY_ENV=uat → checking drift against LOCAL cluster, ns={namespace}')
 
@@ -3231,7 +3245,7 @@ def ai_release_readiness():
 
     # Collect cluster health data
     service_summaries = []
-    v1 = client.CoreV1Api()
+    v1 = client.CoreV1Api(api_client=_local_api_client)
 
     for svc_name, svc_data in board.get('services', {}).items():
         summary_lines = [f"Service: {svc_name}"]
@@ -3267,7 +3281,7 @@ def ai_release_readiness():
 
         # Check for probes
         try:
-            apps_v1 = client.AppsV1Api()
+            apps_v1 = client.AppsV1Api(api_client=_local_api_client)
             d = _k8s_retry(apps_v1.read_namespaced_deployment, svc_name, namespace)
             for c in (d.spec.template.spec.containers or []):
                 has_readiness = 'yes' if c.readiness_probe else 'MISSING'
@@ -3906,7 +3920,7 @@ def release_notes_status(job_id):
 def release_history():
     """List past release boards."""
     try:
-        v1 = client.CoreV1Api()
+        v1 = client.CoreV1Api(api_client=_local_api_client)
         cms = _k8s_retry(v1.list_namespaced_config_map, NAMESPACE,
                          label_selector='app=release-readiness').items
         history = []
@@ -4470,7 +4484,7 @@ def _tool_get_service_status(service_name: str) -> str:
         ]
         # Check live pod health
         try:
-            v1 = client.CoreV1Api()
+            v1 = client.CoreV1Api(api_client=_local_api_client)
             pods = _k8s_retry(v1.list_namespaced_pod, NAMESPACE,
                               label_selector=f'app={service_name}')
             if pods.items:
@@ -4510,7 +4524,7 @@ def _tool_check_drift() -> str:
             namespace = uat_ns
             env_label = f'UAT (remote), ns={namespace}'
         else:
-            apps_v1 = client.AppsV1Api()
+            apps_v1 = client.AppsV1Api(api_client=_local_api_client)
             env_label = f'UAT (local), ns={namespace}'
 
         for svc_name, svc_data in board['services'].items():
@@ -4592,7 +4606,7 @@ def _tool_get_audit_trail(limit: int = 20) -> str:
 def _tool_get_uat_services() -> str:
     """List all services currently running in the UAT namespace with versions."""
     try:
-        apps_v1 = client.AppsV1Api()
+        apps_v1 = client.AppsV1Api(api_client=_local_api_client)
         services = []
         # Deployments
         try:
