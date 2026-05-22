@@ -34,7 +34,10 @@ from functools import wraps
 from urllib.parse import urlencode
 from werkzeug.middleware.proxy_fix import ProxyFix
 import asyncio
-import httpx
+# NOTE: httpx is imported LAZILY (inside functions) to avoid conflicts with
+# gevent monkey.patch_all(). Importing httpx at module level corrupts urllib3
+# connections used by the kubernetes client, causing 504 Gateway Timeouts.
+# See: _build_confluence_httpx_factory() and _discover_confluence_mcp_tools()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GitHub / Deploy Configuration
@@ -219,6 +222,7 @@ def _discover_confluence_mcp_tools():
             mcp_headers['X-Confluence-User-Email'] = CONFLUENCE_EMAIL
 
         def _factory(**kwargs):
+            import httpx
             kwargs.pop('verify', None)
             incoming = kwargs.pop('headers', {}) or {}
             merged = {**incoming, **mcp_headers}
@@ -860,6 +864,7 @@ def _map_issues_to_services(fix_version_issues, service_names):
 def _build_confluence_httpx_factory(auth_headers):
     """Build an httpx client factory for fastmcp, matching test-confluence.py."""
     def factory(**kwargs):
+        import httpx
         kwargs.pop('verify', None)
         incoming = kwargs.pop('headers', {}) or {}
         merged = {**incoming, **auth_headers}
