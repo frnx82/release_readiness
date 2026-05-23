@@ -1611,15 +1611,43 @@ except config.ConfigException:
         print("[k8s] ⚠️  Could not configure kubernetes client")
 
 # ── Build a dedicated local-cluster ApiClient ─────────────────────────────────
-# We store an explicit ApiClient so that calls to _get_prod_api_client() or
-# _get_uat_api_client() cannot corrupt the local cluster credentials.
+# Manually read the in-cluster SA token and build a Configuration from scratch.
+# This avoids all issues with Configuration singleton behavior across different
+# kubernetes-client versions, and ensures the Bearer token is always sent.
 _local_api_client = None
+_SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
+_SA_CA_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt'
+
 try:
-    _local_cfg = client.Configuration.get_default_copy()
-    _local_api_client = client.ApiClient(_local_cfg)
-    print(f"[k8s] Local ApiClient ready — host: {_local_cfg.host}")
+    if os.path.exists(_SA_TOKEN_PATH):
+        # In-cluster: build config explicitly from mounted SA credentials
+        with open(_SA_TOKEN_PATH, 'r') as f:
+            _sa_token = f.read().strip()
+
+        _k8s_host = os.environ.get('KUBERNETES_SERVICE_HOST', '')
+        _k8s_port = os.environ.get('KUBERNETES_SERVICE_PORT', '443')
+
+        _local_cfg = client.Configuration()
+        _local_cfg.host = f'https://{_k8s_host}:{_k8s_port}'
+        _local_cfg.api_key = {"authorization": f"Bearer {_sa_token}"}
+        if os.path.exists(_SA_CA_PATH):
+            _local_cfg.ssl_ca_cert = _SA_CA_PATH
+        _local_cfg.verify_ssl = True
+
+        _local_api_client = client.ApiClient(_local_cfg)
+        print(f"[k8s] ✅ Local ApiClient ready (explicit SA token)")
+        print(f"[k8s]    Host: {_local_cfg.host}")
+        print(f"[k8s]    Token: {_sa_token[:20]}...({len(_sa_token)} chars)")
+        print(f"[k8s]    CA cert: {_SA_CA_PATH if os.path.exists(_SA_CA_PATH) else 'not found'}")
+    else:
+        # Local dev: use whatever config was loaded
+        _local_cfg = client.Configuration.get_default_copy()
+        _local_api_client = client.ApiClient(_local_cfg)
+        print(f"[k8s] Local ApiClient ready (dev mode) — host: {_local_cfg.host}")
 except Exception as _e:
     print(f"[k8s] ⚠️  Could not build local ApiClient: {_e}")
+    import traceback
+    traceback.print_exc()
 
 
 # ── K8s retry helper ──────────────────────────────────────────────────────────
