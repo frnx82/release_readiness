@@ -314,7 +314,10 @@ if CONFLUENCE_MCP_URL:
         print(f"    PAT token: {'*' * 8}...configured")
     if CONFLUENCE_SPACES:
         print(f"    Default spaces: {', '.join(CONFLUENCE_SPACES)}")
-    _discover_confluence_mcp_tools()
+    # NOTE: Skipping MCP tool discovery at startup — httpx (used by fastmcp)
+    # conflicts with gevent monkey.patch_all() and corrupts K8s client connections.
+    # Tool names are tried at runtime instead (see _confluence_mcp_call).
+    print("    Tool discovery deferred to first use")
 elif CONFLUENCE_BASE_URL:
     print(f"[Release Readiness] ✅ Confluence REST API configured — URL: {CONFLUENCE_BASE_URL}")
 else:
