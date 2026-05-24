@@ -1872,16 +1872,16 @@ def _extract_helm_version(labels):
 # Configure via env var: CUSTOM_COMPONENTS=name1:Type1:Description,name2:Type2:Description
 # Or defaults to placeholder components for demo
 _DEFAULT_CUSTOM_COMPONENTS = [
-    {"name": "ingestion-pipeline",       "type": "Spark",   "description": "Main data ingestion from source systems"},
-    {"name": "etl-transformer",          "type": "PySpark", "description": "Data transformation and enrichment"},
-    {"name": "data-validator",           "type": "PySpark", "description": "Data quality validation rules"},
-    {"name": "report-aggregator",        "type": "Spark",   "description": "Aggregation jobs for reporting"},
-    {"name": "event-stream-processor",   "type": "Spark",   "description": "Real-time event stream processing"},
-    {"name": "batch-reconciler",         "type": "PySpark", "description": "Batch reconciliation between systems"},
-    {"name": "data-archiver",            "type": "PySpark", "description": "Historical data archival jobs"},
-    {"name": "ml-feature-pipeline",      "type": "PySpark", "description": "ML feature extraction pipeline"},
-    {"name": "audit-log-processor",      "type": "Spark",   "description": "Audit log processing and indexing"},
-    {"name": "schema-migration-runner",  "type": "PySpark", "description": "Database schema migration runner"},
+    {"name": "ingestion-pipeline",       "type": "Spark",   "description": "Main data ingestion from source systems",  "artifactory_path": "spark-releases/ingestion-pipeline"},
+    {"name": "etl-transformer",          "type": "PySpark", "description": "Data transformation and enrichment",       "artifactory_path": "pyspark-releases/etl-transformer"},
+    {"name": "data-validator",           "type": "PySpark", "description": "Data quality validation rules",            "artifactory_path": "pyspark-releases/data-validator"},
+    {"name": "report-aggregator",        "type": "Spark",   "description": "Aggregation jobs for reporting",            "artifactory_path": "spark-releases/report-aggregator"},
+    {"name": "event-stream-processor",   "type": "Spark",   "description": "Real-time event stream processing",        "artifactory_path": "spark-releases/event-stream-processor"},
+    {"name": "batch-reconciler",         "type": "PySpark", "description": "Batch reconciliation between systems",      "artifactory_path": "pyspark-releases/batch-reconciler"},
+    {"name": "data-archiver",            "type": "PySpark", "description": "Historical data archival jobs",             "artifactory_path": "pyspark-releases/data-archiver"},
+    {"name": "ml-feature-pipeline",      "type": "PySpark", "description": "ML feature extraction pipeline",           "artifactory_path": "pyspark-releases/ml-feature-pipeline"},
+    {"name": "audit-log-processor",      "type": "Spark",   "description": "Audit log processing and indexing",        "artifactory_path": "spark-releases/audit-log-processor"},
+    {"name": "schema-migration-runner",  "type": "PySpark", "description": "Database schema migration runner",         "artifactory_path": "pyspark-releases/schema-migration-runner"},
 ]
 
 def _load_custom_components():

@@ -174,9 +174,10 @@ spec:
         # ════════════════════════════════════════════════════════════
         # Custom Components (optional)
         # ════════════════════════════════════════════════════════════
-        # Format: name1:Type1:Description,name2:Type2:Description
+        # Format: name1:Type1:Description:artifactory/path,name2:Type2:Description:artifactory/path
+        # The 4th field (artifactory_path) is optional — if omitted, version is entered manually.
         - name: CUSTOM_COMPONENTS
-          value: "ingestion-pipeline:Spark:Main data ingestion from source systems,etl-transformer:PySpark:Data transformation and enrichment,data-validator:PySpark:Data quality validation rules,report-aggregator:Spark:Aggregation jobs for reporting,mobile-app:Mobile:iOS/Android mobile application"
+          value: "ingestion-pipeline:Spark:Main data ingestion from source systems:spark-releases/ingestion-pipeline,etl-transformer:PySpark:Data transformation and enrichment:pyspark-releases/etl-transformer,data-validator:PySpark:Data quality validation rules:pyspark-releases/data-validator,report-aggregator:Spark:Aggregation jobs for reporting:spark-releases/report-aggregator,mobile-app:Mobile:iOS/Android mobile application"
 
         # ════════════════════════════════════════════════════════════
         # Storage Backend
