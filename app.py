@@ -2012,8 +2012,10 @@ def list_services():
     services = []
     errors = []
     try:
-        # Use dedicated local ApiClient to avoid config corruption from remote clients
-        apps_v1 = client.AppsV1Api(api_client=_local_api_client)
+        # Try dedicated local client first, fall back to default
+        _api = _local_api_client if _local_api_client else None
+        apps_v1 = client.AppsV1Api(api_client=_api) if _api else client.AppsV1Api()
+        print(f'[services] Using {"dedicated" if _api else "default"} ApiClient')
 
         # Deployments
         try:
@@ -2387,13 +2389,9 @@ def _get_prod_api_client():
     if not prod_api or not prod_token:
         return None, f'PROD_CLUSTER_API {"✅" if prod_api else "❌ EMPTY"} and PROD_CLUSTER_TOKEN {"✅" if prod_token else "❌ EMPTY"} — both are required'
 
-    # IMPORTANT: Do NOT use client.Configuration() — it returns/modifies the
-    # global default singleton, which would overwrite the in-cluster SA token
-    # and cause 403 errors for local cluster calls.
-    prod_config = client.Configuration.get_default_copy()
+    prod_config = client.Configuration()
     prod_config.host = prod_api
     prod_config.api_key = {"authorization": f"Bearer {prod_token}"}
-    prod_config.api_key_prefix = {}
     # Connection timeout to prevent pod hang/OOM on unreachable clusters
     prod_config.connection_pool_maxsize = 4
     prod_config.retries = 1
@@ -2432,11 +2430,9 @@ def _get_uat_api_client():
     if not uat_api or not uat_token:
         return None, f'UAT_CLUSTER_API {"✅" if uat_api else "❌ EMPTY"} and UAT_CLUSTER_TOKEN {"✅" if uat_token else "❌ EMPTY"} — both are required'
 
-    # IMPORTANT: Do NOT use client.Configuration() — see _get_prod_api_client note.
-    uat_config = client.Configuration.get_default_copy()
+    uat_config = client.Configuration()
     uat_config.host = uat_api
     uat_config.api_key = {"authorization": f"Bearer {uat_token}"}
-    uat_config.api_key_prefix = {}
 
     # SSL configuration
     verify_ssl = os.environ.get('UAT_CLUSTER_VERIFY_SSL', 'true').lower()
