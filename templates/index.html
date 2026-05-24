@@ -3333,11 +3333,10 @@
             const container = document.getElementById('uat-services-list');
             container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading UAT services...</div>';
             try {
-                // Fetch UAT and Prod services in parallel for cross-reference
-                const [uatResp, prodResp] = await Promise.all([
-                    fetch('/api/services'),
-                    fetch('/api/prod/services').catch(() => null)
-                ]);
+                // IMPORTANT: Fetch UAT services FIRST, then prod services AFTER.
+                // Cannot use Promise.all — the /api/prod/services call modifies
+                // the K8s client Configuration which can corrupt the in-cluster SA token.
+                const uatResp = await fetch('/api/services');
                 if (!uatResp.ok) {
                     const errText = await uatResp.text();
                     container.innerHTML = `<div class="empty-state"><p>❌ /api/services returned HTTP ${uatResp.status}</p><pre style="text-align:left;font-size:11px;max-height:200px;overflow:auto;margin-top:8px">${errText.substring(0, 500)}</pre></div>`;
@@ -3346,6 +3345,10 @@
                 const d = await uatResp.json();
                 const svcs = d.services || [];
                 if (!svcs.length) { container.innerHTML = `<div class="empty-state"><p>No services found in UAT namespace</p><p style="font-size:12px;color:var(--text2);margin-top:8px">Namespace: <code>${d.namespace || 'unknown'}</code> | Error: <code>${d.error || 'none'}</code></p></div>`; return; }
+
+                // Now fetch prod services for cross-reference (safe - UAT already loaded)
+                let prodResp = null;
+                try { prodResp = await fetch('/api/prod/services'); } catch(e) { /* ignore */ }
 
                 // Build prod version map for cross-reference
                 let prodVersionMap = {};
