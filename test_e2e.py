@@ -483,12 +483,78 @@ if prod_func_start != -1:
 # Bug check 5: loadUATServices calls /api/services
 uat_func_start = html.find('function loadUATServices')
 if uat_func_start != -1:
-    uat_func_body = html[uat_func_start:uat_func_start + 500]
-    if '/api/services' in uat_func_body:
+    uat_func_body = html[uat_func_start:uat_func_start + 800]
+    if "fetch('/api/services')" in uat_func_body:
         ok('Frontend loadUATServices calls /api/services')
     else:
         fail('BUG: loadUATServices calls wrong endpoint')
 
+
+# ══════════════════════════════════════════════════════════════
+# Test 16: Duplicate Route Detection
+# ══════════════════════════════════════════════════════════════
+section('Test 16: Duplicate Route Detection')
+
+import re
+route_pattern = re.compile(r"@app\.route\('(/[^']+)'")
+all_routes = route_pattern.findall(source)
+route_counts = {}
+for r in all_routes:
+    route_counts[r] = route_counts.get(r, 0) + 1
+
+duplicates = {r: c for r, c in route_counts.items() if c > 1}
+if duplicates:
+    for route, count in duplicates.items():
+        fail(f'BUG: Duplicate route {route} defined {count} times!')
+else:
+    ok(f'No duplicate routes (checked {len(all_routes)} route definitions)')
+
+
+# ══════════════════════════════════════════════════════════════
+# Test 17: deploy.yaml Probe Path Validation
+# ══════════════════════════════════════════════════════════════
+section('Test 17: Probe Path Validation')
+
+try:
+    with open('manifests/deploy.yaml', 'r') as f:
+        deploy_content = f.read()
+
+    # Extract probe paths from deploy.yaml
+    probe_paths = re.findall(r'path:\s*(/\S+)', deploy_content)
+    for path in probe_paths:
+        # Check that the path exists as a route in app.py
+        if f"'{path}'" in source:
+            ok(f'Probe path {path} exists as a route in app.py')
+        else:
+            fail(f'BUG: Probe path {path} does NOT exist as a route in app.py — pod will crash loop!')
+except Exception as e:
+    fail(f'Probe validation error: {e}')
+
+
+# ══════════════════════════════════════════════════════════════
+# Test 18: Release History Response Shape
+# ══════════════════════════════════════════════════════════════
+section('Test 18: Release History Consistency')
+
+# Verify the frontend expects 'history' key (not 'releases')
+with open('templates/index.html', 'r') as f:
+    html = f.read()
+
+if "d.history" in html or "history:" in html:
+    ok('Frontend expects "history" key from /api/release/history')
+else:
+    fail('Frontend does not reference "history" key')
+
+# Verify the backend returns 'history' key
+history_func_start = source.find('def get_release_history(')
+if history_func_start != -1:
+    history_func = source[history_func_start:history_func_start + 2000]
+    if "'history': summaries" in history_func or '"history":' in history_func:
+        ok('Backend returns "history" key')
+    else:
+        fail('Backend does not return "history" key')
+else:
+    fail('get_release_history function not found')
 
 # ══════════════════════════════════════════════════════════════
 # SUMMARY

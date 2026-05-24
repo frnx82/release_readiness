@@ -727,7 +727,7 @@
             <!-- Drift Tab -->
             <div class="tab-content" id="tab-drift">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-                    <p style="font-size:13px;color:var(--text2)">Comparing nominated versions vs live cluster</p>
+                    <p style="font-size:13px;color:var(--text2)">Comparing board nominations vs <strong>UAT live</strong> cluster versions</p>
                     <button class="btn btn-sm" onclick="checkDrift()">🔀 Check Now</button>
                 </div>
                 <div id="drift-list">
@@ -2672,17 +2672,25 @@
 
         async function checkDrift() {
             const container = document.getElementById('drift-list');
-            container.innerHTML = '<div class="loading"><div class="spinner"></div>Checking version drift...</div>';
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Checking version drift against UAT cluster...</div>';
             try {
                 const r = await fetch('/api/release/drift');
                 const data = await r.json();
                 const items = data.drift_items || [];
                 if (!items.length) { container.innerHTML = '<div class="empty-state"><p>No nominations to check</p></div>'; return; }
-                container.innerHTML = items.map(d => {
+                const clusterInfo = data.cluster ? `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px;margin-bottom:14px;display:inline-flex;gap:12px;align-items:center">
+                    <span>🖥️ Compared against: <strong>${data.cluster}</strong></span>
+                    ${data.namespace ? `<span style="color:var(--text2)">Namespace: <code>${data.namespace}</code></span>` : ''}
+                    <span style="color:var(--text2)">Services: <strong>${items.length}</strong></span>
+                    <span style="color:var(--green)">✅ ${items.filter(i => i.drift_status === 'match').length} match</span>
+                    <span style="color:var(--yellow)">⚠️ ${items.filter(i => i.drift_status === 'drift').length} drift</span>
+                    <span style="color:var(--red)">🔴 ${items.filter(i => i.drift_status === 'major_drift').length} major</span>
+                </div>` : '';
+                container.innerHTML = clusterInfo + items.map(d => {
                     const cls = d.drift_status === 'match' ? 'drift-match' : d.drift_status === 'major_drift' ? 'drift-major' : 'drift-drift';
                     const icon = d.drift_status === 'match' ? '🟢' : d.drift_status === 'major_drift' ? '🔴' : '🟡';
                     return `<div class="drift-item ${cls}">
-                <div><strong>${d.service}</strong><div style="font-size:10px;color:var(--text2);margin-top:2px">Nominated: ${d.nominated_tag} → Live: ${d.live_tag}</div></div>
+                <div><strong>${d.service}</strong><div style="font-size:10px;color:var(--text2);margin-top:2px">Nominated: ${d.nominated_tag} → UAT Live: ${d.live_tag}</div></div>
                 <span>${icon} ${d.drift_status === 'match' ? 'Match' : d.drift_status === 'major_drift' ? 'Major Drift!' : 'Drift'}</span>
             </div>`;
                 }).join('');
@@ -3333,9 +3341,6 @@
             const container = document.getElementById('uat-services-list');
             container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading UAT services...</div>';
             try {
-                // IMPORTANT: Fetch UAT services FIRST, then prod services AFTER.
-                // Cannot use Promise.all — the /api/prod/services call modifies
-                // the K8s client Configuration which can corrupt the in-cluster SA token.
                 const uatResp = await fetch('/api/services');
                 if (!uatResp.ok) {
                     const errText = await uatResp.text();
@@ -3346,7 +3351,7 @@
                 const svcs = d.services || [];
                 if (!svcs.length) { container.innerHTML = `<div class="empty-state"><p>No services found in UAT namespace</p><p style="font-size:12px;color:var(--text2);margin-top:8px">Namespace: <code>${d.namespace || 'unknown'}</code> | Error: <code>${d.error || 'none'}</code></p></div>`; return; }
 
-                // Now fetch prod services for cross-reference (safe - UAT already loaded)
+                // Fetch prod services for UAT-vs-Prod cross-reference
                 let prodResp = null;
                 try { prodResp = await fetch('/api/prod/services'); } catch(e) { /* ignore */ }
 
@@ -3363,7 +3368,7 @@
                     } catch(e) { /* ignore prod parse errors */ }
                 }
 
-                // Cross-reference with board nominations
+                // Cross-reference with board nominations (Board vs UAT live)
                 const boardSvcs = (_board && _board.services) ? _board.services : {};
                 let nominatedCount = 0, driftCount = 0, prodMatchCount = 0;
 
@@ -3371,7 +3376,7 @@
                     const status = s.available ? '<span style="color:var(--green)">● Running</span>' : '<span style="color:var(--red)">● Down</span>';
                     const helmBadge = s.helm_version ? `<span style="font-size:11px;padding:2px 8px;background:rgba(99,102,241,.12);color:var(--accent);border-radius:4px">${s.helm_version}</span>` : '<span style="color:var(--text2)">—</span>';
 
-                    // Prod version comparison badge
+                    // Prod version comparison badge (UAT tag vs Prod tag)
                     let prodBadgeHtml = '';
                     if (prodConnected && s.name in prodVersionMap) {
                         const prodTag = prodVersionMap[s.name];
@@ -3384,25 +3389,25 @@
                         }
                     }
 
-                    // Check if this service is nominated on the board
+                    // Check if this service is nominated on the board (Board vs UAT live drift)
                     const nominated = boardSvcs[s.name];
                     let boardStatusHtml = '<span style="color:var(--text2)">—</span>';
                     if (nominated) {
                         const nomTag = nominated.image_tag || '';
                         const liveTag = s.image_tag || '';
                         if (nomTag === liveTag) {
-                            // Nominated and versions match
+                            // Nominated and UAT version matches board
                             nominatedCount++;
                             boardStatusHtml = `<span style="font-size:11px;padding:3px 8px;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.2);border-radius:6px;font-weight:600">✅ Nominated</span>`;
                         } else {
-                            // Nominated but version drift
+                            // Nominated but UAT live version differs from board
                             nominatedCount++;
                             driftCount++;
                             boardStatusHtml = `<div>
                                 <span style="font-size:11px;padding:3px 8px;background:rgba(245,158,11,.12);color:#f59e0b;border:1px solid rgba(245,158,11,.2);border-radius:6px;font-weight:600">⚠️ Drift</span>
                                 <div style="font-size:10px;color:var(--text2);margin-top:3px">
                                     Board: <span style="color:var(--accent);font-family:monospace">${nomTag}</span>
-                                    <br>Live: <span style="color:#f59e0b;font-family:monospace">${liveTag}</span>
+                                    <br>UAT Live: <span style="color:#f59e0b;font-family:monospace">${liveTag}</span>
                                 </div>
                             </div>`;
                         }

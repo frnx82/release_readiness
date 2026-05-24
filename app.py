@@ -4034,32 +4034,9 @@ def release_notes_status(job_id):
             _release_notes_jobs.pop(oldest, None)
         return jsonify(result)
 
-
-# ── Release History ───────────────────────────────────────────────────────────
-@app.route('/api/release/history')
-def release_history():
-    """List past release boards."""
-    try:
-        v1 = client.CoreV1Api(api_client=_local_api_client)
-        cms = _k8s_retry(v1.list_namespaced_config_map, NAMESPACE,
-                         label_selector='app=release-readiness').items
-        history = []
-        for cm in cms:
-            try:
-                data = json.loads(cm.data.get('manifest.json', '{}'))
-                history.append({
-                    'release_date': data.get('release_date', cm.metadata.name),
-                    'status': data.get('status', 'unknown'),
-                    'service_count': len(data.get('services', {})),
-                    'finalized_by': data.get('finalized_by'),
-                    'created_at': data.get('created_at')
-                })
-            except Exception:
-                pass
-        history.sort(key=lambda x: x.get('release_date', ''), reverse=True)
-        return jsonify({'releases': history})
-    except Exception as e:
-        return jsonify({'releases': [], 'error': str(e)})
+# NOTE: /api/release/history is handled by get_release_history() above (line ~3204).
+# A legacy ConfigMap-based version was removed here — it was shadowing the correct
+# handler and returning a different response shape ('releases' vs 'history' key).
 
 
 # ══════════════════════════════════════════════════════════════════════════════

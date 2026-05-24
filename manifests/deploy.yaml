@@ -320,19 +320,21 @@ spec:
 
         livenessProbe:
           httpGet:
-            path: /api/board
+            path: /api/ping
             port: 8080
-          initialDelaySeconds: 10
+          initialDelaySeconds: 15
           periodSeconds: 30
           timeoutSeconds: 5
+          failureThreshold: 3
 
         readinessProbe:
           httpGet:
-            path: /api/board
+            path: /api/ping
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
           timeoutSeconds: 3
+          failureThreshold: 3
 
         volumeMounts:
         - name: board-data

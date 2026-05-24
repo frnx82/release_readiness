@@ -519,14 +519,15 @@ def release_history():
 
 @app.route('/api/release/drift')
 def drift():
+    """Compare nominated versions against UAT live cluster versions."""
     board = _read_board()
     if not board or not board.get('services'):
-        return jsonify({'drift_items': []})
+        return jsonify({'drift_items': [], 'message': 'No nominations to check'})
     import random
     items = []
     for name, svc in board['services'].items():
         nom_tag = svc.get('image_tag', '')
-        # Simulate some drift
+        # Simulate some drift against UAT live versions
         if random.random() < 0.25:
             parts = nom_tag.replace('v', '').split('.')
             if len(parts) >= 3:
@@ -545,7 +546,12 @@ def drift():
         items.append({'service': name, 'nominated_tag': nom_tag, 'live_tag': live_tag,
                       'live_image': svc.get('image', '').replace(nom_tag, live_tag),
                       'drift_status': status})
-    return jsonify({'drift_items': items})
+    return jsonify({
+        'drift_items': items,
+        'cluster': 'UAT (local)',
+        'namespace': 'mock-namespace',
+        'deploy_env': 'uat',
+    })
 
 @app.route('/api/ai/release_readiness', methods=['POST'])
 def readiness():
