@@ -1944,6 +1944,102 @@ def api_auth_status():
     return jsonify({'authenticated': True, 'ts': datetime.datetime.utcnow().isoformat()})
 
 
+# ── K8s connectivity diagnostic ───────────────────────────────────────────────
+@app.route('/api/k8s-diag')
+def k8s_diagnostic():
+    """Diagnostic endpoint to test K8s connectivity multiple ways."""
+    import traceback
+    results = {}
+    namespace = NAMESPACE
+
+    # Method 1: Fresh load_incluster_config + default AppsV1Api
+    try:
+        config.load_incluster_config()
+        api1 = client.AppsV1Api()
+        deploys = api1.list_namespaced_deployment(namespace).items
+        results['method1_fresh_incluster'] = {
+            'status': 'OK',
+            'deployments': len(deploys),
+            'names': [d.metadata.name for d in deploys[:5]]
+        }
+    except Exception as e:
+        results['method1_fresh_incluster'] = {
+            'status': 'FAIL',
+            'error': str(e)[:300]
+        }
+
+    # Method 2: _local_api_client
+    try:
+        api2 = client.AppsV1Api(api_client=_local_api_client)
+        deploys = api2.list_namespaced_deployment(namespace).items
+        results['method2_local_client'] = {
+            'status': 'OK',
+            'deployments': len(deploys),
+            'names': [d.metadata.name for d in deploys[:5]]
+        }
+    except Exception as e:
+        results['method2_local_client'] = {
+            'status': 'FAIL',
+            'error': str(e)[:300]
+        }
+
+    # Method 3: Raw HTTP with urllib3 (bypasses kubernetes client entirely)
+    try:
+        import urllib3
+        token_path = '/var/run/secrets/kubernetes.io/serviceaccount/token'
+        ca_path = '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt'
+        k8s_host = os.environ.get('KUBERNETES_SERVICE_HOST', '')
+        k8s_port = os.environ.get('KUBERNETES_SERVICE_PORT', '443')
+
+        if os.path.exists(token_path):
+            with open(token_path) as f:
+                token = f.read().strip()
+            http = urllib3.PoolManager(ca_certs=ca_path if os.path.exists(ca_path) else None)
+            resp = http.request(
+                'GET',
+                f'https://{k8s_host}:{k8s_port}/apis/apps/v1/namespaces/{namespace}/deployments',
+                headers={'Authorization': f'Bearer {token}'},
+                timeout=10
+            )
+            body = json.loads(resp.data.decode())
+            if resp.status == 200:
+                items = body.get('items', [])
+                results['method3_raw_urllib3'] = {
+                    'status': 'OK',
+                    'http_status': resp.status,
+                    'deployments': len(items),
+                    'names': [i['metadata']['name'] for i in items[:5]]
+                }
+            else:
+                results['method3_raw_urllib3'] = {
+                    'status': 'FAIL',
+                    'http_status': resp.status,
+                    'message': body.get('message', '')[:200]
+                }
+        else:
+            results['method3_raw_urllib3'] = {
+                'status': 'SKIP',
+                'reason': 'No SA token file found'
+            }
+    except Exception as e:
+        results['method3_raw_urllib3'] = {
+            'status': 'ERROR',
+            'error': str(e)[:300]
+        }
+
+    # Environment info
+    results['env'] = {
+        'namespace': namespace,
+        'deploy_env': DEPLOY_ENV,
+        'k8s_host': os.environ.get('KUBERNETES_SERVICE_HOST', 'NOT SET'),
+        'k8s_port': os.environ.get('KUBERNETES_SERVICE_PORT', 'NOT SET'),
+        'sa_token_exists': os.path.exists('/var/run/secrets/kubernetes.io/serviceaccount/token'),
+        'ca_cert_exists': os.path.exists('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt'),
+    }
+
+    return jsonify(results)
+
+
 # ── Service listing from live cluster ─────────────────────────────────────────
 @app.route('/api/services')
 def list_services():
