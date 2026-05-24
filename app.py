@@ -1602,52 +1602,11 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent',
 
 try:
     config.load_incluster_config()
-    print("[k8s] ✅ In-cluster config loaded")
 except config.ConfigException:
     try:
         config.load_kube_config()
-        print("[k8s] ✅ Kube config loaded (local dev)")
     except config.ConfigException:
-        print("[k8s] ⚠️  Could not configure kubernetes client")
-
-# ── Build a dedicated local-cluster ApiClient ─────────────────────────────────
-# Manually read the in-cluster SA token and build a Configuration from scratch.
-# This avoids all issues with Configuration singleton behavior across different
-# kubernetes-client versions, and ensures the Bearer token is always sent.
-_local_api_client = None
-_SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
-_SA_CA_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt'
-
-try:
-    if os.path.exists(_SA_TOKEN_PATH):
-        # In-cluster: build config explicitly from mounted SA credentials
-        with open(_SA_TOKEN_PATH, 'r') as f:
-            _sa_token = f.read().strip()
-
-        _k8s_host = os.environ.get('KUBERNETES_SERVICE_HOST', '')
-        _k8s_port = os.environ.get('KUBERNETES_SERVICE_PORT', '443')
-
-        _local_cfg = client.Configuration()
-        _local_cfg.host = f'https://{_k8s_host}:{_k8s_port}'
-        _local_cfg.api_key = {"authorization": f"Bearer {_sa_token}"}
-        if os.path.exists(_SA_CA_PATH):
-            _local_cfg.ssl_ca_cert = _SA_CA_PATH
-        _local_cfg.verify_ssl = True
-
-        _local_api_client = client.ApiClient(_local_cfg)
-        print(f"[k8s] ✅ Local ApiClient ready (explicit SA token)")
-        print(f"[k8s]    Host: {_local_cfg.host}")
-        print(f"[k8s]    Token: {_sa_token[:20]}...({len(_sa_token)} chars)")
-        print(f"[k8s]    CA cert: {_SA_CA_PATH if os.path.exists(_SA_CA_PATH) else 'not found'}")
-    else:
-        # Local dev: use whatever config was loaded
-        _local_cfg = client.Configuration.get_default_copy()
-        _local_api_client = client.ApiClient(_local_cfg)
-        print(f"[k8s] Local ApiClient ready (dev mode) — host: {_local_cfg.host}")
-except Exception as _e:
-    print(f"[k8s] ⚠️  Could not build local ApiClient: {_e}")
-    import traceback
-    traceback.print_exc()
+        print("[k8s] Could not configure kubernetes client")
 
 
 # ── K8s retry helper ──────────────────────────────────────────────────────────
@@ -1698,7 +1657,7 @@ def _detect_storage_mode():
 
     # Auto-detect: try creating a probe ConfigMap
     try:
-        v1 = client.CoreV1Api(api_client=_local_api_client)
+        v1 = client.CoreV1Api()
         probe_name = 'release-readiness-probe'
         probe = client.V1ConfigMap(
             metadata=client.V1ObjectMeta(name=probe_name,
@@ -1792,7 +1751,7 @@ def _read_board(release_date=None):
     """Read the release board. Uses ConfigMap or file based on detected storage mode."""
     if _STORAGE_MODE == 'configmap':
         try:
-            v1 = client.CoreV1Api(api_client=_local_api_client)
+            v1 = client.CoreV1Api()
             cm_name = _board_configmap_name(release_date)
             cm = _k8s_retry(v1.read_namespaced_config_map, cm_name, NAMESPACE)
             return json.loads(cm.data.get('manifest.json', '{}'))
@@ -1820,7 +1779,7 @@ def _write_board(board_data, release_date=None):
     # Also write to ConfigMap if permissions exist
     if _STORAGE_MODE == 'configmap':
         try:
-            v1 = client.CoreV1Api(api_client=_local_api_client)
+            v1 = client.CoreV1Api()
             cm_name = _board_configmap_name(release_date)
             body = client.V1ConfigMap(
                 metadata=client.V1ObjectMeta(
@@ -1970,7 +1929,7 @@ def k8s_diagnostic():
 
     # Method 2: _local_api_client
     try:
-        api2 = client.AppsV1Api(api_client=_local_api_client)
+        api2 = client.AppsV1Api()
         deploys = api2.list_namespaced_deployment(namespace).items
         results['method2_local_client'] = {
             'status': 'OK',
@@ -2108,10 +2067,7 @@ def list_services():
     services = []
     errors = []
     try:
-        # Try dedicated local client first, fall back to default
-        _api = _local_api_client if _local_api_client else None
-        apps_v1 = client.AppsV1Api(api_client=_api) if _api else client.AppsV1Api()
-        print(f'[services] Using {"dedicated" if _api else "default"} ApiClient')
+        apps_v1 = client.AppsV1Api()
 
         # Deployments
         try:
@@ -2840,7 +2796,7 @@ def nominate_service():
                     print(f"[nominate] DEPLOY_ENV=prod → reading version from REMOTE UAT cluster, ns={uat_ns}")
             else:
                 # Deployed in UAT → read version from local cluster
-                apps_v1 = client.AppsV1Api(api_client=_local_api_client)
+                apps_v1 = client.AppsV1Api()
                 print(f"[nominate] DEPLOY_ENV=uat → reading version from LOCAL cluster, ns={namespace}")
 
             if apps_v1:
@@ -3295,7 +3251,7 @@ def check_drift():
         print(f'[drift] DEPLOY_ENV=prod → checking drift against REMOTE UAT cluster, ns={namespace}')
     else:
         # App is in UAT → read LOCAL cluster
-        apps_v1 = client.AppsV1Api(api_client=_local_api_client)
+        apps_v1 = client.AppsV1Api()
         cluster_label = 'UAT (local)'
         print(f'[drift] DEPLOY_ENV=uat → checking drift against LOCAL cluster, ns={namespace}')
 
@@ -3368,7 +3324,7 @@ def ai_release_readiness():
 
     # Collect cluster health data
     service_summaries = []
-    v1 = client.CoreV1Api(api_client=_local_api_client)
+    v1 = client.CoreV1Api()
 
     for svc_name, svc_data in board.get('services', {}).items():
         summary_lines = [f"Service: {svc_name}"]
@@ -3404,7 +3360,7 @@ def ai_release_readiness():
 
         # Check for probes
         try:
-            apps_v1 = client.AppsV1Api(api_client=_local_api_client)
+            apps_v1 = client.AppsV1Api()
             d = _k8s_retry(apps_v1.read_namespaced_deployment, svc_name, namespace)
             for c in (d.spec.template.spec.containers or []):
                 has_readiness = 'yes' if c.readiness_probe else 'MISSING'
@@ -4043,7 +3999,7 @@ def release_notes_status(job_id):
 def release_history():
     """List past release boards."""
     try:
-        v1 = client.CoreV1Api(api_client=_local_api_client)
+        v1 = client.CoreV1Api()
         cms = _k8s_retry(v1.list_namespaced_config_map, NAMESPACE,
                          label_selector='app=release-readiness').items
         history = []
@@ -4607,7 +4563,7 @@ def _tool_get_service_status(service_name: str) -> str:
         ]
         # Check live pod health
         try:
-            v1 = client.CoreV1Api(api_client=_local_api_client)
+            v1 = client.CoreV1Api()
             pods = _k8s_retry(v1.list_namespaced_pod, NAMESPACE,
                               label_selector=f'app={service_name}')
             if pods.items:
@@ -4647,7 +4603,7 @@ def _tool_check_drift() -> str:
             namespace = uat_ns
             env_label = f'UAT (remote), ns={namespace}'
         else:
-            apps_v1 = client.AppsV1Api(api_client=_local_api_client)
+            apps_v1 = client.AppsV1Api()
             env_label = f'UAT (local), ns={namespace}'
 
         for svc_name, svc_data in board['services'].items():
@@ -4729,7 +4685,7 @@ def _tool_get_audit_trail(limit: int = 20) -> str:
 def _tool_get_uat_services() -> str:
     """List all services currently running in the UAT namespace with versions."""
     try:
-        apps_v1 = client.AppsV1Api(api_client=_local_api_client)
+        apps_v1 = client.AppsV1Api()
         services = []
         # Deployments
         try:
