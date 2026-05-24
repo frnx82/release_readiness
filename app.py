@@ -2488,6 +2488,11 @@ def _get_prod_api_client():
     # Connection timeout to prevent pod hang/OOM on unreachable clusters
     prod_config.connection_pool_maxsize = 4
     prod_config.retries = 1
+    # ── CRITICAL: Set socket-level timeouts to prevent indefinite hangs ──
+    # Without these, an unreachable prod cluster will block the worker thread
+    # forever, causing liveness probe failures and pod restarts (SIGTERM).
+    prod_config.connect_timeout = 10   # seconds to establish TCP connection
+    prod_config.read_timeout = 15      # seconds to read response
 
     # SSL configuration
     ca_cert = os.environ.get('PROD_CLUSTER_CA_CERT', '')
@@ -2526,6 +2531,9 @@ def _get_uat_api_client():
     uat_config = client.Configuration()
     uat_config.host = uat_api
     uat_config.api_key = {"authorization": f"Bearer {uat_token}"}
+    # ── CRITICAL: Set socket-level timeouts to prevent indefinite hangs ──
+    uat_config.connect_timeout = 10
+    uat_config.read_timeout = 15
 
     # SSL configuration
     verify_ssl = os.environ.get('UAT_CLUSTER_VERIFY_SSL', 'true').lower()
@@ -2549,9 +2557,13 @@ def _list_services_from_api(api_client, namespace, log_prefix='[remote]'):
         raise
     print(f'{log_prefix} API client ready, listing deployments in namespace={namespace}...')
 
+    # Use _timeout_seconds on each K8s API call to prevent indefinite blocking.
+    # This is the server-side timeout — the K8s API server will abort after this.
+    _timeout_seconds = 15
+
     # Deployments
     try:
-        deploys = apps_v1.list_namespaced_deployment(namespace).items
+        deploys = apps_v1.list_namespaced_deployment(namespace, _request_timeout=_timeout_seconds).items
         for d in deploys:
             containers = d.spec.template.spec.containers or []
             image = containers[0].image if containers else ''
@@ -2571,7 +2583,7 @@ def _list_services_from_api(api_client, namespace, log_prefix='[remote]'):
 
     # StatefulSets
     try:
-        sts = apps_v1.list_namespaced_stateful_set(namespace).items
+        sts = apps_v1.list_namespaced_stateful_set(namespace, _request_timeout=_timeout_seconds).items
         for s in sts:
             containers = s.spec.template.spec.containers or []
             image = containers[0].image if containers else ''
@@ -2591,7 +2603,7 @@ def _list_services_from_api(api_client, namespace, log_prefix='[remote]'):
 
     # DaemonSets
     try:
-        dss = apps_v1.list_namespaced_daemon_set(namespace).items
+        dss = apps_v1.list_namespaced_daemon_set(namespace, _request_timeout=_timeout_seconds).items
         for d in dss:
             containers = d.spec.template.spec.containers or []
             image = containers[0].image if containers else ''
