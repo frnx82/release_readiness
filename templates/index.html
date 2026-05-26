@@ -823,12 +823,59 @@
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
                     <div>
                         <h3 style="font-size:16px;margin:0">📚 Release History</h3>
-                        <p style="font-size:12px;color:var(--text2);margin:4px 0 0">Archived boards from previous release cycles</p>
+                        <p style="font-size:12px;color:var(--text2);margin:4px 0 0">Select a fix version to view nominated services for that release</p>
                     </div>
                     <button class="btn btn-sm" onclick="loadReleaseHistory()">🔄 Refresh</button>
                 </div>
-                <div id="release-history-list">
-                    <div class="empty-state"><p>Click the tab or Refresh to load release history</p></div>
+
+                <!-- Fix Version Selector -->
+                <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;padding:12px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius)">
+                    <label style="font-size:12px;font-weight:600;color:var(--text2);white-space:nowrap">🏷️ Fix Version</label>
+                    <select id="history-fix-version-select" onchange="onHistoryFixVersionSelect()" style="flex:1;max-width:320px;padding:7px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:13px;cursor:pointer">
+                        <option value="">— Select a release —</option>
+                    </select>
+                    <span id="history-fix-version-summary" style="font-size:11px;color:var(--text2);margin-left:auto"></span>
+                </div>
+
+                <!-- Selected Release Detail Table -->
+                <div id="history-selected-detail" style="display:none;margin-bottom:20px">
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
+                        <div id="history-detail-header" style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+                            <div>
+                                <div style="font-weight:700;font-size:14px" id="history-detail-title"></div>
+                                <div style="font-size:11px;color:var(--text2);margin-top:2px" id="history-detail-subtitle"></div>
+                            </div>
+                            <div style="display:flex;gap:8px;align-items:center">
+                                <span id="history-detail-badge" class="card-tag"></span>
+                                <button class="btn btn-sm" onclick="exportHistoryTable()" title="Copy table to clipboard">📋 Copy</button>
+                            </div>
+                        </div>
+                        <div style="overflow-x:auto;padding:0 4px 12px">
+                            <table class="list-view-table" style="font-size:12px;margin:0;width:100%">
+                                <thead>
+                                    <tr>
+                                        <th style="padding-left:20px">#</th>
+                                        <th>Service</th>
+                                        <th>Version</th>
+                                        <th>Helm Chart</th>
+                                        <th>Readiness</th>
+                                        <th>Nominated By</th>
+                                        <th>Jira IDs</th>
+                                        <th>Notes</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="history-detail-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Browse All Releases (collapsible cards) -->
+                <div style="margin-top:8px">
+                    <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:10px" id="history-browse-label" style="display:none">📂 Browse All Releases</div>
+                    <div id="release-history-list">
+                        <div class="empty-state"><p>Click the tab or Refresh to load release history</p></div>
+                    </div>
                 </div>
             </div>
 
@@ -3254,6 +3301,8 @@
         }
 
         // ═══ Release History ══════════════════════════════════════════════════════════
+        let _historyData = [];  // cached for fix version selector
+
         async function loadReleaseHistory() {
             const container = document.getElementById('release-history-list');
             container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading release history...</div>';
@@ -3261,6 +3310,30 @@
                 const r = await fetch('/api/release/history');
                 const d = await r.json();
                 const history = d.history || [];
+                _historyData = history;
+
+                // ── Populate Fix Version dropdown ──
+                const select = document.getElementById('history-fix-version-select');
+                const currentVal = select.value;
+                select.innerHTML = '<option value="">— Select a release —</option>';
+                history.forEach((rel, i) => {
+                    const label = rel.fix_version
+                        ? `${rel.fix_version}  ·  ${rel.release_date}  (${rel.service_count} services)`
+                        : `Release ${rel.release_date}  (${rel.service_count} services)`;
+                    const opt = document.createElement('option');
+                    opt.value = String(i);
+                    opt.textContent = label;
+                    select.appendChild(opt);
+                });
+                // Restore previous selection if still valid
+                if (currentVal && parseInt(currentVal) < history.length) {
+                    select.value = currentVal;
+                    onHistoryFixVersionSelect();
+                } else {
+                    document.getElementById('history-selected-detail').style.display = 'none';
+                    document.getElementById('history-fix-version-summary').textContent =
+                        history.length ? `${history.length} archived release${history.length > 1 ? 's' : ''}` : '';
+                }
 
                 if (!history.length) {
                     container.innerHTML = `
@@ -3269,8 +3342,11 @@
                             <h4 style="margin-bottom:8px">No Release History Yet</h4>
                             <p style="color:var(--text2);font-size:13px">Previous release boards will appear here after you<br>click <strong>✅ Mark Released</strong> and start a new cycle.</p>
                         </div>`;
+                    document.getElementById('history-browse-label').style.display = 'none';
                     return;
                 }
+
+                document.getElementById('history-browse-label').style.display = '';
 
                 const cards = history.map((rel, i) => {
                     const svcRows = rel.services.map(s => {
@@ -3324,16 +3400,98 @@
                 }).join('');
 
                 container.innerHTML = `
-                    <div style="display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap">
-                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
-                            \ud83d\udcda <strong>${history.length}</strong> past release${history.length > 1 ? 's' : ''}
-                        </div>
-                    </div>
                     <style>.hist-detail.open { max-height: 800px !important; } .hist-detail.open + span { transform: rotate(90deg); }</style>
                     ${cards}`;
             } catch (e) {
                 container.innerHTML = '<div class="empty-state"><p>Failed to load release history</p></div>';
             }
+        }
+
+        function onHistoryFixVersionSelect() {
+            const select = document.getElementById('history-fix-version-select');
+            const detailDiv = document.getElementById('history-selected-detail');
+            const summarySpan = document.getElementById('history-fix-version-summary');
+            const idx = select.value;
+
+            if (idx === '' || !_historyData.length) {
+                detailDiv.style.display = 'none';
+                summarySpan.textContent = _historyData.length
+                    ? `${_historyData.length} archived release${_historyData.length > 1 ? 's' : ''}` : '';
+                return;
+            }
+
+            const rel = _historyData[parseInt(idx)];
+            if (!rel) { detailDiv.style.display = 'none'; return; }
+
+            // Header
+            const title = rel.fix_version
+                ? `🏷️ ${rel.fix_version}  —  Release ${rel.release_date}`
+                : `📦 Release ${rel.release_date}`;
+            document.getElementById('history-detail-title').textContent = title;
+
+            const relDate = (rel.released_at || '').replace('T', ' ').substring(0, 19);
+            const subtitle = `Released: ${relDate}  ·  By: ${rel.released_by || '—'}  ·  Cutoff: ${rel.cutoff || '—'}`;
+            document.getElementById('history-detail-subtitle').textContent = subtitle;
+
+            // Badge
+            const badge = document.getElementById('history-detail-badge');
+            const readyCount = rel.services.filter(s => s.readiness === 'ready').length;
+            badge.textContent = `${rel.service_count} services · ${readyCount} ready`;
+            badge.style.background = readyCount === rel.service_count ? 'rgba(16,185,129,.15)' : 'rgba(245,158,11,.15)';
+            badge.style.color = readyCount === rel.service_count ? '#10b981' : '#f59e0b';
+
+            // Summary span
+            const excText = rel.exception_count > 0 ? `  ·  ⚠️ ${rel.exception_count} exceptions` : '';
+            summarySpan.textContent = `${rel.service_count} services nominated${excText}`;
+
+            // Table body
+            const tbody = document.getElementById('history-detail-tbody');
+            tbody.innerHTML = rel.services.map((s, i) => {
+                const rdBadge = s.readiness === 'ready'
+                    ? '<span style="color:var(--green);font-weight:600">● Ready</span>'
+                    : s.readiness === 'review'
+                    ? '<span style="color:var(--yellow);font-weight:600">● Review</span>'
+                    : s.readiness === 'risk'
+                    ? '<span style="color:var(--red);font-weight:600">● Risk</span>'
+                    : '<span style="color:var(--text2)">—</span>';
+
+                const jiraLinks = (s.jira_ids || '').split(',').map(j => j.trim()).filter(Boolean)
+                    .map(j => `<span style="font-family:monospace;color:var(--accent)">${j}</span>`).join(', ') || '—';
+
+                return `<tr>
+                    <td style="padding-left:20px;color:var(--text2)">${i + 1}</td>
+                    <td style="font-weight:600">${s.name}</td>
+                    <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span></td>
+                    <td style="font-size:11px;color:var(--text2)">${s.helm_version || '—'}</td>
+                    <td>${rdBadge}</td>
+                    <td style="font-size:11px;color:var(--text2)">${s.nominated_by || '—'}</td>
+                    <td style="font-size:11px">${jiraLinks}</td>
+                    <td style="font-size:11px;color:var(--text2);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(s.notes || '').replace(/"/g, '&quot;')}">${s.notes || '—'}</td>
+                </tr>`;
+            }).join('');
+
+            detailDiv.style.display = '';
+        }
+
+        function exportHistoryTable() {
+            const select = document.getElementById('history-fix-version-select');
+            const idx = select.value;
+            if (idx === '' || !_historyData.length) return;
+            const rel = _historyData[parseInt(idx)];
+            if (!rel) return;
+
+            const header = 'Service\tVersion\tHelm Chart\tReadiness\tNominated By\tJira IDs\tNotes';
+            const rows = rel.services.map(s =>
+                `${s.name}\t${s.image_tag || ''}\t${s.helm_version || ''}\t${s.readiness || ''}\t${s.nominated_by || ''}\t${s.jira_ids || ''}\t${s.notes || ''}`
+            );
+            const fixLabel = rel.fix_version ? `Fix Version: ${rel.fix_version}` : `Release Date: ${rel.release_date}`;
+            const text = `${fixLabel}\nReleased: ${(rel.released_at || '').replace('T', ' ').substring(0, 19)}  |  By: ${rel.released_by || '—'}\n\n${header}\n${rows.join('\n')}`;
+
+            navigator.clipboard.writeText(text).then(() => {
+                showToast('📋 Release table copied to clipboard', 'success');
+            }).catch(() => {
+                showToast('❌ Failed to copy to clipboard', 'error');
+            });
         }
 
         // ═══ UAT Environment ═════════════════════════════════════════════════════════
