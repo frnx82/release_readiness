@@ -1291,33 +1291,97 @@
                     </div>
 
                     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
-                        <h3 style="font-size:15px;margin-bottom:8px">🔌 Jira MCP Server Connection</h3>
+                        <h3 style="font-size:15px;margin-bottom:8px">🔌 Jira Connection — Dual-Mode Architecture</h3>
                         <p style="color:var(--text2);font-size:13px;line-height:1.8">
-                            Release Readiness connects to your organization's <strong>Jira MCP (Model Context Protocol) server</strong>
-                            to fetch ticket details (summary, description, status, type, priority). This data powers
-                            the AI release notes generation.
+                            Release Readiness supports <strong>two methods</strong> for connecting to Jira, tried in order.
+                            If MCP fails or times out, the system automatically falls back to the REST API.
+                            Both methods are used for individual ticket lookups <em>and</em> fix version JQL searches.
                         </p>
-                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
-                            <strong style="color:var(--accent2)">How it works:</strong>
+
+                        <div style="margin-top:14px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Mode 1: MCP Server (recommended):</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li>When you click <strong>🤖 AI Release Notes</strong>, the system collects all Jira IDs from nominated services</li>
-                                <li>For each Jira ID, it calls the MCP server's <code>jira_get_issue</code> tool via JSON-RPC over HTTP</li>
-                                <li>Ticket summaries and descriptions are injected into the Gemini prompt</li>
-                                <li>Gemini generates release notes organized by change type: 🆕 Features, 🐛 Bug Fixes, ⚡ Improvements, 🔧 Maintenance</li>
-                                <li>Results are <strong>cached for 5 minutes</strong> to avoid redundant API calls</li>
+                                <li>Connects to a <strong>Jira MCP (Model Context Protocol) server</strong> via JSON-RPC over HTTP</li>
+                                <li><strong>Individual tickets:</strong> calls <code>jira_get_issue</code> (or <code>get_issue</code> as fallback) for each Jira ID</li>
+                                <li><strong>Fix version search:</strong> auto-discovers search tools — tries <code>search_jira_issues</code>, <code>jira_search_issues</code>, <code>search_issues</code>, and <code>jira_search</code> until one succeeds</li>
+                                <li><strong>Quick-fail:</strong> 5-second timeout on MCP search — if MCP is unreachable, remaining tool names are skipped and the system falls back to REST API immediately</li>
+                                <li><strong>SSE support:</strong> handles both standard JSON responses and <code>text/event-stream</code> (Server-Sent Events) format from MCP servers</li>
+                                <li><strong>3-layer response parsing:</strong> JSON → key-value text → raw text fallback — handles any MCP server's response format</li>
                             </ul>
                         </div>
-                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+
+                        <div style="margin-top:14px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Mode 2: Direct REST API (fallback):</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>Connects directly to your <strong>Jira instance</strong> at <code>JIRA_BASE_URL</code> using the standard REST API v2</li>
+                                <li>Searches <code>/rest/api/2/search</code> with JQL: <code>fixVersion = "PYY.MM.DD"</code></li>
+                                <li><strong>Tries both GET and POST</strong> — GET works for Jira Server/Data Center, POST for Jira Cloud</li>
+                                <li>Returns full issue data: summary, description, type, status, priority, and <strong>components</strong></li>
+                            </ul>
+                        </div>
+
+                        <div style="margin-top:14px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Authentication:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>MCP mode:</strong> sends <code>Jira-Token</code> header + <code>Authorization: Bearer</code> fallback + <code>X-Jira-User-Email</code></li>
+                                <li><strong>REST API mode:</strong> prefers <code>Bearer</code> token (Jira Data Center PAT), falls back to <code>Basic Auth</code> (email:PAT for Jira Cloud)</li>
+                                <li>SSL verification respects the <code>SSL_VERIFY</code> env var — can be disabled for self-signed certs</li>
+                                <li>Proxy support via <code>PROXY_URL</code> — routes all Jira requests through your corporate proxy if configured</li>
+                            </ul>
+                        </div>
+
+                        <div style="margin-top:14px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">Configuration:</strong>
                             <div style="margin-top:6px;padding:10px 14px;background:var(--bg);border-radius:8px;font-family:monospace;font-size:12px;color:var(--text2)">
-                                JIRA_MCP_URL=https://jira-mcp.your-org.com<br>
-                                JIRA_SERVICE_ACCOUNT=jira-svc-account<br>
+                                # Option 1: MCP Server<br>
+                                JIRA_MCP_URL=https://jira-mcp.your-org.com<br><br>
+                                # Option 2: Direct REST API<br>
+                                JIRA_BASE_URL=https://jira.company.com<br><br>
+                                # Authentication (used by both modes)<br>
+                                JIRA_EMAIL=jira-svc-account@company.com<br>
                                 JIRA_PAT_TOKEN=&lt;your-jira-pat-token&gt;
                             </div>
                         </div>
+
                         <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--green)">
-                            💡 <strong>Graceful degradation:</strong> If no Jira MCP server is configured, or it's unreachable,
+                            💡 <strong>Graceful degradation:</strong> If neither Jira MCP nor REST API is configured (or both are unreachable),
                             release notes still generate — just without Jira descriptions. No errors, no breakage.
+                            The system logs detailed diagnostics to help troubleshoot connection issues.
+                        </div>
+                    </div>
+
+                    <!-- Fix Version + Component Mapping -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px">🏷️ Fix Version Search &amp; Component Mapping</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            When a <strong>Fix Version</strong> is set on the board (format: <code>PYY.MM.DD</code>), the system can
+                            automatically find <em>all</em> Jira tickets tagged with that fix version — not just the ones
+                            manually entered during nomination. This gives you the complete picture of what's in the release.
+                        </p>
+
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">How it works:</strong>
+                            <ol style="margin-left:18px;color:var(--text2)">
+                                <li>When AI Release Notes are generated, the system runs JQL: <code>fixVersion = "P26.05.30"</code></li>
+                                <li>All matching tickets are fetched with their <strong>components</strong> field</li>
+                                <li>Tickets are <strong>auto-mapped to nominated services</strong> using component → service name matching</li>
+                                <li>Matching is <strong>case-insensitive</strong> and <strong>dash/underscore-normalized</strong> (e.g., <code>billing-service</code> matches component <code>Billing_Service</code>)</li>
+                                <li>Unmapped tickets (infrastructure, cross-cutting concerns) are listed separately in the release notes</li>
+                            </ol>
+                        </div>
+
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Data sources combined:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li><strong>Manual Jira IDs</strong> — entered during nomination (e.g., <code>BILL-101, BILL-102</code>)</li>
+                                <li><strong>Fix version search</strong> — auto-discovered tickets from <code>fixVersion = "PYY.MM.DD"</code> JQL</li>
+                                <li>Both are merged — manual IDs take priority, fix version adds any missing tickets</li>
+                            </ul>
+                        </div>
+
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--accent)">
+                            💡 <strong>Tip:</strong> Set the <strong>Fix Version</strong> in the Export tab to match your Jira release version.
+                            This enables automatic ticket discovery — developers don't need to manually enter every Jira ID when nominating.
                         </div>
                     </div>
 
