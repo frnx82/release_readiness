@@ -556,6 +556,139 @@ if history_func_start != -1:
 else:
     fail('get_release_history function not found')
 
+
+# ══════════════════════════════════════════════════════════════
+# Test 19: Auto-Release Lifecycle
+# ══════════════════════════════════════════════════════════════
+section('Test 19: Auto-Release Lifecycle')
+
+# Check auto-release logic exists for open/locked boards
+if "board_status in ('open', 'locked')" in source and 'auto_release' in source:
+    ok('Auto-release triggers for open/locked boards past release date')
+else:
+    fail('Missing auto-release for open/locked boards')
+
+if 'system (auto-released)' in source:
+    ok('Auto-released boards marked with system attribution')
+else:
+    fail('Missing system attribution for auto-released boards')
+
+# Check duplicate history prevention
+if 'already_in_history' in source:
+    ok('Duplicate history prevention check exists')
+else:
+    fail('No duplicate history prevention — risk of double entries')
+
+# Check import copy is at top level
+lines = source.split('\n')
+top_100 = '\n'.join(lines[:100])
+if 'import copy' in top_100:
+    ok('import copy is at top-level (not inline)')
+else:
+    fail('import copy missing from top-level imports')
+
+# Verify complete_release uses copy.deepcopy (not inline import)
+complete_release_idx = source.find('def complete_release(')
+if complete_release_idx != -1:
+    complete_func = source[complete_release_idx:complete_release_idx + 1000]
+    if 'import copy' in complete_func:
+        fail('complete_release still has inline import copy')
+    elif 'copy.deepcopy' in complete_func:
+        ok('complete_release uses top-level copy.deepcopy')
+    else:
+        fail('complete_release missing copy.deepcopy for history snapshot')
+
+
+# ══════════════════════════════════════════════════════════════
+# Test 20: Stale Cutoff Fix
+# ══════════════════════════════════════════════════════════════
+section('Test 20: Stale Cutoff Fix')
+
+if 'effective_cutoff' in source and '_get_cutoff_datetime()' in source:
+    ok('Uses effective_cutoff with live recalculation')
+else:
+    fail('Missing effective_cutoff logic')
+
+if '_get_current_release_date()' in source:
+    ok('Compares board release_date to current release window')
+else:
+    fail('Missing current release date comparison')
+
+# Check the nominate endpoint also uses effective cutoff
+nominate_idx = source.find('def nominate_service(')
+if nominate_idx != -1:
+    nominate_func = source[nominate_idx:nominate_idx + 1500]
+    if 'effective_cutoff' in nominate_func or '_get_cutoff_datetime()' in nominate_func:
+        ok('nominate_service uses effective/live cutoff (not stale)')
+    else:
+        fail('nominate_service still uses stale board cutoff')
+
+# Ensure utcnow comparison against effective_cutoff, not raw board.get('cutoff')
+get_current_idx = source.find('def get_current_release(')
+if get_current_idx != -1:
+    get_current_func = source[get_current_idx:get_current_idx + 5000]
+    if 'now_iso' in get_current_func and 'effective_cutoff' in get_current_func:
+        ok('is_past_cutoff compares against effective_cutoff')
+    else:
+        fail('is_past_cutoff may still compare against raw stored cutoff')
+
+
+# ══════════════════════════════════════════════════════════════
+# Test 21: History Tab — Fix Version Selector
+# ══════════════════════════════════════════════════════════════
+section('Test 21: History Tab — Fix Version Selector')
+
+with open('templates/index.html', 'r') as f:
+    html = f.read()
+
+if 'history-fix-version-select' in html:
+    ok('Fix version dropdown element exists')
+else:
+    fail('Missing fix version dropdown element')
+
+if 'onHistoryFixVersionSelect' in html:
+    ok('onHistoryFixVersionSelect handler defined')
+else:
+    fail('Missing onHistoryFixVersionSelect handler')
+
+if 'history-selected-detail' in html:
+    ok('Selected release detail container exists')
+else:
+    fail('Missing detail container for selected release')
+
+if 'history-detail-tbody' in html:
+    ok('Detail table tbody exists for service rows')
+else:
+    fail('Missing detail table tbody')
+
+if 'exportHistoryTable' in html:
+    ok('Export/copy table function exists')
+else:
+    fail('Missing export table function')
+
+if '_historyData' in html:
+    ok('History data cached in _historyData for selector')
+else:
+    fail('Missing _historyData cache')
+
+
+# ══════════════════════════════════════════════════════════════
+# Test 22: Auto-Lock Consistency
+# ══════════════════════════════════════════════════════════════
+section('Test 22: Auto-Lock Consistency')
+
+if "board['auto_locked'] = True" in source:
+    ok('auto_locked flag set when auto-locking past cutoff')
+else:
+    fail('Missing auto_locked flag')
+
+# Verify auto-lock only triggers on 'open' status, not 'released'
+if "board['is_past_cutoff'] and board.get('status') == 'open'" in source:
+    ok('Auto-lock only triggers on open boards (not released/locked)')
+else:
+    fail('Auto-lock condition may trigger on wrong statuses')
+
+
 # ══════════════════════════════════════════════════════════════
 # SUMMARY
 # ══════════════════════════════════════════════════════════════
@@ -568,3 +701,4 @@ else:
     print(f'  ⚠️  {FAIL} FAILURES — review above')
 print()
 sys.exit(0 if FAIL == 0 else 1)
+

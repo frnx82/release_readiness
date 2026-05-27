@@ -19,6 +19,7 @@ import os
 import json
 import re
 import time
+import copy
 import datetime
 import threading
 import uuid
@@ -2729,9 +2730,11 @@ def get_current_release():
         except Exception as e:
             print(f"[release] Could not create board: {e}")
 
-    # Auto-archival: if board is released and we're past the release date (11:59 PM),
-    # automatically start a new cycle so the dashboard is fresh on Monday morning.
-    if board.get('status') == 'released' and board.get('release_date'):
+    # Auto-lifecycle: when the release date has passed, archive the board and start a new cycle.
+    # This handles two scenarios:
+    #   1. Board was manually "Mark Released" → status='released' → archive + new board
+    #   2. Board was NEVER released (still 'open'/'locked') → auto-release + archive + new board
+    if board.get('release_date'):
         try:
             release_date = datetime.date.fromisoformat(board['release_date'])
             # Archive after 11:59 PM on release day (i.e. the next calendar day)
@@ -2739,22 +2742,66 @@ def get_current_release():
                 release_date + datetime.timedelta(days=1),
                 datetime.time(0, 0)
             )
-            if datetime.datetime.utcnow() >= archive_threshold:
-                print(f"[release] Auto-archiving released board for {board['release_date']}, starting new cycle")
-                board['audit_trail'].append({
-                    'action': 'auto_archive',
-                    'by': 'system',
-                    'at': datetime.datetime.utcnow().isoformat(),
-                    'note': f"Board auto-archived after release date {board['release_date']}"
-                })
-                _write_board(board)  # Save the audit entry to the old board
-                board = _new_board()
-                _write_board(board)
+            now = datetime.datetime.utcnow()
+
+            if now >= archive_threshold:
+                board_status = board.get('status', 'open')
+
+                # If board was never released, auto-mark it as released first
+                if board_status in ('open', 'locked'):
+                    print(f"[release] Auto-releasing board for {board['release_date']} (was '{board_status}', release date has passed)")
+                    board['status'] = 'released'
+                    board['released_at'] = now.isoformat()
+                    board['released_by'] = 'system (auto-released)'
+                    board['audit_trail'].append({
+                        'action': 'auto_release',
+                        'by': 'system',
+                        'at': now.isoformat(),
+                        'note': f"Board auto-released — release date {board['release_date']} has passed without manual release"
+                    })
+
+                # Archive to history (only if not already added by complete_release)
+                if board_status == 'released' or board.get('status') == 'released':
+                    # Avoid duplicate: complete_release() already appends to _release_history
+                    already_in_history = any(
+                        h.get('release_date') == board.get('release_date') and h.get('fix_version') == board.get('fix_version')
+                        for h in _release_history
+                    )
+                    print(f"[release] Auto-archiving board for {board['release_date']}, starting new cycle")
+                    board['audit_trail'].append({
+                        'action': 'auto_archive',
+                        'by': 'system',
+                        'at': now.isoformat(),
+                        'note': f"Board auto-archived after release date {board['release_date']}"
+                    })
+                    if not already_in_history:
+                        _release_history.append(copy.deepcopy(board))
+                    _write_board(board)  # Save the audit entry to the old board
+                    board = _new_board()
+                    _write_board(board)
         except (ValueError, TypeError) as e:
             print(f"[release] Auto-archive date parse error: {e}")
 
     # Enrich with live metadata
-    board['is_past_cutoff'] = datetime.datetime.utcnow().isoformat() > board.get('cutoff', '')
+    # ── CRITICAL: Use the LIVE cutoff for the current release window, not the
+    # stored cutoff which can become stale if the board rolls over weeks.
+    # The stored cutoff is from when the board was created — if that was last
+    # week, it's already in the past and would incorrectly show "Locked".
+    live_cutoff = _get_cutoff_datetime()
+    stored_cutoff = board.get('cutoff', '')
+
+    # If the board's release_date matches the current release window, use the
+    # stored cutoff (it's correct). Otherwise use the live recalculated cutoff.
+    current_release = _get_current_release_date()
+    effective_cutoff = stored_cutoff if board.get('release_date') == current_release else live_cutoff
+
+    # Update the board's cutoff to the effective one so the UI always shows the right time
+    if effective_cutoff != stored_cutoff:
+        board['cutoff'] = effective_cutoff
+        print(f"[release] Updated stale cutoff {stored_cutoff} → {effective_cutoff} (board release_date={board.get('release_date')}, current={current_release})")
+
+    now_iso = datetime.datetime.utcnow().isoformat()
+    board['is_past_cutoff'] = now_iso > effective_cutoff
     board['nominated_count'] = len(board.get('services', {}))
     board['exception_count'] = len(board.get('exception_nominations', []))
 
@@ -2794,7 +2841,10 @@ def nominate_service():
     # Determine if board is effectively locked:
     # 1. Manually locked by Release Manager (status == 'locked'), OR
     # 2. Past the cutoff time (even if nobody clicked Lock Board yet)
-    is_past_cutoff = datetime.datetime.utcnow().isoformat() > board.get('cutoff', '')
+    # Use the effective cutoff (recalculated for current release window if board is stale)
+    current_release = _get_current_release_date()
+    effective_cutoff = board.get('cutoff', '') if board.get('release_date') == current_release else _get_cutoff_datetime()
+    is_past_cutoff = datetime.datetime.utcnow().isoformat() > effective_cutoff
     board_is_locked = board.get('status') == 'locked' or is_past_cutoff
 
     if board_is_locked:
@@ -3187,9 +3237,7 @@ def complete_release():
     _write_board(board)
 
     # Archive board snapshot to release history
-    import copy
-    snapshot = copy.deepcopy(board)
-    _release_history.append(snapshot)
+    _release_history.append(copy.deepcopy(board))
 
     return jsonify({'status': 'released'})
 
