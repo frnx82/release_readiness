@@ -1054,6 +1054,16 @@
                             <div style="font-size:12px;font-weight:600">Prod Env</div>
                             <div style="font-size:10px;color:var(--text2);margin-top:2px">Bi-directional cluster</div>
                         </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+                            <div style="font-size:24px;margin-bottom:4px">📚</div>
+                            <div style="font-size:12px;font-weight:600">Release History</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">Browse & export past releases</div>
+                        </div>
+                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+                            <div style="font-size:24px;margin-bottom:4px">🔄</div>
+                            <div style="font-size:12px;font-weight:600">Auto-Release</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">Smart cycle management</div>
+                        </div>
                     </div>
 
                     <!-- ═══════════════════════════════════════════════════ -->
@@ -1389,7 +1399,10 @@
                                 <li><strong>remove</strong> — Service withdrawn from the release</li>
                                 <li><strong>deploy_triggered</strong> — GitHub Actions workflow dispatched (includes run ID, who triggered, inputs)</li>
                                 <li><strong>finalize</strong> — Board locked at cutoff by Release Manager</li>
+                                <li><strong>unlock</strong> — Board manually unlocked for editing</li>
                                 <li><strong>release</strong> — Board marked as released (archived)</li>
+                                <li><strong style="color:var(--accent)">auto_release</strong> — System auto-released the board after release date passed without manual release</li>
+                                <li><strong style="color:var(--accent)">auto_archive</strong> — System auto-archived the board and started a new cycle</li>
                             </ul>
                         </div>
                     </div>
@@ -1459,9 +1472,68 @@
                             <ul style="margin-left:18px;color:var(--text2)">
                                 <li><strong>🔒 Lock Board (Cutoff)</strong> — Freezes nominations. The board auto-locks at the configured cutoff time.
                                     Can also be manually locked by a Release Manager. All regular nomination buttons are disabled after locking.</li>
-                                <li><strong>✅ Mark Released</strong> — Archives the board as read-only. The release date
-                                    advances to the next Friday and a fresh board is created for the new cycle.</li>
+                                <li><strong>🔓 Unlock Board</strong> — Reopens a locked board for editing. Use this if you need to add/modify nominations after cutoff without going through the exception flow.</li>
+                                <li><strong>✅ Mark Released</strong> — Archives the board to release history. A new cycle is created for the next Friday.</li>
                             </ul>
+                        </div>
+                        <div style="margin-top:14px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">🔄 Auto-Release (Smart Cycle Management):</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>If the <strong>release date passes</strong> and nobody clicked "Mark Released", the system <strong>auto-releases</strong> the board on the next day (midnight UTC).</li>
+                                <li>Auto-released boards are tagged with <code>released_by: "system (auto-released)"</code> in the audit trail.</li>
+                                <li>The old board is <strong>archived to history</strong> and a fresh board is created automatically — no manual intervention needed.</li>
+                                <li>This prevents stale boards from blocking the next week's release cycle.</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:14px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">🕐 Smart Cutoff Protection:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>If the board was created in a <strong>previous week</strong>, the system recalculates the cutoff for the <strong>current release window</strong> instead of using the stale stored value.</li>
+                                <li>This prevents the board from incorrectly showing "Locked" due to an outdated cutoff time.</li>
+                                <li>Same protection applies to the nomination endpoint — nominations are checked against the effective cutoff, not the stored one.</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--green)">
+                            💡 <strong>Full lifecycle:</strong> Open → Locked (at cutoff) → Released (manual or auto) → Archived → New Board.
+                            The system ensures a new cycle always starts, even if the Release Manager forgets to click "Mark Released".
+                        </div>
+                    </div>
+
+                    <!-- Release History -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px">📚 Release History</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            The <strong>History tab</strong> shows all past releases archived from previous cycles.
+                            Each archived release includes all nominated services, versions, Jira IDs, readiness scores, and audit trail.
+                        </p>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">🏷️ Fix Version Selector:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>Use the <strong>dropdown</strong> at the top to select a specific past release by its fix version (e.g. <code>P26.05.30</code>)</li>
+                                <li>Each option shows: <code>fix_version · release_date (N services)</code></li>
+                                <li>Selecting a release renders a <strong>full detail table</strong> showing: #, Service, Version, Helm Chart, Readiness, Nominated By, Jira IDs, and Notes</li>
+                                <li>A summary badge shows service count and how many were marked "Ready"</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">📋 Copy to Clipboard:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>Click the <strong>📋 Copy</strong> button to export the selected release's table as tab-separated text</li>
+                                <li>Paste directly into <strong>Excel, Google Sheets</strong>, or email — columns are perfectly aligned</li>
+                                <li>Includes fix version header and release metadata</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Browse All Releases:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>Below the selector, <strong>collapsible cards</strong> show all archived releases</li>
+                                <li>Click any card to expand and see the full service table</li>
+                                <li>Shows release date, fix version, service count, exception count, who released it, and when</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--accent)">
+                            💡 <strong>Tip:</strong> Auto-released boards (when the RM forgot to click "Mark Released") also appear in history,
+                            tagged as <code>released_by: system (auto-released)</code> so you can tell them apart from manual releases.
                         </div>
                     </div>
 
@@ -1965,6 +2037,18 @@
                                 Not if your Jira and Confluence are on the same Atlassian Cloud instance. The system
                                 automatically reuses <code>JIRA_EMAIL</code> and <code>JIRA_PAT_TOKEN</code> for Confluence.
                                 Set <code>CONFLUENCE_EMAIL</code> and <code>CONFLUENCE_PAT_TOKEN</code> only if they're different.
+                            </div>
+                            <div style="margin-top:14px">
+                                <strong style="color:var(--text)">Q: What happens if I forget to click "Mark Released"?</strong><br>
+                                The system <strong>auto-releases</strong> the board after midnight UTC on the day following the release date.
+                                The board is archived to history with <code>released_by: "system (auto-released)"</code> and a fresh
+                                board is created for the next cycle. No manual intervention is needed.
+                            </div>
+                            <div style="margin-top:14px">
+                                <strong style="color:var(--text)">Q: How do I view past release details in the History tab?</strong><br>
+                                Go to the <strong>📚 History</strong> tab and use the <strong>Fix Version dropdown</strong> to select a past release.
+                                A full detail table will render showing all nominated services with versions, readiness, Jira IDs, and notes.
+                                Click <strong>📋 Copy</strong> to export the table for pasting into Excel or email.
                             </div>
                         </div>
                     </div>
