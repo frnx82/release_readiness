@@ -1728,6 +1728,35 @@ def _detect_storage_mode():
 # Run storage detection after K8s config is loaded
 _detect_storage_mode()
 
+# ── History persistence helpers ───────────────────────────────────────────────
+_HISTORY_FILE = os.path.join(BOARD_DATA_DIR, 'release_history.json')
+
+
+def _read_history_file():
+    """Load release history from a JSON file on the PVC."""
+    try:
+        with open(_HISTORY_FILE, 'r') as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+        return []
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        print(f"[storage] Error reading history file: {e}")
+        return []
+
+
+def _write_history_file():
+    """Persist the in-memory _release_history list to the PVC."""
+    try:
+        os.makedirs(os.path.dirname(_HISTORY_FILE), exist_ok=True)
+        with open(_HISTORY_FILE, 'w') as f:
+            json.dump(_release_history, f, indent=2)
+        print(f"[storage] ✅ History persisted ({len(_release_history)} releases → {_HISTORY_FILE})")
+    except Exception as e:
+        print(f"[storage] ⚠️  History write failed: {e}")
+
 # ── Load persisted history on startup ─────────────────────────────────────────
 _release_history = _read_history_file()
 if _release_history:
@@ -1790,34 +1819,6 @@ def _write_board_file(board_data, release_date=None):
         json.dump(board_data, f, indent=2)
 
 
-# ── History persistence helpers ───────────────────────────────────────────────
-_HISTORY_FILE = os.path.join(BOARD_DATA_DIR, 'release_history.json')
-
-
-def _read_history_file():
-    """Load release history from a JSON file on the PVC."""
-    try:
-        with open(_HISTORY_FILE, 'r') as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return data
-        return []
-    except FileNotFoundError:
-        return []
-    except Exception as e:
-        print(f"[storage] Error reading history file: {e}")
-        return []
-
-
-def _write_history_file():
-    """Persist the in-memory _release_history list to the PVC."""
-    try:
-        os.makedirs(os.path.dirname(_HISTORY_FILE), exist_ok=True)
-        with open(_HISTORY_FILE, 'w') as f:
-            json.dump(_release_history, f, indent=2)
-        print(f"[storage] ✅ History persisted ({len(_release_history)} releases → {_HISTORY_FILE})")
-    except Exception as e:
-        print(f"[storage] ⚠️  History write failed: {e}")
 
 
 # ── Board read/write (dual-mode) ─────────────────────────────────────────────
