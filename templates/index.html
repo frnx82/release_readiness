@@ -414,6 +414,37 @@
             border-left: 3px solid var(--red)
         }
 
+        .drift-inline-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 10px;
+            white-space: nowrap;
+        }
+        .drift-inline-badge.match {
+            background: rgba(16,185,129,.1);
+            color: var(--green);
+            border: 1px solid rgba(16,185,129,.2);
+        }
+        .drift-inline-badge.drift {
+            background: rgba(245,158,11,.1);
+            color: #f59e0b;
+            border: 1px solid rgba(245,158,11,.2);
+        }
+        .drift-inline-badge.major_drift {
+            background: rgba(239,68,68,.1);
+            color: var(--red);
+            border: 1px solid rgba(239,68,68,.2);
+        }
+        .drift-inline-badge.loading {
+            background: var(--surface2);
+            color: var(--text2);
+            border: 1px solid var(--border);
+        }
+
         .readiness-badge {
             display: inline-flex;
             align-items: center;
@@ -689,6 +720,10 @@
                 <div class="stat">
                     <div class="stat-value" id="stat-risk" style="color:var(--red)">0</div>
                     <div class="stat-label">🔴 Risk</div>
+                </div>
+                <div class="stat" style="border-left:1px solid var(--border);padding-left:16px;margin-left:8px">
+                    <div class="stat-value" id="stat-drift" style="color:var(--yellow);cursor:pointer" title="Click to refresh drift" onclick="fetchDrift()">—</div>
+                    <div class="stat-label">🔀 Drift</div>
                 </div>
             </div>
 
@@ -2332,6 +2367,8 @@
         let _deployTarget = null;  // {service, version} for deploy modal
         let _deployEnv = 'uat';
         let _deployPolling = null;  // polling interval
+        let _driftData = {};       // {serviceName: {drift_status, live_tag, ...}}
+        let _driftLoading = false; // true while drift fetch in progress
 
         // ═══ Helpers ═════════════════════════════════════════════════════════════════
         function showToast(msg, type = 'success') {
@@ -2381,6 +2418,35 @@
                     fvDate.textContent = _board.release_date || '—';
                 }
             } catch (e) { console.error('fetchBoard:', e); }
+            // Auto-fetch drift data to show inline on cards
+            fetchDrift();
+        }
+
+        async function fetchDrift() {
+            if (_driftLoading) return;
+            _driftLoading = true;
+            const statEl = document.getElementById('stat-drift');
+            if (statEl) statEl.textContent = '⏳';
+            try {
+                const r = await fetch('/api/release/drift');
+                const data = await r.json();
+                const items = data.drift_items || [];
+                _driftData = {};
+                items.forEach(d => { _driftData[d.service] = d; });
+                // Update drift stat counter
+                const driftCount = items.filter(i => i.drift_status !== 'match').length;
+                if (statEl) {
+                    statEl.textContent = driftCount;
+                    statEl.style.color = driftCount > 0 ? 'var(--yellow)' : 'var(--green)';
+                }
+                // Re-render board and dropdown to show drift badges
+                renderBoard();
+                renderServiceDropdown();
+            } catch (e) {
+                console.error('fetchDrift:', e);
+                if (statEl) { statEl.textContent = '—'; statEl.style.color = 'var(--text2)'; }
+            }
+            _driftLoading = false;
         }
 
         async function fetchServices() {
@@ -2452,12 +2518,17 @@
                     const rBadge = s.readiness ? `<span class="readiness-badge readiness-${s.readiness}" style="font-size:11px;padding:2px 8px">${s.readiness === 'green' ? '🟢 Ready' : s.readiness === 'yellow' ? '🟡 Review' : '🔴 Risk'}</span>` : '<span style="font-size:11px;color:var(--text2)">⏳ Pending</span>';
                     const typeCls = s.is_custom ? 'type-badge custom' : 'type-badge';
                     const jiraCol = s.jira_ids ? `<span style="font-size:10px;color:var(--accent);font-family:monospace">${s.jira_ids}</span>` : '<span style="color:var(--text2)">—</span>';
+                    const dd = _driftData[k];
+                    const driftBadge = dd
+                        ? `<span class="drift-inline-badge ${dd.drift_status}">${dd.drift_status === 'match' ? '🟢 Match' : dd.drift_status === 'major_drift' ? '🔴 Major' : '🟡 Drift'}</span>`
+                        : (_driftLoading ? '<span class="drift-inline-badge loading">⏳</span>' : '<span class="drift-inline-badge loading">—</span>');
                     return `<tr>
                         <td><strong>${s.name}</strong></td>
                         <td><span class="${typeCls}">${s.is_custom ? '⚡ ' : ''}${s.kind || 'Deployment'}</span></td>
                         <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span></td>
                         <td>${s.helm_version || '<span style="color:var(--text2)">—</span>'}</td>
                         <td>${rBadge}</td>
+                        <td>${driftBadge}${dd && dd.drift_status !== 'match' ? `<div style="font-size:9px;color:var(--text2);margin-top:2px">Live: ${dd.live_tag}</div>` : ''}</td>
                         <td style="font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(s.jira_ids || '').replace(/"/g, '&quot;')}">${jiraCol}</td>
                         <td style="font-size:12px">👤 ${s.nominated_by || '?'}</td>
                         <td style="font-size:12px;color:var(--text2)">${(s.nominated_at || '').substring(0, 10)}</td>
@@ -2470,7 +2541,7 @@
                     </tr>`;
                 }).join('');
                 container.innerHTML = `<table class="list-view-table">
-                    <thead><tr><th>Service</th><th>Type</th><th>Version</th><th>Helm</th><th>Readiness</th><th>Jira</th><th>By</th><th>Date</th><th>Notes</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>Service</th><th>Type</th><th>Version</th><th>Helm</th><th>Readiness</th><th>Drift</th><th>Jira</th><th>By</th><th>Date</th><th>Notes</th><th>Actions</th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table>`;
             } else {
@@ -2480,12 +2551,19 @@
                     const s = svcs[k];
                     const rClass = s.readiness || 'unknown';
                     const rBadge = s.readiness ? `<span class="readiness-badge readiness-${s.readiness}">${s.readiness === 'green' ? '🟢 Ready' : s.readiness === 'yellow' ? '🟡 Review' : '🔴 Risk'}</span>` : '<span class="readiness-badge" style="background:var(--surface2);color:var(--text2)">⏳ Not checked</span>';
+                    const dd = _driftData[k];
+                    const driftBadge = dd
+                        ? `<span class="drift-inline-badge ${dd.drift_status}" style="margin-left:6px">${dd.drift_status === 'match' ? '🟢 Match' : dd.drift_status === 'major_drift' ? '🔴 Major Drift' : '🟡 Drift'}${dd.drift_status !== 'match' ? ` (live: ${dd.live_tag})` : ''}</span>`
+                        : (_driftLoading ? '<span class="drift-inline-badge loading" style="margin-left:6px">⏳ Checking...</span>' : '');
                     return `<div class="card ${rClass}">
                 <div class="card-header">
                     <div><div class="card-name">${s.name}</div><div style="font-size:11px;color:var(--text2)">${s.is_custom ? '⚡ ' : ''}${s.kind || 'Deployment'}</div></div>
                     <span class="card-tag">${s.image_tag || '?'}</span>
                 </div>
-                ${rBadge}
+                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                    ${rBadge}
+                    ${driftBadge}
+                </div>
                 <div class="card-meta">
                     <span>👤 ${s.nominated_by || '?'}</span>
                     <span>📅 ${(s.nominated_at || '').substring(0, 10)}</span>
@@ -2600,7 +2678,21 @@
             sel.innerHTML = '<option value="">— Select a service —</option>' +
                 _services.map(s => {
                     const already = nominated.includes(s.name);
-                    return `<option value="${s.name}" ${already ? 'style="color:#f59e0b"' : ''}>${s.name} (${s.image_tag})${already ? ' ★ nominated' : ''}</option>`;
+                    let driftTag = '';
+                    if (already) {
+                        const dd = _driftData[s.name];
+                        const nomTag = (_board && _board.services[s.name]) ? _board.services[s.name].image_tag : '';
+                        if (dd) {
+                            if (dd.drift_status === 'match') driftTag = ' · 🟢 match';
+                            else if (dd.drift_status === 'major_drift') driftTag = ` · 🔴 MAJOR DRIFT (live: ${dd.live_tag})`;
+                            else driftTag = ` · 🟡 drift (live: ${dd.live_tag})`;
+                        }
+                        // Also flag if live version differs from what's in dropdown
+                        if (nomTag && s.image_tag !== nomTag) {
+                            driftTag += ` ⬆ UAT updated`;
+                        }
+                    }
+                    return `<option value="${s.name}" ${already ? 'style="color:#f59e0b"' : ''}>${s.name} (${s.image_tag})${already ? ' ★ nominated' + driftTag : ''}</option>`;
                 }).join('');
             sel.onchange = function () {
                 const s = _serviceMap[this.value];
@@ -3663,13 +3755,17 @@
 
                 // Build prod version map for cross-reference
                 let prodVersionMap = {};
+                let prodHelmMap = {};
                 let prodConnected = false;
                 if (prodResp && prodResp.ok) {
                     try {
                         const prodData = await prodResp.json();
                         if (prodData.connected !== false && prodData.services) {
                             prodConnected = true;
-                            prodData.services.forEach(ps => { prodVersionMap[ps.name] = ps.image_tag || ''; });
+                            prodData.services.forEach(ps => {
+                                prodVersionMap[ps.name] = ps.image_tag || '';
+                                prodHelmMap[ps.name] = ps.helm_version || '';
+                            });
                         }
                     } catch(e) { /* ignore prod parse errors */ }
                 }
@@ -3681,6 +3777,17 @@
                 const rows = svcs.map((s, i) => {
                     const status = s.available ? '<span style="color:var(--green)">● Running</span>' : '<span style="color:var(--red)">● Down</span>';
                     const helmBadge = s.helm_version ? `<span style="font-size:11px;padding:2px 8px;background:rgba(99,102,241,.12);color:var(--accent);border-radius:4px">${s.helm_version}</span>` : '<span style="color:var(--text2)">—</span>';
+
+                    // Helm chart prod comparison badge
+                    let helmProdBadge = '';
+                    if (prodConnected && s.helm_version && s.name in prodHelmMap) {
+                        const prodHelm = prodHelmMap[s.name];
+                        if (prodHelm && s.helm_version === prodHelm) {
+                            helmProdBadge = `<span style="font-size:10px;padding:2px 6px;background:rgba(139,92,246,.1);color:#8b5cf6;border:1px solid rgba(139,92,246,.2);border-radius:4px;font-weight:600;margin-left:4px" title="Same helm chart in Production">= PROD</span>`;
+                        } else if (prodHelm) {
+                            helmProdBadge = `<span style="font-size:10px;padding:2px 6px;background:rgba(59,130,246,.08);color:#3b82f6;border:1px solid rgba(59,130,246,.15);border-radius:4px;font-weight:500;margin-left:4px" title="Prod helm: ${prodHelm}">Δ ${prodHelm}</span>`;
+                        }
+                    }
 
                     // Prod version comparison badge (UAT tag vs Prod tag)
                     let prodBadgeHtml = '';
@@ -3724,7 +3831,7 @@
                         <td><span class="type-badge">${s.kind}</span></td>
                         <td style="font-family:monospace;font-size:11px;color:var(--text2);max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${s.image}">${s.image}</td>
                         <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span>${prodBadgeHtml}</td>
-                        <td>${helmBadge}</td>
+                        <td>${helmBadge}${helmProdBadge}</td>
                         <td style="text-align:center">${s.replicas}/${s.desired_replicas}</td>
                         <td>${status}</td>
                         <td>${boardStatusHtml}</td>
