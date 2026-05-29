@@ -85,8 +85,8 @@ if not SSL_VERIFY:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     print('[Release Readiness] ⚠️  SSL verification DISABLED')
 
-# Release history archive
-_release_history = []  # archived boards from previous release cycles
+# Release history archive (loaded from PVC file after storage init — see _detect_storage_mode)
+_release_history = []  # populated by _read_history_file() after BOARD_DATA_DIR is set
 
 # Proxy + Kerberos (same pattern as Pipeline Hub)
 PROXY_URL = os.getenv('PROXY_URL', '')
@@ -876,13 +876,17 @@ def _build_confluence_httpx_factory(auth_headers):
     return factory
 
 
-def _confluence_mcp_call(tool_name, arguments, timeout=10):
+def _confluence_mcp_call(tool_name, arguments, timeout=20):
     """Call a tool on the Confluence MCP server.
     Uses fastmcp SDK (StreamableHttp transport) when available,
     falls back to raw HTTP JSON-RPC.
     """
     if not CONFLUENCE_MCP_URL:
         return None
+
+    import time as _time
+    call_start = _time.time()
+    print(f'[Confluence MCP] Calling {tool_name} (timeout={timeout}s, url={CONFLUENCE_MCP_URL})')
 
     # ── Method A: fastmcp SDK (same protocol as test-confluence.py) ──
     try:
@@ -933,9 +937,15 @@ def _confluence_mcp_call(tool_name, arguments, timeout=10):
         return None
 
     except ImportError:
+        print(f'[Confluence MCP] fastmcp not installed — falling back to raw HTTP')
         pass  # fastmcp not installed, fall through to raw HTTP
+    except TimeoutError:
+        elapsed = round((_time.time() - call_start) * 1000, 1)
+        print(f'[Confluence MCP] fastmcp TIMEOUT after {elapsed}ms calling {tool_name}')
+        # Fall through to raw HTTP as backup
     except Exception as e:
-        print(f'[Confluence MCP] fastmcp error calling {tool_name}: {e}')
+        elapsed = round((_time.time() - call_start) * 1000, 1)
+        print(f'[Confluence MCP] fastmcp error after {elapsed}ms calling {tool_name}: {type(e).__name__}: {e}')
         # Fall through to raw HTTP as backup
 
     # ── Method B: Raw HTTP JSON-RPC (fallback if fastmcp not installed) ──
@@ -959,12 +969,15 @@ def _confluence_mcp_call(tool_name, arguments, timeout=10):
             }
         }
 
+        print(f'[Confluence MCP] Raw HTTP POST to {CONFLUENCE_MCP_URL} (timeout={timeout}s, proxy={"YES" if PROXY_URL else "NO"})')
         if PROXY_URL:
             r = gh_http.post(CONFLUENCE_MCP_URL, json=payload, headers=headers,
                              timeout=timeout, verify=SSL_VERIFY)
         else:
             r = requests.post(CONFLUENCE_MCP_URL, json=payload, headers=headers,
                               timeout=timeout, verify=SSL_VERIFY)
+        elapsed = round((_time.time() - call_start) * 1000, 1)
+        print(f'[Confluence MCP] Raw HTTP response: HTTP {r.status_code}, {len(r.text)} bytes, {elapsed}ms')
         r.raise_for_status()
 
         content_type = r.headers.get('Content-Type', '')
@@ -1009,10 +1022,12 @@ def _confluence_mcp_call(tool_name, arguments, timeout=10):
             return None
         return json.dumps(result)
     except requests.exceptions.Timeout:
-        print(f"[Confluence MCP] Timeout calling {tool_name}")
+        print(f"[Confluence MCP] Timeout calling {tool_name} (timeout={timeout}s, url={CONFLUENCE_MCP_URL})")
         return None
     except requests.exceptions.ConnectionError as e:
-        print(f"[Confluence MCP] Connection error: {e}")
+        print(f"[Confluence MCP] Connection error to {CONFLUENCE_MCP_URL}: {e}")
+        print(f"[Confluence MCP] PROXY_URL={'SET: ' + PROXY_URL[:30] if PROXY_URL else 'NOT SET'}")
+        print(f"[Confluence MCP] Tip: If MCP server is on a different network, set PROXY_URL or check firewall rules")
         return None
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else 'unknown'
@@ -1022,6 +1037,177 @@ def _confluence_mcp_call(tool_name, arguments, timeout=10):
         print(f"[Confluence MCP] Error calling {tool_name}: {e}")
         return None
 
+
+@app.route('/api/confluence-diag')
+def confluence_diagnostic():
+    """Diagnostic endpoint to test Confluence MCP connectivity step by step."""
+    import traceback
+    from urllib.parse import urlparse
+    import socket
+    import time as _time
+
+    results = {
+        'deploy_env': DEPLOY_ENV,
+        'confluence_mcp_url': CONFLUENCE_MCP_URL or 'NOT SET',
+        'confluence_base_url': CONFLUENCE_BASE_URL or 'NOT SET',
+        'confluence_email': CONFLUENCE_EMAIL[:5] + '...' if CONFLUENCE_EMAIL else 'NOT SET',
+        'confluence_pat_token': f'{len(CONFLUENCE_PAT_TOKEN)} chars' if CONFLUENCE_PAT_TOKEN else 'NOT SET',
+        'confluence_spaces': CONFLUENCE_SPACES or 'NOT SET',
+        'proxy_url': PROXY_URL[:30] + '...' if PROXY_URL else 'NOT SET',
+        'ssl_verify': SSL_VERIFY,
+    }
+
+    if not CONFLUENCE_MCP_URL:
+        results['error'] = 'CONFLUENCE_MCP_URL is not configured'
+        return jsonify(results)
+
+    parsed = urlparse(CONFLUENCE_MCP_URL)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+    results['parsed_host'] = host
+    results['parsed_port'] = port
+
+    # Step 1: DNS resolution
+    try:
+        ips = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        results['step1_dns'] = {
+            'status': 'OK',
+            'resolved_ips': list(set(ip[4][0] for ip in ips))[:5]
+        }
+    except Exception as e:
+        results['step1_dns'] = {'status': 'FAIL', 'error': str(e)}
+        results['diagnosis'] = 'DNS resolution failed — the hostname cannot be resolved from this pod. Check DNS config or use IP address.'
+        return jsonify(results)
+
+    # Step 2: TCP connectivity
+    try:
+        start = _time.time()
+        sock = socket.create_connection((host, port), timeout=5)
+        elapsed = round((_time.time() - start) * 1000, 1)
+        sock.close()
+        results['step2_tcp'] = {
+            'status': 'OK',
+            'connect_time_ms': elapsed
+        }
+    except Exception as e:
+        results['step2_tcp'] = {'status': 'FAIL', 'error': str(e)}
+        results['diagnosis'] = f'TCP connection to {host}:{port} failed — firewall, network policy, or proxy blocking the connection.'
+        return jsonify(results)
+
+    # Step 3: HTTP reachability (simple GET to the MCP URL)
+    try:
+        start = _time.time()
+        http_session = gh_http if PROXY_URL else requests
+        r = http_session.get(CONFLUENCE_MCP_URL, timeout=10, verify=SSL_VERIFY,
+                             headers={'Accept': 'application/json'})
+        elapsed = round((_time.time() - start) * 1000, 1)
+        results['step3_http_get'] = {
+            'status': 'OK',
+            'http_status': r.status_code,
+            'response_time_ms': elapsed,
+            'content_type': r.headers.get('Content-Type', ''),
+            'response_preview': r.text[:200] if r.text else ''
+        }
+    except requests.exceptions.SSLError as e:
+        results['step3_http_get'] = {'status': 'FAIL', 'error': f'SSL error: {str(e)[:200]}'}
+        results['diagnosis'] = 'SSL certificate validation failed. Try setting UAT_CLUSTER_VERIFY_SSL=false or fix cert chain.'
+    except requests.exceptions.Timeout:
+        results['step3_http_get'] = {'status': 'FAIL', 'error': 'Timeout (10s)'}
+        results['diagnosis'] = f'HTTP GET to {CONFLUENCE_MCP_URL} timed out. The MCP server may be unreachable from this pod.'
+    except requests.exceptions.ConnectionError as e:
+        results['step3_http_get'] = {'status': 'FAIL', 'error': str(e)[:300]}
+        results['diagnosis'] = 'Connection refused or reset. MCP server may not be running, or a proxy/firewall is blocking.'
+    except Exception as e:
+        results['step3_http_get'] = {'status': 'FAIL', 'error': str(e)[:300]}
+
+    # Step 4: MCP protocol test (tools/list)
+    try:
+        start = _time.time()
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
+        }
+        if CONFLUENCE_PAT_TOKEN:
+            headers['Authorization'] = f'Bearer {CONFLUENCE_PAT_TOKEN}'
+        if CONFLUENCE_EMAIL:
+            headers['X-Confluence-User-Email'] = CONFLUENCE_EMAIL
+
+        payload = {
+            'jsonrpc': '2.0',
+            'id': 'diag-tools-list',
+            'method': 'tools/list',
+            'params': {}
+        }
+
+        http_session = gh_http if PROXY_URL else requests
+        r = http_session.post(CONFLUENCE_MCP_URL, json=payload, headers=headers,
+                              timeout=15, verify=SSL_VERIFY)
+        elapsed = round((_time.time() - start) * 1000, 1)
+
+        results['step4_mcp_tools_list'] = {
+            'status': 'OK' if r.status_code == 200 else f'HTTP {r.status_code}',
+            'response_time_ms': elapsed,
+            'content_type': r.headers.get('Content-Type', ''),
+            'response_preview': r.text[:500] if r.text else ''
+        }
+
+        # Parse tools if successful
+        try:
+            raw = r.text.strip()
+            # Handle SSE format
+            if raw.startswith('event:') or raw.startswith('data:'):
+                for line in raw.split('\n'):
+                    if line.strip().startswith('data:'):
+                        data_str = line.strip()[5:].strip()
+                        if data_str:
+                            data = json.loads(data_str)
+                            if 'result' in data:
+                                tools_result = data['result']
+                                if isinstance(tools_result, dict) and 'tools' in tools_result:
+                                    tool_names = [t.get('name', '?') for t in tools_result['tools']]
+                                    results['step4_mcp_tools_list']['tools_found'] = tool_names
+                                    break
+            else:
+                data = json.loads(raw)
+                if 'result' in data:
+                    tools_result = data['result']
+                    if isinstance(tools_result, dict) and 'tools' in tools_result:
+                        tool_names = [t.get('name', '?') for t in tools_result['tools']]
+                        results['step4_mcp_tools_list']['tools_found'] = tool_names
+        except Exception as parse_e:
+            results['step4_mcp_tools_list']['parse_note'] = f'Could not parse tools: {str(parse_e)[:100]}'
+
+    except requests.exceptions.Timeout:
+        results['step4_mcp_tools_list'] = {'status': 'FAIL', 'error': 'Timeout (15s) on tools/list'}
+        results['diagnosis'] = 'MCP server reachable via HTTP but tools/list timed out. The MCP server may be overloaded or the Confluence backend is slow.'
+    except Exception as e:
+        results['step4_mcp_tools_list'] = {'status': 'FAIL', 'error': str(e)[:300]}
+
+    # Step 5: MCP search test (actual confluence_search call)
+    try:
+        start = _time.time()
+        raw = _confluence_mcp_call('confluence_search', {
+            'cql': 'type=page ORDER BY lastModified DESC',
+            'limit': 1
+        }, timeout=15)
+        elapsed = round((_time.time() - start) * 1000, 1)
+
+        results['step5_mcp_search'] = {
+            'status': 'OK' if raw else 'EMPTY',
+            'response_time_ms': elapsed,
+            'response_preview': str(raw)[:300] if raw else 'None (timeout or error)'
+        }
+    except Exception as e:
+        results['step5_mcp_search'] = {'status': 'FAIL', 'error': str(e)[:300]}
+
+    # Summary
+    all_ok = all(
+        results.get(f'step{i}_{k}', {}).get('status', '').startswith('OK')
+        for i, k in [(1, 'dns'), (2, 'tcp'), (3, 'http_get'), (4, 'mcp_tools_list')]
+    )
+    results['overall'] = 'ALL STEPS PASSED' if all_ok else 'ISSUES DETECTED — check failed steps'
+
+    return jsonify(results)
 
 def _confluence_auth_headers():
     """Build auth headers for direct Confluence REST API."""
@@ -1165,7 +1351,7 @@ def _confluence_search(query, space_key=None, max_results=20):
                 raw = _confluence_mcp_call(tool_name, {
                     'cql': cql,
                     'limit': remaining
-                }, timeout=8)
+                }, timeout=15)
                 if raw is None:
                     mcp_timed_out = True
                     continue
@@ -1712,6 +1898,13 @@ def _detect_storage_mode():
 # Run storage detection after K8s config is loaded
 _detect_storage_mode()
 
+# ── Load persisted history on startup ─────────────────────────────────────────
+_release_history = _read_history_file()
+if _release_history:
+    print(f"[storage] ✅ Loaded {len(_release_history)} past releases from history file")
+else:
+    print(f"[storage] No release history file found — starting fresh")
+
 
 def _get_current_release_date():
     """Calculate the next release Friday (or whatever cadence)."""
@@ -1765,6 +1958,36 @@ def _write_board_file(board_data, release_date=None):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as f:
         json.dump(board_data, f, indent=2)
+
+
+# ── History persistence helpers ───────────────────────────────────────────────
+_HISTORY_FILE = os.path.join(BOARD_DATA_DIR, 'release_history.json')
+
+
+def _read_history_file():
+    """Load release history from a JSON file on the PVC."""
+    try:
+        with open(_HISTORY_FILE, 'r') as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+        return []
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        print(f"[storage] Error reading history file: {e}")
+        return []
+
+
+def _write_history_file():
+    """Persist the in-memory _release_history list to the PVC."""
+    try:
+        os.makedirs(os.path.dirname(_HISTORY_FILE), exist_ok=True)
+        with open(_HISTORY_FILE, 'w') as f:
+            json.dump(_release_history, f, indent=2)
+        print(f"[storage] ✅ History persisted ({len(_release_history)} releases → {_HISTORY_FILE})")
+    except Exception as e:
+        print(f"[storage] ⚠️  History write failed: {e}")
 
 
 # ── Board read/write (dual-mode) ─────────────────────────────────────────────
@@ -2786,6 +3009,7 @@ def get_current_release():
                     })
                     if not already_in_history:
                         _release_history.append(copy.deepcopy(board))
+                        _write_history_file()  # Persist to PVC
                     _write_board(board)  # Save the audit entry to the old board
                     board = _new_board()
                     _write_board(board)
@@ -3248,6 +3472,7 @@ def complete_release():
 
     # Archive board snapshot to release history
     _release_history.append(copy.deepcopy(board))
+    _write_history_file()  # Persist to PVC
 
     return jsonify({'status': 'released'})
 

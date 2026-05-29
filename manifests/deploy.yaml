@@ -219,6 +219,50 @@ spec:
               optional: true
 
         # ════════════════════════════════════════════════════════════
+        # Confluence MCP Server (optional — enables Confluence Agent tab)
+        # ════════════════════════════════════════════════════════════
+        # Create the secret:
+        #   kubectl create secret generic release-readiness-confluence \
+        #     --from-literal=mcp-url=https://confluence-mcp.example.com/mcp \
+        #     --from-literal=base-url=https://confluence.example.com \
+        #     --from-literal=email=your-email@company.com \
+        #     --from-literal=pat-token=your_confluence_pat_token \
+        #     --from-literal=default-spaces=SPACE1,SPACE2 \
+        #     -n YOUR_NAMESPACE
+        #
+        # Option A: MCP mode (if you have a Confluence MCP server deployed)
+        - name: CONFLUENCE_MCP_URL
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-confluence
+              key: mcp-url
+              optional: true
+        # Option B: Direct REST API mode (no MCP server needed)
+        - name: CONFLUENCE_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-confluence
+              key: base-url
+              optional: true
+        - name: CONFLUENCE_EMAIL
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-confluence
+              key: email
+              optional: true
+        - name: CONFLUENCE_PAT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-confluence
+              key: pat-token
+              optional: true
+        - name: CONFLUENCE_DEFAULT_SPACES
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-confluence
+              key: default-spaces
+              optional: true
+        # ════════════════════════════════════════════════════════════
         # Production Cluster — Remote OpenShift/K8s (Prod Env tab)
         # ════════════════════════════════════════════════════════════
         # Create secret:
