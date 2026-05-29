@@ -2531,7 +2531,12 @@ def _get_uat_api_client():
 
     uat_config = client.Configuration()
     uat_config.host = uat_api
-    uat_config.api_key = {"authorization": f"Bearer {uat_token}"}
+    # ── CRITICAL: Do NOT use uat_config.api_key = {...} ──────────────────────
+    # The kubernetes client's api_key auth mechanism is broken under gevent
+    # monkey.patch_all() (see local client fix at line ~1625).
+    # Symptoms: token never gets sent → K8s API sees "system:anonymous" → 403.
+    # Fix: inject the Bearer token via default_headers on the ApiClient instead.
+    # ─────────────────────────────────────────────────────────────────────────
     # ── CRITICAL: Set socket-level timeouts to prevent indefinite hangs ──
     uat_config.connect_timeout = 10
     uat_config.read_timeout = 15
@@ -2545,7 +2550,12 @@ def _get_uat_api_client():
     else:
         uat_config.verify_ssl = True
 
-    return client.ApiClient(uat_config), None
+    api_client_obj = client.ApiClient(uat_config)
+    # Inject Authorization header directly — bypasses broken api_key mechanism
+    api_client_obj.default_headers['Authorization'] = f'Bearer {uat_token}'
+    print(f'[uat-remote] ✅ Token injected via default_headers ({len(uat_token)} chars)')
+
+    return api_client_obj, None
 
 
 def _list_services_from_api(api_client, namespace, log_prefix='[remote]'):
