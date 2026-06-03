@@ -4389,9 +4389,12 @@ def auth_callback():
             oauth_http.proxies = {'http': PROXY_URL, 'https': PROXY_URL}
             try:
                 from requests_kerberos import HTTPKerberosAuth, OPTIONAL
+                from requests.adapters import HTTPAdapter
+                adapter = HTTPAdapter(max_retries=3)
+                oauth_http.mount('https://', adapter)
+                oauth_http.mount('http://', adapter)
                 oauth_http.auth = HTTPKerberosAuth(
                     mutual_authentication=OPTIONAL,
-                    force_preemptive=False,
                 )
             except ImportError:
                 pass
