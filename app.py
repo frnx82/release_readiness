@@ -1978,6 +1978,183 @@ def api_auth_status():
     return jsonify({'authenticated': True, 'ts': datetime.datetime.utcnow().isoformat()})
 
 
+# ── Network diagnostic (GitHub connectivity) ──────────────────────────────────
+@app.route('/api/network-diag')
+def network_diagnostic():
+    """Diagnostic endpoint to test GitHub connectivity from this pod.
+    
+    Tests 4 methods and reports results — hit this from a browser when
+    OAuth fails to see which network paths work.
+    """
+    import socket
+    results = {
+        'cluster_info': {
+            'proxy_url': PROXY_URL or 'NOT SET',
+            'github_url': GITHUB_URL,
+            'github_api': GITHUB_API,
+            'ssl_verify': SSL_VERIFY,
+            'hostname': socket.gethostname(),
+        },
+        'env_proxies': {
+            'HTTP_PROXY': os.environ.get('HTTP_PROXY', os.environ.get('http_proxy', 'NOT SET')),
+            'HTTPS_PROXY': os.environ.get('HTTPS_PROXY', os.environ.get('https_proxy', 'NOT SET')),
+            'NO_PROXY': os.environ.get('NO_PROXY', os.environ.get('no_proxy', 'NOT SET')),
+        },
+        'tests': []
+    }
+
+    test_url = f'{GITHUB_URL}/login/oauth/access_token'
+
+    # Test 1: DNS resolution
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(GITHUB_URL).hostname
+        ips = socket.getaddrinfo(host, 443, socket.AF_INET)
+        ip_list = list(set(addr[4][0] for addr in ips))
+        results['tests'].append({
+            'name': 'DNS Resolution',
+            'target': host,
+            'status': 'OK',
+            'detail': f'Resolved to: {ip_list}'
+        })
+    except Exception as e:
+        results['tests'].append({
+            'name': 'DNS Resolution',
+            'target': host,
+            'status': 'FAILED',
+            'detail': str(e)
+        })
+
+    # Test 2: Direct TCP connect (no proxy, no TLS)
+    try:
+        sock = socket.create_connection((host, 443), timeout=5)
+        sock.close()
+        results['tests'].append({
+            'name': 'Direct TCP :443',
+            'target': f'{host}:443',
+            'status': 'OK',
+            'detail': 'TCP handshake succeeded — direct egress to GitHub is open'
+        })
+    except Exception as e:
+        results['tests'].append({
+            'name': 'Direct TCP :443',
+            'target': f'{host}:443',
+            'status': 'FAILED',
+            'detail': f'{e} — direct egress blocked, proxy required'
+        })
+
+    # Test 3: Direct HTTPS (no proxy)
+    try:
+        s = requests.Session()
+        s.verify = SSL_VERIFY
+        s.proxies = {'http': '', 'https': ''}
+        s.trust_env = False
+        r = s.get(f'{GITHUB_URL}', timeout=10)
+        s.close()
+        results['tests'].append({
+            'name': 'Direct HTTPS',
+            'target': GITHUB_URL,
+            'status': 'OK',
+            'detail': f'HTTP {r.status_code} — direct HTTPS works'
+        })
+    except Exception as e:
+        results['tests'].append({
+            'name': 'Direct HTTPS',
+            'target': GITHUB_URL,
+            'status': 'FAILED',
+            'detail': str(e)
+        })
+
+    # Test 4: Proxy + Kerberos (bare session — Pipeline Hub pattern)
+    if PROXY_URL:
+        try:
+            s = requests.Session()
+            s.verify = SSL_VERIFY
+            s.proxies = {'http': PROXY_URL, 'https': PROXY_URL}
+            kerberos_status = 'not installed'
+            try:
+                from requests_kerberos import HTTPKerberosAuth, OPTIONAL
+                s.auth = HTTPKerberosAuth(
+                    mutual_authentication=OPTIONAL,
+                    force_preemptive=False,
+                )
+                kerberos_status = 'configured'
+            except ImportError:
+                kerberos_status = 'NOT INSTALLED — pip install requests-kerberos'
+            r = s.get(f'{GITHUB_URL}', timeout=15)
+            s.close()
+            results['tests'].append({
+                'name': 'Proxy + Kerberos (bare session)',
+                'target': f'{GITHUB_URL} via {PROXY_URL}',
+                'status': 'OK',
+                'detail': f'HTTP {r.status_code} — proxy works! Kerberos: {kerberos_status}'
+            })
+        except Exception as e:
+            results['tests'].append({
+                'name': 'Proxy + Kerberos (bare session)',
+                'target': f'{GITHUB_URL} via {PROXY_URL}',
+                'status': 'FAILED',
+                'detail': f'{e}. Kerberos: {kerberos_status}'
+            })
+
+        # Test 5: Proxy via gh_http (with retries — may fail due to Kerberos conflict)
+        try:
+            r = gh_http.get(f'{GITHUB_URL}', timeout=15)
+            results['tests'].append({
+                'name': 'Proxy via gh_http (with retries)',
+                'target': f'{GITHUB_URL} via {PROXY_URL}',
+                'status': 'OK',
+                'detail': f'HTTP {r.status_code} — gh_http session works'
+            })
+        except Exception as e:
+            results['tests'].append({
+                'name': 'Proxy via gh_http (with retries)',
+                'target': f'{GITHUB_URL} via {PROXY_URL}',
+                'status': 'FAILED',
+                'detail': f'{e} — retries may conflict with Kerberos CONNECT tunnel'
+            })
+    else:
+        results['tests'].append({
+            'name': 'Proxy Tests',
+            'target': 'N/A',
+            'status': 'SKIPPED',
+            'detail': 'PROXY_URL not set'
+        })
+
+    # Test 6: Check for Kerberos ticket
+    try:
+        import subprocess
+        klist = subprocess.run(['klist'], capture_output=True, text=True, timeout=5)
+        if klist.returncode == 0:
+            # Parse principal from output
+            lines = klist.stdout.strip().split('\n')
+            principal = next((l for l in lines if 'Principal' in l or 'principal' in l), lines[0] if lines else '(unknown)')
+            results['tests'].append({
+                'name': 'Kerberos Ticket (klist)',
+                'status': 'OK',
+                'detail': principal.strip()
+            })
+        else:
+            results['tests'].append({
+                'name': 'Kerberos Ticket (klist)',
+                'status': 'FAILED',
+                'detail': f'No valid ticket: {klist.stderr.strip()}'
+            })
+    except FileNotFoundError:
+        results['tests'].append({
+            'name': 'Kerberos Ticket (klist)',
+            'status': 'SKIPPED',
+            'detail': 'klist binary not found in container'
+        })
+    except Exception as e:
+        results['tests'].append({
+            'name': 'Kerberos Ticket (klist)',
+            'status': 'FAILED',
+            'detail': str(e)
+        })
+
+    return jsonify(results)
+
 # ── Confluence MCP diagnostic ─────────────────────────────────────────────────
 @app.route('/api/confluence-diag')
 def confluence_diagnostic():
