@@ -8,6 +8,7 @@ google-genai>=1.0
 google-auth>=2.0
 pyyaml>=6.0
 requests>=2.31
+requests-kerberos>=0.15.0
 # NOTE: httpx and fastmcp are NOT included here — they conflict with gevent
 # monkey.patch_all() and corrupt the kubernetes client's urllib3 connections.
 # Confluence MCP uses the raw HTTP JSON-RPC fallback (requests) instead.
