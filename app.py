@@ -4374,7 +4374,11 @@ def auth_callback():
     if not code:
         return jsonify({'error': 'No authorization code received from GitHub.'}), 400
 
-    # Exchange code for token (dedicated session to avoid Kerberos retry conflicts)
+    # Exchange code for token
+    # Strategy: Try direct connection first (many corp networks allow github.com
+    # through egress), then fall back to the existing proxy-authenticated gh_http
+    # session. Python urllib3 cannot do Kerberos/Negotiate for CONNECT tunnels,
+    # so a dedicated proxy session will always get 407 on HTTPS.
     try:
         token_url = f'{GITHUB_URL}/login/oauth/access_token'
         token_payload = {
@@ -4383,30 +4387,49 @@ def auth_callback():
             'code': code,
             'redirect_uri': _get_callback_url(),
         }
-        oauth_http = requests.Session()
-        oauth_http.verify = SSL_VERIFY
-        if PROXY_URL:
-            oauth_http.proxies = {'http': PROXY_URL, 'https': PROXY_URL}
-            try:
-                from requests_kerberos import HTTPKerberosAuth, OPTIONAL
-                from requests.adapters import HTTPAdapter
-                adapter = HTTPAdapter(max_retries=3)
-                oauth_http.mount('https://', adapter)
-                oauth_http.mount('http://', adapter)
-                oauth_http.auth = HTTPKerberosAuth(
-                    mutual_authentication=OPTIONAL,
-                )
-            except ImportError:
-                pass
+        token_headers = {'Accept': 'application/json'}
+        token_response = None
 
-        print(f'[OAuth] Exchanging code for token via {token_url} (proxy: {PROXY_URL or "none"})')
-        token_response = oauth_http.post(
-            token_url,
-            headers={'Accept': 'application/json'},
-            data=token_payload,
-            timeout=30,
-        )
-        oauth_http.close()
+        # Phase 1: Try direct (no proxy) — works if egress to github.com is open
+        try:
+            print(f'[OAuth] Phase 1: Trying direct connection to {token_url}')
+            direct_http = requests.Session()
+            direct_http.verify = SSL_VERIFY
+            # Explicitly clear proxy to bypass any env-level HTTP_PROXY/HTTPS_PROXY
+            direct_http.proxies = {'http': '', 'https': ''}
+            direct_http.trust_env = False
+            token_response = direct_http.post(
+                token_url,
+                headers=token_headers,
+                data=token_payload,
+                timeout=15,
+            )
+            direct_http.close()
+            print(f'[OAuth] Phase 1 SUCCESS: direct connection worked (status={token_response.status_code})')
+        except Exception as direct_err:
+            print(f'[OAuth] Phase 1 FAILED (direct): {direct_err}')
+            token_response = None
+
+        # Phase 2: If direct failed, try through the existing gh_http session
+        # (which already has Kerberos + retries configured and may work for POST)
+        if token_response is None:
+            try:
+                print(f'[OAuth] Phase 2: Trying via gh_http session (proxy: {PROXY_URL or "none"})')
+                token_response = gh_http.post(
+                    token_url,
+                    headers=token_headers,
+                    data=token_payload,
+                    timeout=30,
+                )
+                print(f'[OAuth] Phase 2 SUCCESS: proxy connection worked (status={token_response.status_code})')
+            except Exception as proxy_err:
+                print(f'[OAuth] Phase 2 FAILED (proxy): {proxy_err}')
+                return jsonify({
+                    'error': f'Cannot reach GitHub for OAuth. '
+                             f'Direct: {direct_err}. '
+                             f'Proxy: {proxy_err}. '
+                             f'Check network/proxy configuration.'
+                }), 502
         token_data = token_response.json()
 
         if 'access_token' not in token_data:
