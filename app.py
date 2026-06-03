@@ -4412,17 +4412,34 @@ def auth_callback():
             print(f'[OAuth] Phase 1 FAILED (direct): {direct_err}')
             token_response = None
 
-        # Phase 2: If direct failed, try through the existing gh_http session
-        # (which already has Kerberos + retries configured and may work for POST)
+        # Phase 2: If direct failed, try via proxy with Kerberos.
+        # IMPORTANT: Do NOT use gh_http — it has HTTPAdapter(max_retries=3)
+        # which conflicts with Kerberos 407 proxy-auth handshake, corrupting
+        # the CONNECT tunnel. Use a bare session with Kerberos + NO retries,
+        # exactly matching the Pipeline Hub's working OAuth pattern.
         if token_response is None:
             try:
-                print(f'[OAuth] Phase 2: Trying via gh_http session (proxy: {PROXY_URL or "none"})')
-                token_response = gh_http.post(
+                print(f'[OAuth] Phase 2: Trying via proxy with Kerberos (proxy: {PROXY_URL or "none"})')
+                oauth_http = requests.Session()
+                oauth_http.verify = SSL_VERIFY
+                if PROXY_URL:
+                    oauth_http.proxies = {'http': PROXY_URL, 'https': PROXY_URL}
+                    try:
+                        from requests_kerberos import HTTPKerberosAuth, OPTIONAL
+                        oauth_http.auth = HTTPKerberosAuth(
+                            mutual_authentication=OPTIONAL,
+                            force_preemptive=False,
+                        )
+                        print(f'[OAuth] Kerberos auth configured for proxy')
+                    except ImportError:
+                        print(f'[OAuth] WARNING: requests-kerberos not installed — proxy auth will fail')
+                token_response = oauth_http.post(
                     token_url,
                     headers=token_headers,
                     data=token_payload,
                     timeout=30,
                 )
+                oauth_http.close()
                 print(f'[OAuth] Phase 2 SUCCESS: proxy connection worked (status={token_response.status_code})')
             except Exception as proxy_err:
                 print(f'[OAuth] Phase 2 FAILED (proxy): {proxy_err}')
