@@ -4389,6 +4389,7 @@ def auth_callback():
         }
         token_headers = {'Accept': 'application/json'}
         token_response = None
+        _direct_err = None  # persist across except blocks (Python 3 deletes `as e` vars)
 
         # Phase 1: Try direct (no proxy) — works if egress to github.com is open
         try:
@@ -4407,6 +4408,7 @@ def auth_callback():
             direct_http.close()
             print(f'[OAuth] Phase 1 SUCCESS: direct connection worked (status={token_response.status_code})')
         except Exception as direct_err:
+            _direct_err = direct_err  # save before Python 3 deletes it
             print(f'[OAuth] Phase 1 FAILED (direct): {direct_err}')
             token_response = None
 
@@ -4426,7 +4428,7 @@ def auth_callback():
                 print(f'[OAuth] Phase 2 FAILED (proxy): {proxy_err}')
                 return jsonify({
                     'error': f'Cannot reach GitHub for OAuth. '
-                             f'Direct: {direct_err}. '
+                             f'Direct: {_direct_err}. '
                              f'Proxy: {proxy_err}. '
                              f'Check network/proxy configuration.'
                 }), 502
