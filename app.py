@@ -3229,6 +3229,10 @@ def get_current_release():
     board['nominated_count'] = len(board.get('services', {}))
     board['exception_count'] = len(board.get('exception_nominations', []))
 
+    # Debug: log the lock decision
+    print(f"[release] Board state: status={board.get('status')}, is_past_cutoff={board['is_past_cutoff']}, "
+          f"manual_unlock={board.get('manual_unlock')}, cutoff={effective_cutoff}, now={now_iso}")
+
     # Auto-reflect locked state in UI when past cutoff
     # The nomination endpoint already blocks regular nominations past cutoff,
     # but the UI needs status='locked' to show the correct buttons (Board Locked + Unlock).
@@ -3237,6 +3241,8 @@ def get_current_release():
     if board['is_past_cutoff'] and board.get('status') == 'open' and not board.get('manual_unlock'):
         board['status'] = 'locked'
         board['auto_locked'] = True  # Flag so UI can distinguish manual vs auto lock
+        _write_board(board)  # Persist so the lock state survives pod restarts
+        print(f"[release] ✅ Auto-locked board (past cutoff {effective_cutoff})")
 
     return jsonify(board)
 
