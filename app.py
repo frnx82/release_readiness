@@ -1665,7 +1665,8 @@ NAMESPACE = os.getenv('POD_NAMESPACE', 'default')
 DEPLOY_ENV = os.getenv('DEPLOY_ENV', 'uat').lower()  # 'uat' or 'prod' — determines which cluster is local
 RELEASE_CADENCE = os.getenv('RELEASE_CADENCE', 'friday')  # 'friday' or 'custom'
 CUTOFF_DAY = int(os.getenv('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
-CUTOFF_HOUR = int(os.getenv('CUTOFF_HOUR', '12'))  # 12:00 (noon EST)
+CUTOFF_HOUR = int(os.getenv('CUTOFF_HOUR', '12'))  # 12:00 (noon) in CUTOFF_TZ
+CUTOFF_TZ_OFFSET = int(os.getenv('CUTOFF_TZ_OFFSET', '-4'))  # UTC offset: -4=EDT, -5=EST
 
 # ── Artifactory (Custom Component Version Detection) ─────────────────────────
 ARTIFACTORY_URL = os.getenv('ARTIFACTORY_URL', '').rstrip('/')
@@ -1775,14 +1776,23 @@ def _get_current_release_date():
 
 
 def _get_cutoff_datetime():
-    """Calculate the cutoff datetime based on CUTOFF_DAY and CUTOFF_HOUR env vars."""
+    """Calculate the cutoff datetime in UTC based on CUTOFF_DAY, CUTOFF_HOUR, and CUTOFF_TZ_OFFSET.
+
+    CUTOFF_HOUR is in the local timezone (e.g. 12 = noon EST).
+    We convert to UTC for comparison with datetime.utcnow().
+    Example: 12:00 EST (UTC-5) → 17:00 UTC.
+    """
     today = datetime.date.today()
     days_until_friday = (4 - today.weekday()) % 7
-    if days_until_friday == 0 and datetime.datetime.now().hour >= 18:
+    if days_until_friday == 0 and datetime.datetime.utcnow().hour >= 22:
         days_until_friday = 7
     release_friday = today + datetime.timedelta(days=days_until_friday)
     cutoff_date = release_friday - datetime.timedelta(days=(4 - CUTOFF_DAY) % 7)
-    return datetime.datetime.combine(cutoff_date, datetime.time(CUTOFF_HOUR, 0)).isoformat()
+    # Convert local cutoff time to UTC: subtract the TZ offset
+    # e.g. 12:00 EST (offset=-5) → 12:00 - (-5) = 17:00 UTC
+    cutoff_local = datetime.datetime.combine(cutoff_date, datetime.time(CUTOFF_HOUR, 0))
+    cutoff_utc = cutoff_local - datetime.timedelta(hours=CUTOFF_TZ_OFFSET)
+    return cutoff_utc.isoformat()
 
 
 def _board_configmap_name(release_date=None):
@@ -3222,7 +3232,9 @@ def get_current_release():
     # Auto-reflect locked state in UI when past cutoff
     # The nomination endpoint already blocks regular nominations past cutoff,
     # but the UI needs status='locked' to show the correct buttons (Board Locked + Unlock).
-    if board['is_past_cutoff'] and board.get('status') == 'open':
+    # IMPORTANT: Do NOT re-lock if the board was manually unlocked (manual_unlock flag).
+    # This prevents the auto-lock from overriding a release manager's explicit unlock.
+    if board['is_past_cutoff'] and board.get('status') == 'open' and not board.get('manual_unlock'):
         board['status'] = 'locked'
         board['auto_locked'] = True  # Flag so UI can distinguish manual vs auto lock
 
@@ -3586,6 +3598,7 @@ def finalize_release():
     board['status'] = 'locked'
     board['finalized_by'] = finalized_by
     board['finalized_at'] = now
+    board['manual_unlock'] = False  # Clear: explicit lock overrides prior unlock
     board['audit_trail'].append({
         'action': 'finalize',
         'by': finalized_by,
@@ -3614,15 +3627,17 @@ def unlock_release():
 
     now = datetime.datetime.utcnow().isoformat()
     board['status'] = 'open'
+    board['manual_unlock'] = True   # Prevent auto-lock from re-locking
+    board['auto_locked'] = False
     board['audit_trail'].append({
         'action': 'unlock',
         'by': unlocked_by,
         'at': now,
-        'note': 'Board unlocked for editing'
+        'note': 'Board manually unlocked for editing (auto-lock suppressed)'
     })
 
     _write_board(board)
-    return jsonify({'status': 'open', 'unlocked_by': unlocked_by})
+    return jsonify({'status': 'open', 'unlocked_by': unlocked_by, 'manual_unlock': True})
 
 
 @app.route('/api/release/complete', methods=['POST'])

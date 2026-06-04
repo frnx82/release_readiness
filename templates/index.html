@@ -3225,9 +3225,12 @@
             const newCycleBtn = document.getElementById('btn-new-cycle');
 
             if (status === 'open') {
+                const wasManuallyUnlocked = _board && _board.manual_unlock;
                 lockBtn.style.display = '';
                 lockBtn.disabled = false;
-                lockBtn.innerHTML = '🔒 Lock Board (Cutoff)';
+                lockBtn.innerHTML = wasManuallyUnlocked
+                    ? '🔒 Lock Board (Cutoff) <span style="font-size:10px;padding:2px 6px;background:rgba(16,185,129,.12);color:#10b981;border-radius:4px;margin-left:6px">🔓 Unlocked</span>'
+                    : '🔒 Lock Board (Cutoff)';
                 lockBtn.style.opacity = '1';
                 lockBtn.style.cursor = 'pointer';
                 unlockBtn.style.display = 'none';
