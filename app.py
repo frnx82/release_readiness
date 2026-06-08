@@ -876,17 +876,67 @@ def _build_confluence_httpx_factory(auth_headers):
     return factory
 
 
-def _confluence_mcp_call(tool_name, arguments, timeout=20):
-    """Call a tool on the Confluence MCP server.
+# Track MCP server health for fast-fail on repeated timeouts
+_confluence_mcp_health = {
+    'consecutive_timeouts': 0,
+    'last_success': 0,
+    'last_failure': 0,
+    'last_error': '',
+}
+
+def _confluence_mcp_call(tool_name, arguments, timeout=30, max_retries=1):
+    """Call a tool on the Confluence MCP server with retry logic.
     Uses fastmcp SDK (StreamableHttp transport) when available,
     falls back to raw HTTP JSON-RPC.
+
+    Retries on timeout/connection errors up to max_retries times.
+    Tracks consecutive failures to enable fast-fail on subsequent calls.
     """
+    global _confluence_mcp_health
+    if not CONFLUENCE_MCP_URL:
+        return None
+
+    import time as _time
+
+    # Fast-fail: if we've had 3+ consecutive timeouts in the last 2 minutes,
+    # don't keep hammering the MCP server — it's likely down.
+    if (_confluence_mcp_health['consecutive_timeouts'] >= 3 and
+            _time.time() - _confluence_mcp_health['last_failure'] < 120):
+        print(f'[Confluence MCP] CIRCUIT BREAKER: {_confluence_mcp_health["consecutive_timeouts"]} '
+              f'consecutive timeouts — skipping call to {tool_name}. '
+              f'Last error: {_confluence_mcp_health["last_error"]}')
+        return None
+
+    for attempt in range(max_retries + 1):
+        result = _confluence_mcp_call_once(tool_name, arguments, timeout=timeout, attempt=attempt)
+        if result is not None:
+            # Success — reset health counters
+            _confluence_mcp_health['consecutive_timeouts'] = 0
+            _confluence_mcp_health['last_success'] = _time.time()
+            return result
+        # None means timeout/error — retry with backoff
+        if attempt < max_retries:
+            backoff = 2 * (attempt + 1)
+            print(f'[Confluence MCP] Retrying {tool_name} in {backoff}s (attempt {attempt + 2}/{max_retries + 1})')
+            _time.sleep(backoff)
+
+    # All retries exhausted
+    _confluence_mcp_health['consecutive_timeouts'] += 1
+    _confluence_mcp_health['last_failure'] = _time.time()
+    print(f'[Confluence MCP] All {max_retries + 1} attempts failed for {tool_name} '
+          f'(consecutive_timeouts={_confluence_mcp_health["consecutive_timeouts"]})')
+    return None
+
+
+def _confluence_mcp_call_once(tool_name, arguments, timeout=30, attempt=0):
+    """Single attempt to call a tool on the Confluence MCP server."""
+    global _confluence_mcp_health
     if not CONFLUENCE_MCP_URL:
         return None
 
     import time as _time
     call_start = _time.time()
-    print(f'[Confluence MCP] Calling {tool_name} (timeout={timeout}s, url={CONFLUENCE_MCP_URL})')
+    print(f'[Confluence MCP] Calling {tool_name} (timeout={timeout}s, attempt={attempt + 1}, url={CONFLUENCE_MCP_URL})')
 
     # ── Method A: fastmcp SDK (same protocol as test-confluence.py) ──
     try:
@@ -941,10 +991,12 @@ def _confluence_mcp_call(tool_name, arguments, timeout=20):
         pass  # fastmcp not installed, fall through to raw HTTP
     except TimeoutError:
         elapsed = round((_time.time() - call_start) * 1000, 1)
+        _confluence_mcp_health['last_error'] = f'fastmcp timeout after {elapsed}ms'
         print(f'[Confluence MCP] fastmcp TIMEOUT after {elapsed}ms calling {tool_name}')
         # Fall through to raw HTTP as backup
     except Exception as e:
         elapsed = round((_time.time() - call_start) * 1000, 1)
+        _confluence_mcp_health['last_error'] = f'fastmcp error: {type(e).__name__}: {str(e)[:100]}'
         print(f'[Confluence MCP] fastmcp error after {elapsed}ms calling {tool_name}: {type(e).__name__}: {e}')
         # Fall through to raw HTTP as backup
 
@@ -1022,18 +1074,25 @@ def _confluence_mcp_call(tool_name, arguments, timeout=20):
             return None
         return json.dumps(result)
     except requests.exceptions.Timeout:
-        print(f"[Confluence MCP] Timeout calling {tool_name} (timeout={timeout}s, url={CONFLUENCE_MCP_URL})")
+        elapsed = round((_time.time() - call_start) * 1000, 1)
+        _confluence_mcp_health['last_error'] = f'raw HTTP timeout after {elapsed}ms (limit={timeout}s)'
+        print(f"[Confluence MCP] Timeout calling {tool_name} after {elapsed}ms (timeout={timeout}s, url={CONFLUENCE_MCP_URL})")
         return None
     except requests.exceptions.ConnectionError as e:
-        print(f"[Confluence MCP] Connection error to {CONFLUENCE_MCP_URL}: {e}")
+        elapsed = round((_time.time() - call_start) * 1000, 1)
+        err_msg = str(e)[:150]
+        _confluence_mcp_health['last_error'] = f'connection error after {elapsed}ms: {err_msg}'
+        print(f"[Confluence MCP] Connection error to {CONFLUENCE_MCP_URL} after {elapsed}ms: {e}")
         print(f"[Confluence MCP] PROXY_URL={'SET: ' + PROXY_URL[:30] if PROXY_URL else 'NOT SET'}")
         print(f"[Confluence MCP] Tip: If MCP server is on a different network, set PROXY_URL or check firewall rules")
         return None
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else 'unknown'
+        _confluence_mcp_health['last_error'] = f'HTTP {status} error'
         print(f"[Confluence MCP] HTTP {status} calling {tool_name}")
         return None
     except Exception as e:
+        _confluence_mcp_health['last_error'] = f'{type(e).__name__}: {str(e)[:100]}'
         print(f"[Confluence MCP] Error calling {tool_name}: {e}")
         return None
 
@@ -1162,11 +1221,12 @@ def _confluence_search(query, space_key=None, max_results=20):
                 })
 
         seen_ids = set()  # Deduplicate across strategies and spaces
-        mcp_timed_out = False
+        mcp_timeout_count = 0  # Track timeouts — allow some failures before giving up
+        MAX_MCP_TIMEOUTS = 2   # Allow up to 2 timeouts before skipping remaining strategies
 
         for cql_info in cql_queries:
-            if mcp_timed_out:
-                print(f'[confluence] Skipping CQL strategy "{cql_info["label"]}" — MCP already timed out')
+            if mcp_timeout_count >= MAX_MCP_TIMEOUTS:
+                print(f'[confluence] Skipping CQL strategy "{cql_info["label"]}" — {mcp_timeout_count} MCP timeouts already')
                 break
             if len(results) >= max_results:
                 break
@@ -1176,14 +1236,15 @@ def _confluence_search(query, space_key=None, max_results=20):
             print(f'[confluence] Strategy: {cql_info["label"]}, CQL: {cql}')
 
             for tool_name in search_tools:
-                if mcp_timed_out:
+                if mcp_timeout_count >= MAX_MCP_TIMEOUTS:
                     break
                 raw = _confluence_mcp_call(tool_name, {
                     'cql': cql,
                     'limit': remaining
-                }, timeout=15)
+                }, timeout=30, max_retries=1)
                 if raw is None:
-                    mcp_timed_out = True
+                    mcp_timeout_count += 1
+                    print(f'[confluence] MCP timeout/error #{mcp_timeout_count} (max={MAX_MCP_TIMEOUTS})')
                     continue
                 if raw:
                     try:
@@ -1280,10 +1341,10 @@ def _confluence_search(query, space_key=None, max_results=20):
         # ── Strategy 3: Browse ALL pages fallback ──────────────────────────
         # If keyword search returned few results, list ALL pages in the space
         # so the AI can scan titles and find relevant pages that CQL missed.
-        if len(results) < 5 and not mcp_timed_out:
+        if len(results) < 5 and mcp_timeout_count < MAX_MCP_TIMEOUTS:
             print(f'[confluence] Keyword search returned only {len(results)} results — browsing all pages in space(s)')
             for sp in spaces_to_search:
-                if mcp_timed_out or len(results) >= max_results:
+                if mcp_timeout_count >= MAX_MCP_TIMEOUTS or len(results) >= max_results:
                     break
                 if not sp:
                     continue  # Can't browse without a space key
@@ -1291,14 +1352,14 @@ def _confluence_search(query, space_key=None, max_results=20):
                 remaining = max_results - len(results)
                 print(f'[confluence] Strategy: browse-all in {sp}, CQL: {browse_cql}')
                 for tool_name in search_tools:
-                    if mcp_timed_out:
+                    if mcp_timeout_count >= MAX_MCP_TIMEOUTS:
                         break
                     raw = _confluence_mcp_call(tool_name, {
                         'cql': browse_cql,
                         'limit': min(remaining, 50)  # Fetch up to 50 page titles
-                    }, timeout=10)
+                    }, timeout=20, max_retries=0)  # No retries for browse — less critical
                     if raw is None:
-                        mcp_timed_out = True
+                        mcp_timeout_count += 1
                         continue
                     if raw:
                         try:
@@ -2316,7 +2377,7 @@ def confluence_diagnostic():
         raw = _confluence_mcp_call('confluence_search', {
             'cql': 'type=page ORDER BY lastModified DESC',
             'limit': 1
-        }, timeout=15)
+        }, timeout=30, max_retries=0)  # No retries for diagnostic — we want raw timing
         elapsed = round((_time.time() - start) * 1000, 1)
 
         results['step5_mcp_search'] = {
@@ -2327,6 +2388,16 @@ def confluence_diagnostic():
     except Exception as e:
         results['step5_mcp_search'] = {'status': 'FAIL', 'error': str(e)[:300]}
 
+    # Step 6: MCP health state (circuit breaker)
+    results['step6_mcp_health'] = {
+        'consecutive_timeouts': _confluence_mcp_health['consecutive_timeouts'],
+        'last_error': _confluence_mcp_health['last_error'] or 'none',
+        'circuit_breaker_open': (
+            _confluence_mcp_health['consecutive_timeouts'] >= 3 and
+            _time.time() - _confluence_mcp_health['last_failure'] < 120
+        ) if _confluence_mcp_health['last_failure'] else False,
+    }
+
     # Summary
     all_ok = all(
         results.get(f'step{i}_{k}', {}).get('status', '').startswith('OK')
@@ -2335,6 +2406,84 @@ def confluence_diagnostic():
     results['overall'] = 'ALL STEPS PASSED' if all_ok else 'ISSUES DETECTED — check failed steps'
 
     return jsonify(results)
+
+
+@app.route('/api/confluence-mcp-health')
+def confluence_mcp_health():
+    """Quick health status of the Confluence MCP connection.
+    Returns circuit breaker state, timeout history, and last error.
+    Much lighter than /api/confluence-diag (no network calls).
+    """
+    import time as _time
+
+    health = dict(_confluence_mcp_health)  # Copy to avoid mutation during read
+    now = _time.time()
+
+    status = 'healthy'
+    if not CONFLUENCE_MCP_URL:
+        status = 'not_configured'
+    elif health['consecutive_timeouts'] >= 3 and now - health['last_failure'] < 120:
+        status = 'circuit_open'  # Circuit breaker is active — calls are being skipped
+    elif health['consecutive_timeouts'] > 0:
+        status = 'degraded'
+
+    result = {
+        'status': status,
+        'mcp_url': CONFLUENCE_MCP_URL or 'NOT SET',
+        'consecutive_timeouts': health['consecutive_timeouts'],
+        'last_error': health['last_error'] or 'none',
+        'last_success_ago': f"{round(now - health['last_success'])}s" if health['last_success'] else 'never',
+        'last_failure_ago': f"{round(now - health['last_failure'])}s" if health['last_failure'] else 'never',
+        'circuit_breaker': {
+            'is_open': status == 'circuit_open',
+            'threshold': 3,
+            'cooldown_seconds': 120,
+            'resets_in': f"{max(0, round(120 - (now - health['last_failure'])))}s" if health['last_failure'] else 'n/a',
+        },
+        'tips': [],
+    }
+
+    if status == 'circuit_open':
+        result['tips'] = [
+            'Circuit breaker is OPEN — all Confluence MCP calls are being skipped',
+            f'Last error: {health["last_error"]}',
+            'POST /api/confluence-mcp-reset to manually reset the circuit breaker',
+            'Check if the Confluence MCP pod is running: kubectl get pods | grep confluence',
+            'Check MCP pod logs: kubectl logs <confluence-mcp-pod> --tail=50',
+        ]
+    elif status == 'degraded':
+        result['tips'] = [
+            f'{health["consecutive_timeouts"]} timeout(s) detected — MCP server may be slow or partially down',
+            'Run /api/confluence-diag for a full step-by-step diagnostic',
+        ]
+
+    return jsonify(result)
+
+
+@app.route('/api/confluence-mcp-reset', methods=['POST'])
+def confluence_mcp_reset():
+    """Reset the Confluence MCP circuit breaker.
+    Use after fixing the MCP server to allow calls to resume immediately
+    without waiting for the 2-minute cooldown.
+    """
+    global _confluence_mcp_health
+    old_state = dict(_confluence_mcp_health)
+    _confluence_mcp_health = {
+        'consecutive_timeouts': 0,
+        'last_success': 0,
+        'last_failure': 0,
+        'last_error': '',
+    }
+    print(f'[Confluence MCP] Circuit breaker RESET by user '
+          f'(was: {old_state["consecutive_timeouts"]} consecutive timeouts)')
+    return jsonify({
+        'status': 'reset',
+        'message': 'Circuit breaker reset. Next Confluence MCP call will be attempted.',
+        'previous_state': {
+            'consecutive_timeouts': old_state['consecutive_timeouts'],
+            'last_error': old_state['last_error'],
+        }
+    })
 
 
 # ── K8s connectivity diagnostic ───────────────────────────────────────────────
