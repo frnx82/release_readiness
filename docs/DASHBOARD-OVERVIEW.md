@@ -83,7 +83,7 @@ The central nomination board where teams declare what's being released.
 Real-time visibility into what's actually running in your UAT environment.
 
 **What it does**:
-- Connects directly to your OpenShift/K8s cluster via API
+- Connects directly to your Google Distributed Cloud (GDC) cluster via K8s API
 - Shows all deployments with: image, tag, helm chart version, replica count, health status
 - Filterable and searchable — find any service instantly
 - One-click refresh
@@ -98,7 +98,7 @@ Real-time visibility into what's actually running in your UAT environment.
 Same real-time view, but for your production cluster.
 
 **What it does**:
-- Connects to production OpenShift/K8s cluster (via remote API or local)
+- Connects to production GDC cluster (via remote API or local)
 - Cross-references with the release board: shows which prod services are nominated vs. not nominated
 - **Export All Prod Versions (CSV)** — one-click download of every service's current live version
 - Export not-nominated services — identifies services in prod that aren't on the release board
@@ -240,7 +240,7 @@ Integrated test execution and quality gates — trigger tests, see results, sign
 - Allure test results displayed on the dashboard
 - Quality Gate: go/no-go verdict based on all test suites
 - QA sign-off recorded in audit trail
-- On-demand test environments for isolated testing
+- Dedicated UAT testing namespace with all services for isolated testing
 
 **Who uses it**: QA Team — run tests, see results, sign off — all from one place
 
@@ -260,7 +260,7 @@ Integrated test execution and quality gates — trigger tests, see results, sign
 |---|---|---|
 | **Release board** | Spreadsheet or Jira board | Real-time interactive board with auto-lock |
 | **Version checking** | Manually SSH into clusters, compare versions | Auto-detected from live clusters |
-| **Drift detection** | Someone runs `oc get deployments` and compares | Automated — flagged in real-time |
+| **Drift detection** | Someone runs `kubectl get deployments` and compares | Automated — flagged in real-time |
 | **Test execution** | Go to GitHub, fill in inputs, wait, check Allure | One-click from dashboard, auto-trigger at cutoff |
 | **Status communication** | Slack messages, email summaries | Dashboard visible to everyone, AI chatbot |
 | **Audit trail** | "Who changed the release board?" "I don't know" | Every action timestamped and recorded |
@@ -294,7 +294,7 @@ Integrated test execution and quality gates — trigger tests, see results, sign
 |---|---|
 | **Backend** | Python (Flask) |
 | **Frontend** | Single-page HTML/JS with modern dark-mode UI |
-| **Deployment** | Containerized, runs on OpenShift/K8s |
+| **Deployment** | Containerized, runs on Google Distributed Cloud (GDC) |
 | **Cluster Integration** | Direct K8s API calls (ServiceAccount tokens) |
 | **GitHub Integration** | OAuth or PAT — supports GitHub Enterprise |
 | **AI** | Google Gemini for chat and readiness analysis |
@@ -335,7 +335,7 @@ export DEPLOY_REPO=your-org/deployments        # Deploy tab
 export CONFLUENCE_MCP_URL=http://confluence-mcp:8000  # Confluence
 export GEMINI_API_KEY=xxx                      # AI Chat
 export ARTIFACTORY_URL=https://artifactory.company.com  # Custom components
-export PROD_CLUSTER_API=https://api.ocp-prod:6443  # Prod cluster
+export PROD_CLUSTER_API=https://gdc-prod-api:6443   # GDC Prod cluster
 export PROD_CLUSTER_TOKEN=xxx
 python app.py
 ```
