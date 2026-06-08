@@ -292,6 +292,38 @@ spec:
         - name: PROD_CLUSTER_VERIFY_SSL
           value: "false"                                      # ← Set to 'true' in production with proper CA certs
 
+        # ═══ Proxy — Corporate Proxy for Outbound HTTPS ═══════════
+        # Required in UAT/Prod if the cluster routes outbound traffic
+        # through a proxy that requires Kerberos (407) authentication.
+        # Without this, GitHub/Confluence/Jira API calls will fail with:
+        #   "407 Authentication Required" / "tunnel connection failed"
+        #
+        # Create secret:
+        #   kubectl create secret generic release-readiness-proxy \
+        #     --from-literal=proxy-url=http://proxy.your-org.com:8080 \
+        #     -n YOUR_NAMESPACE
+        - name: PROXY_URL
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-proxy
+              key: proxy-url
+              optional: true                                   # ← Not needed in Dev (direct internet)
+        - name: SSL_VERIFY
+          value: "false"                                       # ← Set to 'true' once proxy CA certs are trusted
+
+        # ═══ Kerberos — Keytab for Proxy Authentication ═══════════
+        # If your proxy requires Kerberos auth (407 errors), mount a
+        # keytab file so the pod can obtain Kerberos tickets.
+        # Create secret from keytab:
+        #   kubectl create secret generic krb5-keytab \
+        #     --from-file=krb5.keytab=/path/to/service.keytab \
+        #     -n YOUR_NAMESPACE
+        # Then uncomment the volumeMount and volume below.
+        - name: KRB5_KTNAME
+          value: "/etc/krb5/krb5.keytab"                       # ← Path where keytab will be mounted
+        #- name: KRB5_CONFIG
+        #  value: "/etc/krb5/krb5.conf"                        # ← Optional: custom krb5.conf path
+
         # ═══ Deployment Environment ═══════════════════════════════
         # Controls which cluster is "local" and which is "remote":
         #   DEPLOY_ENV=uat  → UAT tab reads local, Prod tab connects remotely
@@ -384,11 +416,19 @@ spec:
         volumeMounts:
         - name: board-data
           mountPath: /data/boards
+        # Uncomment for Kerberos proxy auth (407 errors):
+        #- name: krb5-keytab
+        #  mountPath: /etc/krb5
+        #  readOnly: true
 
       volumes:
       - name: board-data
         persistentVolumeClaim:
           claimName: release-board-data
+      # Uncomment for Kerberos proxy auth (407 errors):
+      #- name: krb5-keytab
+      #  secret:
+      #    secretName: krb5-keytab
 
 ---
 apiVersion: v1

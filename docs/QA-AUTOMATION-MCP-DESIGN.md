@@ -11,8 +11,9 @@
 | **Test Reporting** | Allure |
 | **Security Scanning** | Xray (already in CI pipeline — not in dashboard scope) |
 | **Code Repository** | GitHub |
-| **Container Platform** | OpenShift / K8s |
-| **Test Environments** | Standing UAT + On-Demand ephemeral |
+| **Container Platform** | Google Distributed Cloud (GDC) |
+| **Deployment** | GitHub Actions → ArgoCD (App-of-Apps / MetaApp pattern) |
+| **Test Environment** | Dedicated UAT namespace (pre-provisioned) — all services deployed with prod versions + nominated release candidates |
 
 ---
 
@@ -71,7 +72,7 @@ def _auto_trigger_tests():
                 "ref": "main",
                 "inputs": {
                     "test_type": test_type,
-                    "environment": "uat",
+                    "environment": "uat-testing",
                 }
             }
         )
@@ -117,14 +118,7 @@ on:
       environment:
         description: 'Target environment'
         required: true
-        default: 'uat'
-        type: choice
-        options:
-          - uat
-          - on-demand
-      target_namespace:
-        description: 'Target namespace (for on-demand envs)'
-        required: false
+        default: 'uat-testing'
         type: string
 
 jobs:
@@ -148,7 +142,7 @@ jobs:
 
 | Tool Name | Parameters | What It Does |
 |---|---|---|
-| `test_run` | `test_type` (e2e\|smoke\|regression), `environment`, `version` | Triggers the single test pipeline with the right flag |
+| `test_run` | `test_type` (e2e\|smoke\|regression), `environment` | Triggers the single test pipeline with the right flag |
 | `test_run_status` | `run_id` | Gets current status (queued, in_progress, completed) |
 | `test_run_cancel` | `run_id` | Cancels a running workflow |
 | `test_list_runs` | `test_type`, `limit` | Recent workflow runs filtered by test type |
@@ -176,12 +170,11 @@ TEST_WORKFLOW = os.getenv('QA_WORKFLOW_FILE', 'test-pipeline.yml')
 server = FastMCP("test-runner")
 
 @server.tool()
-async def test_run(test_type: str, environment: str = "uat", version: str = "",
-                   target_namespace: str = ""):
+async def test_run(test_type: str, environment: str = "uat-testing"):
     """Trigger the test pipeline via GitHub Actions workflow_dispatch.
     
     test_type: e2e | smoke | regression
-    environment: uat | on-demand
+    environment: dedicated UAT testing namespace on GDC
     """
     if test_type not in ('e2e', 'smoke', 'regression'):
         return {"error": f"Invalid test_type: {test_type}. Use: e2e, smoke, regression"}
@@ -195,7 +188,6 @@ async def test_run(test_type: str, environment: str = "uat", version: str = "",
                 "inputs": {
                     "test_type": test_type,
                     "environment": environment,
-                    "target_namespace": target_namespace,
                 }
             }
         )
@@ -324,28 +316,28 @@ async def test_results_latest(test_type: str, environment: str = "uat"):
 
 ## MCP Server #4: Environment Manager
 
-**Purpose**: Provision a full QA test environment with all 28+ services — nominated services at release candidate versions, non-nominated services at production live versions — deployed into a **pre-provisioned namespace** via GitHub Actions → ArgoCD MetaApp.
+**Purpose**: Prepare the dedicated UAT testing namespace with all 28+ services — nominated services at release candidate versions, non-nominated services at production live versions — deployed via GitHub Actions → ArgoCD MetaApp on **Google Distributed Cloud (GDC)**.
 
 ### The Challenge
 
 With 25+ Python services and 3+ UI apps, QA needs a complete environment that mirrors production **but** includes the release candidate versions being tested. Manually setting this up takes 2-3 hours. The Environment Manager automates this to ~10 minutes.
 
-### Infrastructure Constraints
+### Infrastructure
 
-| Constraint | Detail |
+| Component | Detail |
 |---|---|
-| **Namespace** | Pre-provisioned by the platform team (not auto-created by dashboard) |
-| **Current platform** | OpenShift with GitHub CI/CD pipelines |
-| **Future platform** | Google Distributed Cloud (GDC) with GitHub CI + ArgoCD |
+| **Platform** | Google Distributed Cloud (GDC) |
+| **UAT Testing Namespace** | Pre-provisioned dedicated namespace for QA testing |
 | **Deployment method** | GitHub Actions workflow → ArgoCD MetaApp sync |
-| **Cluster topology** | QA namespace is on the **same cluster** as UAT |
+| **Cluster topology** | UAT testing namespace is on the GDC cluster |
 | **ArgoCD MetaApp** | Single ArgoCD YAML that deploys all applications at once (App-of-Apps pattern) |
+| **Container Registry** | Shared registry — UAT pulls same images as production |
 
-### On-Demand Environment Strategy
+### Environment Strategy
 
-![On-Demand Environment Strategy](images/ondemand-env-diagram.png)
+![UAT Environment Strategy](images/uat-env-strategy.png)
 
-The dashboard deploys **all 28+ services** into a dedicated `qa-testing` namespace:
+The dashboard deploys **all 28+ services** into the dedicated UAT testing namespace:
 
 - **Nominated services** (from the release board) → deployed with **release candidate versions**
 - **Non-nominated services** → deployed with **production live versions**
@@ -353,27 +345,27 @@ The dashboard deploys **all 28+ services** into a dedicated `qa-testing` namespa
 This gives QA a complete, isolated environment that mirrors what production will look like **after** the release.
 
 ```
-Standing UAT (uat-prod)                    QA Testing (qa-testing)
-┌──────────────────────────────┐           ┌──────────────────────────────┐
-│ billing-service    v2.3.3    │           │ billing-service    v2.3.4   │ ← board (release candidate)
-│ payment-gateway    v2.0.0    │           │ payment-gateway    v2.1.0   │ ← board (release candidate)
-│ auth-service       v2.7.0    │           │ auth-service       v2.7.0   │ ← prod version (unchanged)
-│ user-service       v3.2.0    │           │ user-service       v3.2.0   │ ← prod version (unchanged)
-│ order-service      v1.5.2    │           │ order-service      v1.5.3   │ ← board (release candidate)
-│ ... (25+ total)              │           │ ... (all 28+ services)      │
-└──────────────────────────────┘           └──────────────────────────────┘
+Production Cluster                         UAT Testing Namespace (uat-testing)
+┌──────────────────────────────────┐       ┌──────────────────────────────────────┐
+│ billing-service    v2.3.3        │       │ billing-service    v2.3.4           │ ← board (release candidate)
+│ payment-gateway    v2.0.0        │       │ payment-gateway    v2.1.0           │ ← board (release candidate)
+│ auth-service       v2.7.0        │       │ auth-service       v2.7.0           │ ← prod version (unchanged)
+│ user-service       v3.2.0        │       │ user-service       v3.2.0           │ ← prod version (unchanged)
+│ order-service      v1.5.2        │       │ order-service      v1.5.3           │ ← board (release candidate)
+│ ... (28+ total)                  │       │ ... (all 28+ services)              │
+└──────────────────────────────────┘       └──────────────────────────────────────┘
 ```
 
 ### How It Works
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│  QA clicks "Prepare QA Environment" on the dashboard                │
+│  QA clicks "Prepare UAT Environment" on the dashboard               │
 │                                                                      │
 │  Step 1: Dashboard reads the release board                          │
 │          → 8 services nominated with release candidate versions     │
 │                                                                      │
-│  Step 2: Dashboard reads production cluster (read-only)             │
+│  Step 2: Dashboard reads production versions (read-only via ArgoCD) │
 │          → Gets live versions of all 28+ services in prod           │
 │                                                                      │
 │  Step 3: Merge version manifest                                     │
@@ -382,28 +374,27 @@ Standing UAT (uat-prod)                    QA Testing (qa-testing)
 │          → Full manifest: 28 services with target image tags        │
 │                                                                      │
 │  Step 4: Trigger GitHub Actions deployment workflow                 │
-│          → Input: environment=qa-testing, version manifest           │
+│          → Input: environment=uat-testing, version manifest         │
 │                                                                      │
-│  Step 5: GitHub Actions → ArgoCD MetaApp                            │
-│          → ArgoCD syncs all 28 services to qa-testing namespace     │
+│  Step 5: GitHub Actions → ArgoCD MetaApp on GDC                     │
+│          → ArgoCD syncs all 28 services to uat-testing namespace    │
 │                                                                      │
 │  Step 6: Dashboard monitors sync status via ArgoCD API              │
 │          → Reports progress: "15/28 services synced..."             │
 │                                                                      │
-│  Step 7: QA team notified: "QA environment ready"                   │
+│  Step 7: QA team notified: "UAT environment ready"                  │
 │          → Full replica of prod + release candidates available      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Production Version Source
 
-The dashboard needs to read production service versions (read-only). Options:
+The dashboard needs to read production service versions (read-only). Since we're on GDC with ArgoCD:
 
 | Source | How It Works | Recommended |
 |---|---|---|
-| **ArgoCD API** | Query ArgoCD REST API for deployed app versions | ✅ Best for GDC (already using ArgoCD) |
-| **Shared Version Manifest** | CI/CD writes `prod-versions.json` to Git after each deploy | ✅ Simplest — works with any platform |
-| **K8s API (read-only)** | Direct read of prod namespace deployments | Works on OpenShift today |
+| **ArgoCD API** | Query ArgoCD REST API for deployed app versions | ✅ **Primary** — already using ArgoCD on GDC |
+| **Shared Version Manifest** | CI/CD writes `prod-versions.json` to Git after each deploy | ✅ Fallback — simplest alternative |
 
 ```python
 # Option 1: ArgoCD API (recommended for GDC)
@@ -473,7 +464,7 @@ def build_qa_manifest():
 The dashboard triggers the existing deployment workflow with the QA namespace as target:
 
 ```python
-def trigger_qa_env_deploy(qa_manifest, namespace='qa-testing'):
+def trigger_qa_env_deploy(qa_manifest, namespace='uat-testing'):
     """Trigger GitHub Actions → ArgoCD to deploy all services."""
     _github_post(
         f'/repos/{DEPLOY_REPO}/actions/workflows/{DEPLOY_WORKFLOW}/dispatches',
@@ -491,16 +482,16 @@ def trigger_qa_env_deploy(qa_manifest, namespace='qa-testing'):
 The GitHub Actions workflow receives the manifest and updates the ArgoCD MetaApp:
 
 ```yaml
-# .github/workflows/deploy-qa-env.yml
-name: Deploy QA Environment
+# .github/workflows/deploy-uat-env.yml
+name: Deploy UAT Testing Environment
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Target namespace (pre-provisioned by platform team)'
+        description: 'Target UAT testing namespace (pre-provisioned on GDC)'
         required: true
         type: string
-        default: 'qa-testing'
+        default: 'uat-testing'
       manifest:
         description: 'JSON manifest of all services and target versions'
         required: true
@@ -538,20 +529,20 @@ jobs:
 
 | Tool Name | Parameters | What It Does |
 |---|---|---|
-| `env_prepare` | `namespace` | Build manifest (board + prod versions) and trigger deploy via GitHub Actions → ArgoCD |
-| `env_status` | `namespace` | Check deployment progress — how many services are synced and healthy |
-| `env_diff` | `namespace` | Show what will change: board versions vs. prod versions side by side |
-| `env_teardown` | `namespace` | Scale down all deployments in the QA namespace to 0 replicas |
+| `env_prepare` | — | Build manifest (board + prod versions) and trigger deploy to UAT testing namespace via GitHub Actions → ArgoCD |
+| `env_status` | — | Check deployment progress — how many services are synced and healthy in UAT testing |
+| `env_diff` | — | Show what will change: board versions vs. prod versions side by side |
+| `env_teardown` | — | Scale down all deployments in the UAT testing namespace to 0 replicas |
 
-### Dashboard UI — "Prepare QA Environment" Button
+### Dashboard UI — "Prepare UAT Environment" Button
 
-On the QA tab, QA clicks **"🧪 Prepare QA Environment"** and sees:
+On the QA tab, QA clicks **"🧪 Prepare UAT Environment"** and sees:
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  🧪 Prepare QA Environment                                      │
+│  🧪 Prepare UAT Testing Environment                             │
 │                                                                  │
-│  Target Namespace: [ qa-testing        ]  (pre-provisioned)     │
+│  Target: uat-testing namespace (GDC)       (pre-provisioned)    │
 │                                                                  │
 │  📋 From Release Board (8 services — release candidate versions) │
 │  ┌──────────────────────┬──────────┬─────────────────────────┐  │
@@ -570,9 +561,9 @@ On the QA tab, QA clicks **"🧪 Prepare QA Environment"** and sees:
 │  │ ... (18 more)        │          │                         │  │
 │  └──────────────────────┴──────────┴─────────────────────────┘  │
 │                                                                  │
-│  Total: 28 services will be deployed to qa-testing               │
+│  Total: 28 services will be deployed to uat-testing              │
 │                                                                  │
-│  [🚀 Deploy QA Environment]  [Cancel]                            │
+│  [🚀 Deploy UAT Environment]  [Cancel]                           │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -599,8 +590,8 @@ After clicking Deploy, a progress panel shows real-time status:
 Since the namespace is pre-provisioned (not auto-created), teardown means **scaling down** rather than deleting the namespace:
 
 ```python
-def teardown_qa_env(namespace='qa-testing'):
-    """Scale all deployments to 0 in the QA namespace."""
+def teardown_uat_env(namespace='uat-testing'):
+    """Scale all deployments to 0 in the UAT testing namespace."""
     apps_v1 = client.AppsV1Api()
     deployments = apps_v1.list_namespaced_deployment(namespace).items
     for deploy in deployments:
@@ -621,7 +612,7 @@ def teardown_qa_env(namespace='qa-testing'):
 | **P0** | 🧪 Test Runner | 2-3 days | Trigger e2e/smoke/regression from dashboard |
 | **P0** | 📊 Test Results | 2-3 days | Show Allure results on the board |
 | **P1** | ✅ Quality Gate | 1-2 days | Go/no-go for QA sign-off |
-| **P2** | 🖥️ Env Manager | 3-5 days | Full QA env: board versions + prod versions via GitHub Actions → ArgoCD |
+| **P2** | 🖥️ Env Manager | 3-5 days | UAT env setup: board versions + prod versions via GitHub Actions → ArgoCD on GDC |
 
 ---
 
@@ -670,17 +661,16 @@ QA_WORKFLOW_FILE=test-pipeline.yml    # Single workflow file
 ALLURE_URL=https://allure.company.com
 ALLURE_TOKEN=xxx
 
-# Environment Manager MCP
+# Environment Manager MCP (GDC + ArgoCD)
 DEPLOY_REPO=your-org/app-deployments  # Repo with deploy workflows
-DEPLOY_WORKFLOW=deploy-qa-env.yml     # QA env deployment workflow
-QA_NAMESPACE=qa-testing               # Pre-provisioned QA namespace
-UAT_NAMESPACE=uat-prod                # Standing UAT namespace
+DEPLOY_WORKFLOW=deploy-uat-env.yml    # UAT env deployment workflow
+UAT_TESTING_NAMESPACE=uat-testing     # Pre-provisioned dedicated UAT testing namespace
 
-# Production Version Source (choose one)
-PROD_VERSION_SOURCE=argocd            # argocd | manifest | k8s-api
-ARGOCD_URL=https://argocd.internal    # ArgoCD server URL
+# Production Version Source (ArgoCD on GDC)
+PROD_VERSION_SOURCE=argocd            # argocd | manifest
+ARGOCD_URL=https://argocd.internal    # ArgoCD server URL on GDC
 ARGOCD_READ_TOKEN=xxx                 # ArgoCD read-only API token
-# OR
+# OR fallback:
 PROD_MANIFEST_REPO=your-org/config-repo  # Git repo with prod-versions.json
 ```
 
@@ -697,9 +687,8 @@ PROD_MANIFEST_REPO=your-org/config-repo  # Git repo with prod-versions.json
 | Test reporting | **Allure** |
 | Test management tool | **None** — tests live in GitHub repos |
 | Security scanning | **Xray** — already runs in CI pipeline, not in dashboard scope |
-| Environment strategy | **Standing UAT** + **on-demand QA namespace** (pre-provisioned by platform team). Full environment: board versions + prod versions. Deployed via GitHub Actions → ArgoCD MetaApp |
-| Platform (current) | **OpenShift** with GitHub CI/CD |
-| Platform (future) | **Google Distributed Cloud (GDC)** with GitHub CI + ArgoCD |
-| Namespace provisioning | **Platform team** creates namespaces — dashboard deploys into them, does not create/delete namespaces |
+| Environment strategy | **Dedicated UAT testing namespace** (pre-provisioned). All 28+ services deployed: nominated at release candidate versions, non-nominated at production live versions. Deployed via GitHub Actions → ArgoCD MetaApp on GDC |
+| Platform | **Google Distributed Cloud (GDC)** with GitHub CI + ArgoCD |
+| Namespace provisioning | **Platform team** creates the UAT testing namespace — dashboard deploys into it, does not create/delete namespaces |
 | Test suite priority | **All equal** — QA runs e2e, smoke, regression. All must pass |
 | Release sign-off | **QA team** signs off the release (no dedicated release managers) |

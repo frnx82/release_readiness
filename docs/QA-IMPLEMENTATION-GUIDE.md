@@ -19,7 +19,7 @@ A new **"🧪 QA" tab** on the Release Readiness Dashboard that lets the QA team
 1. **Run tests** (E2E, smoke, regression) with one click — triggers your existing single pipeline
 2. **See results** from Allure — pass/fail breakdown, trends, failure details
 3. **View quality gate** — a go/no-go for QA sign-off
-4. **Manage test environments** — run against standing UAT or spin up on-demand
+4. **Manage the UAT testing environment** — deploy all services (prod versions + release candidates) to a dedicated UAT namespace on GDC
 
 > **Not included**: Performance testing (LoadRunner) and security scanning (Xray) both already run in your CI pipeline and are not integrated into the dashboard.
 
@@ -57,7 +57,7 @@ The new workflow reduces 9 manual steps to a single click:
 | **Communicate readiness** | Copy results → paste in Slack → "@team we're good to go" | "✅ QA Sign-Off" button — visible to everyone on the board |
 | **Historical trends** | Dig through GitHub Actions run history | Trend sparklines right on the dashboard |
 | **Team visibility** | Only QA knows the test status | Everyone on the board sees 🚦 Quality Gate status |
-| **Environment setup** | Manually coordinate with DevOps for test environments | One-click on-demand environments from the dashboard |
+| **Environment setup** | Manually coordinate with DevOps for test environments | One-click UAT environment setup from the dashboard |
 | **Audit trail** | Scattered across Slack messages and GHA logs | Built-in: who signed off, when, which runs passed |
 
 ### Time Savings
@@ -81,7 +81,7 @@ The new workflow reduces 9 manual steps to a single click:
 | 🚦 **Clear go/no-go** | Quality Gate gives a single answer: "Can we release?" — no guessing |
 | 📝 **Audit trail** | QA sign-off is recorded: who, when, which runs passed — compliance-ready |
 | 📈 **Trend tracking** | See pass rate trends over the last 10 releases — catch regressions early |
-| 🖥️ **On-demand envs** | Spin up isolated test environments for specific versions without DevOps help |
+| 🖥️ **Dedicated UAT env** | Deploy all 28+ services to a dedicated UAT testing namespace on GDC with one click |
 | ♻️ **Same pipeline** | Zero changes to existing tests — dashboard triggers the same GitHub Actions workflow |
 
 ---
@@ -100,7 +100,7 @@ Your QA pipeline is a **single GitHub Actions workflow** that takes a `test_type
 │                                                       │
 │  inputs:                                              │
 │    test_type: [e2e | smoke | regression]              │
-│    environment: [uat | on-demand]                     │
+│    environment: uat-testing (GDC namespace)            │
 │                                                       │
 │  Dashboard triggers the SAME workflow                 │
 │  that already runs on push/schedule.                  │
@@ -141,16 +141,9 @@ on:
           - smoke
           - regression
       environment:
-        description: 'Target environment'
+        description: 'Target environment (GDC namespace)'
         required: true
-        default: 'uat'
-        type: choice
-        options:
-          - uat
-          - on-demand
-      target_namespace:
-        description: 'Namespace (for on-demand envs)'
-        required: false
+        default: 'uat-testing'
         type: string
 
 # Rest of your pipeline stays exactly the same
@@ -196,7 +189,7 @@ The dashboard already has `_github_get()` and `_github_post()` helper functions.
 # Already exists in app.py
 _github_post('/repos/your-org/qa-tests/actions/workflows/test-pipeline.yml/dispatches', {
     "ref": "main",
-    "inputs": {"test_type": "e2e", "environment": "uat"}
+    "inputs": {"test_type": "e2e", "environment": "uat-testing"}
 })
 ```
 
@@ -235,7 +228,7 @@ _github_post('/repos/your-org/qa-tests/actions/workflows/test-pipeline.yml/dispa
 ┌──────────────────────────────────────────────────────────────┐
 │  ▶ Run Tests                                                 │
 │                                                              │
-│  Test Type: [E2E ▼]   Environment: [Standing UAT ▼]         │
+│  Test Type: [E2E ▼]   Environment: [uat-testing (GDC)]            │
 │                                                              │
 │  Versions auto-populated from the release board              │
 │                                                              │
@@ -287,76 +280,68 @@ _github_post('/repos/your-org/qa-tests/actions/workflows/test-pipeline.yml/dispa
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### Section 4: On-Demand Environments
+### Section 4: UAT Testing Environment
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  🖥️ Test Environments                                       │
+│  🖥️ UAT Testing Environment (GDC)                            │
 │                                                              │
-│  Standing UAT: ✅ uat-prod (25+ services running)           │
+│  Namespace: uat-testing                                      │
+│  Platform:  Google Distributed Cloud                         │
+│  Status:    ✅ 28 services running                            │
 │                                                              │
-│  On-Demand Environments:                                     │
-│  ┌────────────────┬────────────┬──────────┬────────────────┐│
-│  │ Namespace       │ Services   │ Expires  │ Actions        ││
-│  ├────────────────┼────────────┼──────────┼────────────────┤│
-│  │ test-env-a1b2c3│ 4 deployed │ 2h left  │ [▶Test][🗑️Del]││
-│  │                │ 24 → UAT   │          │                ││
-│  └────────────────┴────────────┴──────────┴────────────────┘│
+│  📋 From Release Board (8 release candidates):               │
+│  ┌──────────────────┬────────┬─────────────────┬──────────┐ │
+│  │ Service          │ Version│ Source           │ Status   │ │
+│  ├──────────────────┼────────┼─────────────────┼──────────┤ │
+│  │ billing-service  │ v2.3.4 │ 📋 Board         │ ✅ Running│ │
+│  │ payment-gateway  │ v2.1.0 │ 📋 Board         │ ✅ Running│ │
+│  │ order-service    │ v1.5.3 │ 📋 Board         │ ✅ Running│ │
+│  └──────────────────┴────────┴─────────────────┴──────────┘ │
 │                                                              │
-│  [🚀 Create Full Clone (28 services)]                       │
-│  [🎯 Create Targeted (board nominated only)]                │
+│  🏭 From Production (20 prod-version services):              │
+│  auth-service v2.7.0 ✅ | user-service v3.2.0 ✅ | ...      │
 │                                                              │
-│  ℹ️ Full Clone: copies all 25+ Python + 3+ Node.js apps     │
-│  ℹ️ Targeted: deploys only changed services, routes rest    │
-│     to standing UAT via DNS                                  │
+│  [🧪 Prepare UAT Environment]  [🔄 Refresh Status]           │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Step 4: On-Demand Environments — How It Works
+## Step 4: UAT Testing Environment — How It Works
 
-### The Challenge
+### The Strategy
 
-Your app has **28+ services**. Spinning up a full copy is expensive. Here are two approaches:
+Your app has **28+ services**. The dashboard deploys **all of them** into a dedicated UAT testing namespace on GDC:
 
-### Approach 1: Targeted Deploy (Recommended for daily use)
+- **Nominated services** (from the release board) → deployed at **release candidate versions**
+- **Non-nominated services** → deployed at **production live versions**
 
-Only deploy the **services being released** (from the board). Route everything else to the standing UAT.
+This gives QA a complete environment that mirrors what production will look like **after** the release.
 
-![On-Demand Environment Diagram](images/ondemand-env-diagram.png)
+### How It Works
 
-**How it works**:
-1. Dashboard reads the release board → 4 services nominated
-2. Creates new OpenShift namespace `test-env-abc123`
-3. Deploys only those 4 services at the board versions
-4. Creates `ExternalName` services for the other 24 → routes to UAT
-5. Runs tests against `test-env-abc123`
-6. Auto-deletes after tests complete or 4h TTL
+1. QA clicks **"🧪 Prepare UAT Environment"** on the dashboard
+2. Dashboard reads the release board → identifies nominated services + versions
+3. Dashboard reads production versions via ArgoCD API (read-only)
+4. Merges: nominated services get board versions, everything else gets prod versions
+5. Triggers GitHub Actions → ArgoCD MetaApp syncs all 28+ services to `uat-testing` namespace on GDC
+6. Dashboard monitors sync progress via ArgoCD API
+7. QA team notified: "UAT environment ready"
 
-**Resources**: Only 4 pods instead of 28+
+```
+Production Cluster                         UAT Testing (uat-testing)
+┌──────────────────────────────────┐       ┌──────────────────────────────────┐
+│ billing-service    v2.3.3        │       │ billing-service    v2.3.4        │ ← board
+│ payment-gateway    v2.0.0        │       │ payment-gateway    v2.1.0        │ ← board
+│ auth-service       v2.7.0        │       │ auth-service       v2.7.0        │ ← prod
+│ user-service       v3.2.0        │       │ user-service       v3.2.0        │ ← prod
+│ order-service      v1.5.2        │       │ order-service      v1.5.3        │ ← board
+│ ... (28+ total)                  │       │ ... (all 28+ services)          │
+└──────────────────────────────────┘       └──────────────────────────────────┘
+```
 
-### Approach 2: Full Clone (For major releases)
-
-Clone the entire UAT namespace. All 28+ services deployed at 1 replica each.
-
-**How it works**:
-1. Creates new namespace
-2. Copies all secrets, configmaps, services from UAT
-3. Clones all 28+ deployments (1 replica each)
-4. Overrides image tags for nominated services
-5. Takes 3-5 minutes to fully start up
-6. Auto-deletes after 4h
-
-**Resources**: 28+ pods (but only 1 replica each)
-
-### Which to use?
-
-| Scenario | Approach |
-|---|---|
-| Weekly release, 3-5 services changed | **Targeted** (fast, efficient) |
-| Major release, 15+ services changed | **Full Clone** (complete isolation) |
-| Quick smoke test before cutoff | **Standing UAT** (no provisioning) |
+**Resources**: All 28+ services deployed at 1 replica each in the dedicated namespace.
 
 ---
 
@@ -418,23 +403,29 @@ POST /api/qa/signoff
   Response: { "signed_off": true, "at": "2026-05-21T15:00:00Z" }
 ```
 
-### On-Demand Environments
+### UAT Testing Environment
 
 ```
-POST /api/qa/env/provision
-  Body: { "mode": "targeted", "ttl_hours": 4 }
+POST /api/qa/env/prepare
+  Body: { }
   Response: {
-    "namespace": "test-env-abc123",
-    "changed_services": ["billing-service", "payment-gateway"],
-    "routed_to_uat": 26,
-    "status": "provisioning"
+    "namespace": "uat-testing",
+    "board_services": ["billing-service", "payment-gateway"],
+    "prod_services": 20,
+    "total_services": 28,
+    "status": "deploying"
   }
 
-GET /api/qa/env/list
-  Response: [{ "namespace": "test-env-abc123", "services": 4, "expires_in": "2h" }]
+GET /api/qa/env/status
+  Response: {
+    "namespace": "uat-testing",
+    "synced": 25, "total": 28,
+    "status": "syncing",
+    "progress_pct": 89
+  }
 
-DELETE /api/qa/env/<namespace>
-  Response: { "deleted": true }
+POST /api/qa/env/teardown
+  Response: { "scaled_down": 28 }
 ```
 
 ---
@@ -468,9 +459,16 @@ env:
         name: release-readiness-secrets
         key: allure-token
 
-  # ── On-Demand Environments ──
-  - name: UAT_NAMESPACE
-    value: "uat-prod"                    # Source namespace to clone from
+  # ── UAT Testing Environment (GDC) ──
+  - name: UAT_TESTING_NAMESPACE
+    value: "uat-testing"                   # Pre-provisioned dedicated UAT testing namespace on GDC
+  - name: ARGOCD_URL
+    value: "https://argocd.internal"       # ArgoCD server URL on GDC
+  - name: ARGOCD_READ_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: release-readiness-secrets
+        key: argocd-read-token
 ```
 
 ---
@@ -523,19 +521,19 @@ QA team action:
 → Decide who can sign off (any QA? QA lead only?)
 ```
 
-### Phase 4 — On-Demand Environments (Week 4-5)
+### Phase 4 — UAT Testing Environment (Week 4-5)
 
 ```
 Build:
-✅ Add POST /api/qa/env/provision endpoint (targeted mode)
-✅ Add POST /api/qa/env/provision endpoint (full clone mode)
-✅ Add GET /api/qa/env/list, DELETE /api/qa/env/<ns>
-✅ Add environment management UI to QA tab
-✅ Deploy cleanup CronJob (auto-delete expired envs)
+✅ Add POST /api/qa/env/prepare endpoint (builds manifest, triggers ArgoCD deploy on GDC)
+✅ Add GET /api/qa/env/status endpoint (monitors ArgoCD sync progress)
+✅ Add POST /api/qa/env/teardown endpoint (scales down all services)
+✅ Add UAT environment management UI to QA tab
+✅ Add ArgoCD API integration for prod version reading + sync monitoring
 
 QA team action:
-→ Provide OpenShift namespace permissions
-→ Decide on TTL (default 4 hours)
+→ Confirm ArgoCD API access (read-only token for prod, read-write for UAT testing)
+→ Confirm uat-testing namespace is provisioned on GDC
 ```
 
 ---
@@ -563,13 +561,11 @@ It triggers the pipeline **3 times sequentially**: smoke first (fast gate), then
 ### Q: What permissions does the GitHub token need?
 The existing `GITHUB_TOKEN` needs `actions:write` scope. Everything else (`repo:read`, etc.) is already configured.
 
-### Q: How does the on-demand environment deploy 28+ services?
-Two options:
-- **Targeted**: Only deploys the 3-5 changed services, routes the rest to standing UAT via DNS
-- **Full Clone**: Copies all 28+ services from UAT into a new namespace (1 replica each)
+### Q: How does the UAT testing environment work?
+The dashboard deploys **all 28+ services** into a pre-provisioned `uat-testing` namespace on GDC. Nominated services get their release candidate versions from the board; everything else gets production live versions via ArgoCD. This gives QA a complete, production-like environment with the changes being tested.
 
-### Q: What happens when a test environment expires?
-A cleanup CronJob runs every hour and deletes namespaces past their TTL (default 4 hours).
+### Q: What happens when testing is complete?
+The dashboard can scale down all deployments in the `uat-testing` namespace to 0 replicas. The namespace itself is pre-provisioned and persists — only the workloads are scaled down.
 
 ---
 
@@ -584,9 +580,9 @@ A cleanup CronJob runs every hour and deletes namespaces past their TTL (default
   - [ ] E2E minimum pass rate: ____%
   - [ ] Regression minimum pass rate: ____%
   - [ ] Smoke minimum pass rate: ____%
-- [ ] **On-demand env permissions** — can dashboard create namespaces?
-- [ ] **Environment TTL** — default 4 hours OK? ____
+- [ ] **UAT namespace** — is `uat-testing` namespace provisioned on GDC?
+- [ ] **ArgoCD access** — read-only token for prod versions, read-write for UAT testing sync
 
 ---
 
-*Last updated: 2026-05-21*
+*Last updated: 2026-06-08*
