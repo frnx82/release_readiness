@@ -72,11 +72,12 @@ james-service (10.96.x.x:587) open
 
 > [!NOTE]
 > All examples below use **port 587** (submission). Port 25 is blocked in GDC.
-> Our James deployment does **not** require STARTTLS — plain SMTP + auth on 587 works.
+> Our James deployment does **not** require STARTTLS or authentication on port 587 —
+> it accepts plain SMTP relay within the cluster.
 
 ### Quick Test (simplest — copy, paste, run)
 
-Replace `james-service`, credentials, and email addresses, then run:
+Replace `james-service` and email addresses, then run:
 
 ```bash
 kubectl exec -it <any-pod> -n YOUR_NAMESPACE -- python3 -c "
@@ -91,11 +92,7 @@ msg['To'] = 'recipient@yourdomain.com'
 try:
     s = smtplib.SMTP('james-service', 587, timeout=10)
     s.ehlo()
-    # NOTE: Skip s.starttls() — James does not support STARTTLS on this port.
-    # If your James requires TLS, uncomment the next two lines:
-    # s.starttls()
-    # s.ehlo()
-    s.login('your-username', 'your-password')
+    # No STARTTLS or AUTH needed — James accepts relay within the cluster
     s.sendmail(msg['From'], [msg['To']], msg.as_string())
     s.quit()
     print('✅ Email sent successfully!')
