@@ -74,7 +74,40 @@ james-service (10.96.x.x:587) open
 > All examples below use **port 587** with STARTTLS, which is the confirmed working
 > configuration in our GDC environment. Port 25 is blocked.
 
-### Option A: Python `smtplib` — Recommended (port 587 + STARTTLS)
+### Quick Test (simplest — copy, paste, run)
+
+Replace `james-service`, credentials, and email addresses, then run:
+
+```bash
+kubectl exec -it <any-pod> -n YOUR_NAMESPACE -- python3 -c "
+import smtplib
+from email.mime.text import MIMEText
+
+msg = MIMEText('Test email from GDC pod via port 587')
+msg['Subject'] = 'SMTP Test from K8s'
+msg['From'] = 'test@yourdomain.com'
+msg['To'] = 'recipient@yourdomain.com'
+
+try:
+    s = smtplib.SMTP('james-service', 587, timeout=10)
+    s.ehlo()
+    s.starttls()
+    s.ehlo()
+    s.login('your-username', 'your-password')
+    s.sendmail(msg['From'], [msg['To']], msg.as_string())
+    s.quit()
+    print('✅ Email sent successfully!')
+except Exception as e:
+    print(f'❌ Failed: {e}')
+"
+```
+
+> [!TIP]
+> If this works, you're done! The options below provide more detailed logging and alternative tools.
+
+---
+
+### Option A: Python `smtplib` — Detailed with diagnostics
 
 Works from any pod with Python installed. Uses port 587 with STARTTLS + authentication:
 
