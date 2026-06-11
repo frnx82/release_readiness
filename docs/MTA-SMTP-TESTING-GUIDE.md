@@ -71,8 +71,8 @@ james-service (10.96.x.x:587) open
 ## Step 2: Test Sending Email
 
 > [!NOTE]
-> All examples below use **port 587** with STARTTLS, which is the confirmed working
-> configuration in our GDC environment. Port 25 is blocked.
+> All examples below use **port 587** (submission). Port 25 is blocked in GDC.
+> Our James deployment does **not** require STARTTLS — plain SMTP + auth on 587 works.
 
 ### Quick Test (simplest — copy, paste, run)
 
@@ -91,8 +91,10 @@ msg['To'] = 'recipient@yourdomain.com'
 try:
     s = smtplib.SMTP('james-service', 587, timeout=10)
     s.ehlo()
-    s.starttls()
-    s.ehlo()
+    # NOTE: Skip s.starttls() — James does not support STARTTLS on this port.
+    # If your James requires TLS, uncomment the next two lines:
+    # s.starttls()
+    # s.ehlo()
     s.login('your-username', 'your-password')
     s.sendmail(msg['From'], [msg['To']], msg.as_string())
     s.quit()
@@ -109,7 +111,7 @@ except Exception as e:
 
 ### Option A: Python `smtplib` — Detailed with diagnostics
 
-Works from any pod with Python installed. Uses port 587 with STARTTLS + authentication:
+Works from any pod with Python installed. Uses port 587 with authentication:
 
 ```bash
 kubectl exec -it <any-pod> -n YOUR_NAMESPACE -- python3 -c "
@@ -134,8 +136,7 @@ msg['To'] = RECIPIENT
 msg.attach(MIMEText(
     'This is a test email sent from a Kubernetes pod in the GDC cluster.\n\n'
     f'Timestamp: {datetime.now().isoformat()}\n'
-    f'SMTP Host: {SMTP_HOST}:{SMTP_PORT}\n'
-    f'TLS: STARTTLS\n',
+    f'SMTP Host: {SMTP_HOST}:{SMTP_PORT}\n',
     'plain'
 ))
 
@@ -144,9 +145,11 @@ try:
     s = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
     s.ehlo()
     print(f'  EHLO OK')
-    s.starttls()
-    s.ehlo()
-    print(f'  STARTTLS OK')
+    # NOTE: STARTTLS is not supported by our James deployment.
+    # If your James requires TLS, uncomment:
+    # s.starttls()
+    # s.ehlo()
+    # print(f'  STARTTLS OK')
     s.login(AUTH_USER, AUTH_PASS)
     print(f'  AUTH OK')
     s.sendmail(SENDER, [RECIPIENT], msg.as_string())
