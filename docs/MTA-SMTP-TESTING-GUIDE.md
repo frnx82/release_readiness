@@ -8,8 +8,13 @@ deployed on Google Distributed Cloud.
 | Item | Details |
 |------|---------|
 | **MTA** | Apache James (Spring Boot) deployed and running in GDC |
-| **Protocol** | SMTP (port 25 or 587) |
+| **Protocol** | SMTP submission on **port 587** (STARTTLS + auth) |
 | **Cluster Access** | `kubectl` access to the namespace where James is deployed |
+
+> [!CAUTION]
+> **Port 25 is blocked in GDC.** Google Distributed Cloud (and most cloud environments) blocks
+> outbound port 25 to prevent spam. Use **port 587** (submission) with STARTTLS + authentication instead.
+> This has been verified in our GDC deployment.
 
 Before testing, identify your James service:
 
@@ -40,19 +45,19 @@ kubectl exec -it <any-pod> -n YOUR_NAMESPACE -- nslookup james-service
 ### Port Check
 
 ```bash
-# Check SMTP port (25)
-kubectl exec -it <any-pod> -n YOUR_NAMESPACE -- nc -zv james-service 25
-
-# Check submission port (587) — typically requires STARTTLS + auth
+# Check submission port (587) — this is the working port in GDC
 kubectl exec -it <any-pod> -n YOUR_NAMESPACE -- nc -zv james-service 587
 
 # Check IMAP port (993) — for reading mail after sending
 kubectl exec -it <any-pod> -n YOUR_NAMESPACE -- nc -zv james-service 993
+
+# Port 25 — typically BLOCKED in GDC / cloud environments
+# kubectl exec -it <any-pod> -n YOUR_NAMESPACE -- nc -zv james-service 25
 ```
 
 **Expected output:**
 ```
-james-service (10.96.x.x:25) open
+james-service (10.96.x.x:587) open
 ```
 
 > [!WARNING]
@@ -65,51 +70,13 @@ james-service (10.96.x.x:25) open
 
 ## Step 2: Test Sending Email
 
-### Option A: Raw SMTP via Netcat (no dependencies)
+> [!NOTE]
+> All examples below use **port 587** with STARTTLS, which is the confirmed working
+> configuration in our GDC environment. Port 25 is blocked.
 
-The most basic test — talks directly to the SMTP server using the SMTP protocol:
+### Option A: Python `smtplib` — Recommended (port 587 + STARTTLS)
 
-```bash
-kubectl exec -it <any-pod> -n YOUR_NAMESPACE -- /bin/sh -c '
-(
-echo "EHLO testclient"
-sleep 1
-echo "MAIL FROM:<test@yourdomain.com>"
-sleep 1
-echo "RCPT TO:<recipient@yourdomain.com>"
-sleep 1
-echo "DATA"
-sleep 1
-echo "Subject: SMTP Test from GDC Pod"
-echo "From: test@yourdomain.com"
-echo "To: recipient@yourdomain.com"
-echo "Date: $(date -R)"
-echo "Message-ID: <test-$(date +%s)@yourdomain.com>"
-echo ""
-echo "This is a test email sent directly from a Kubernetes pod"
-echo "in the GDC cluster using raw SMTP."
-echo "."
-sleep 1
-echo "QUIT"
-) | nc james-service 25
-'
-```
-
-**Expected output:**
-```
-220 james-service SMTP Server ready
-250-james-service Hello testclient
-250 OK
-250 2.1.0 Sender <test@yourdomain.com> OK
-250 2.1.5 Recipient <recipient@yourdomain.com> OK
-354 Start mail input; end with <CRLF>.<CRLF>
-250 2.6.0 Message received
-221 2.0.0 james-service closing connection
-```
-
-### Option B: Python `smtplib` (recommended)
-
-More robust and supports TLS/auth. Works from any pod with Python installed:
+Works from any pod with Python installed. Uses port 587 with STARTTLS + authentication:
 
 ```bash
 kubectl exec -it <any-pod> -n YOUR_NAMESPACE -- python3 -c "
@@ -120,12 +87,11 @@ from datetime import datetime
 
 # ── Configuration ─────────────────────────────────────────────
 SMTP_HOST = 'james-service'    # Your James ClusterIP service name
-SMTP_PORT = 25                 # 25 for relay, 587 for submission
-USE_TLS   = False              # Set True if James requires STARTTLS
-AUTH_USER  = ''                # Set if authentication is required
-AUTH_PASS  = ''                # Set if authentication is required
+SMTP_PORT = 587                # 587 = submission (port 25 is BLOCKED in GDC)
 SENDER    = 'test@yourdomain.com'
 RECIPIENT = 'recipient@yourdomain.com'
+AUTH_USER = 'your-username'    # James auth credentials
+AUTH_PASS = 'your-password'
 # ──────────────────────────────────────────────────────────────
 
 msg = MIMEMultipart()
@@ -136,7 +102,7 @@ msg.attach(MIMEText(
     'This is a test email sent from a Kubernetes pod in the GDC cluster.\n\n'
     f'Timestamp: {datetime.now().isoformat()}\n'
     f'SMTP Host: {SMTP_HOST}:{SMTP_PORT}\n'
-    f'TLS: {USE_TLS}\n',
+    f'TLS: STARTTLS\n',
     'plain'
 ))
 
@@ -145,16 +111,11 @@ try:
     s = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
     s.ehlo()
     print(f'  EHLO OK')
-
-    if USE_TLS:
-        s.starttls()
-        s.ehlo()
-        print(f'  STARTTLS OK')
-
-    if AUTH_USER:
-        s.login(AUTH_USER, AUTH_PASS)
-        print(f'  AUTH OK')
-
+    s.starttls()
+    s.ehlo()
+    print(f'  STARTTLS OK')
+    s.login(AUTH_USER, AUTH_PASS)
+    print(f'  AUTH OK')
     s.sendmail(SENDER, [RECIPIENT], msg.as_string())
     print(f'✅ Email sent successfully to {RECIPIENT}')
     s.quit()
@@ -171,24 +132,41 @@ except Exception as e:
 "
 ```
 
+### Option B: Raw SMTP via Netcat (port 587)
+
+Basic test using the SMTP protocol directly (note: STARTTLS not supported via netcat,
+so this only works if James allows plaintext on 587 — otherwise use Option A):
+
+```bash
+kubectl exec -it <any-pod> -n YOUR_NAMESPACE -- /bin/sh -c '
+(
+echo "EHLO testclient"
+sleep 1
+echo "MAIL FROM:<test@yourdomain.com>"
+sleep 1
+echo "RCPT TO:<recipient@yourdomain.com>"
+sleep 1
+echo "DATA"
+sleep 1
+echo "Subject: SMTP Test from GDC Pod"
+echo "From: test@yourdomain.com"
+echo "To: recipient@yourdomain.com"
+echo "Date: $(date -R)"
+echo ""
+echo "This is a test email sent from a GDC pod."
+echo "."
+sleep 1
+echo "QUIT"
+) | nc james-service 587
+'
+```
+
 ### Option C: `swaks` — Swiss Army Knife for SMTP
 
 Launch a temporary debug pod with `swaks` pre-installed:
 
 ```bash
-# Basic test (no auth)
-kubectl run smtp-test --rm -it --restart=Never \
-  --image=jetbrainsinfra/swaks -n YOUR_NAMESPACE -- \
-  --to recipient@yourdomain.com \
-  --from test@yourdomain.com \
-  --server james-service \
-  --port 25 \
-  --body "Test email from GDC pod via swaks" \
-  --header "Subject: Swaks SMTP Test"
-```
-
-```bash
-# With authentication (port 587 + STARTTLS)
+# Port 587 with STARTTLS + authentication (recommended for GDC)
 kubectl run smtp-test --rm -it --restart=Never \
   --image=jetbrainsinfra/swaks -n YOUR_NAMESPACE -- \
   --to recipient@yourdomain.com \
@@ -197,10 +175,10 @@ kubectl run smtp-test --rm -it --restart=Never \
   --port 587 \
   --tls \
   --auth LOGIN \
-  --auth-user "testuser" \
-  --auth-password "testpass" \
-  --body "Authenticated test email from GDC" \
-  --header "Subject: Auth SMTP Test"
+  --auth-user "your-username" \
+  --auth-password "your-password" \
+  --body "Test email from GDC pod via swaks" \
+  --header "Subject: Swaks SMTP Test"
 ```
 
 ### Option D: `curl` (SMTP URL mode)
@@ -209,9 +187,11 @@ If `curl` is available in the pod:
 
 ```bash
 kubectl exec -it <any-pod> -n YOUR_NAMESPACE -- \
-  curl --url "smtp://james-service:25" \
+  curl --url "smtp://james-service:587" \
+       --ssl-reqd \
        --mail-from "test@yourdomain.com" \
        --mail-rcpt "recipient@yourdomain.com" \
+       --user "your-username:your-password" \
        -T - <<< "Subject: Curl SMTP Test
 
 Test email sent via curl from a GDC pod."
@@ -272,22 +252,23 @@ kubectl exec -it <any-pod> -n YOUR_NAMESPACE -- \
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
-| `Connection refused` on port 25 | James SMTP not listening or Service misconfigured | Check `kubectl get svc`, verify `targetPort` matches James config |
+| `Connection refused` on port 25 | **Port 25 blocked in GDC** (spam prevention) | Use **port 587** with STARTTLS + auth instead |
+| `Connection refused` on port 587 | James SMTP not listening or Service misconfigured | Check `kubectl get svc`, verify `targetPort` matches James config |
 | `Relay access denied` | James not configured to relay for your sender domain | Add domain to James `domainlist.xml` or admin API |
 | `Recipient refused` | Mailbox doesn't exist | Create user via James admin API: `curl -X PUT http://james-admin:8000/users/user@domain` |
-| `STARTTLS required` | James requires TLS on port 587 | Use port 587 with TLS enabled, or port 25 without TLS |
+| `STARTTLS required` | James requires TLS on port 587 | Use `s.starttls()` or `--tls` flag |
 | `Authentication required` | James requires auth for submission | Provide credentials via `s.login()` or `--auth` flag |
 | Email sent but not received | Check mail queue for stuck messages | `curl http://james-admin:8000/mailQueues/spool` |
 | `NetworkPolicy` blocking | Pod-to-pod traffic blocked | Check `kubectl get networkpolicies` and add allow rules |
 
 ---
 
-## Common James SMTP Ports
+## James SMTP Ports — GDC Compatibility
 
-| Port | Service | Auth Required | TLS |
-|------|---------|--------------|-----|
-| 25 | SMTP (relay) | Usually no | Optional STARTTLS |
-| 587 | Submission | Yes | STARTTLS required |
-| 465 | SMTPS | Yes | Implicit TLS |
-| 993 | IMAPS | Yes | Implicit TLS |
-| 8000 | Admin API | Depends on config | Optional |
+| Port | Service | Auth | TLS | GDC Status |
+|------|---------|------|-----|------------|
+| 25 | SMTP (relay) | Usually no | Optional | ❌ **BLOCKED** |
+| 587 | Submission | Yes | STARTTLS | ✅ **Working** |
+| 465 | SMTPS | Yes | Implicit TLS | ⚠️ Check firewall |
+| 993 | IMAPS | Yes | Implicit TLS | ✅ Working |
+| 8000 | Admin API | Depends | Optional | ✅ Working |
