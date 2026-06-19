@@ -141,6 +141,22 @@ spec:
           value: "deploy.yml"                               # ← Default workflow file (optional, Deploy tab auto-discovers all)
 
         # ════════════════════════════════════════════════════════════
+        # QA Tab — GitOps Deployment Pipeline
+        # ════════════════════════════════════════════════════════════
+        - name: QA_DEPLOY_REPO
+          value: "your-org/app-deployments"                 # ← Repo where version.yaml is pushed (defaults to DEPLOY_REPO if not set)
+        - name: QA_NAMESPACE
+          value: "uat-testing"                              # ← Kubernetes namespace for QA environment
+        - name: QA_TEST_REPO
+          value: ""                                         # ← Repo with QA test pipelines (optional, leave empty if not ready)
+        - name: QA_TEST_SMOKE_WORKFLOW
+          value: "smoke-tests.yml"                          # ← Workflow file for smoke tests
+        - name: QA_TEST_E2E_WORKFLOW
+          value: "e2e-tests.yml"                            # ← Workflow file for E2E tests
+        - name: QA_TEST_REGRESSION_WORKFLOW
+          value: "regression-tests.yml"                     # ← Workflow file for regression tests
+
+        # ════════════════════════════════════════════════════════════
         # Kubernetes — Namespace & Board Storage
         # ════════════════════════════════════════════════════════════
         - name: POD_NAMESPACE

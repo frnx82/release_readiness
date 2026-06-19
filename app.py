@@ -51,6 +51,18 @@ DEPLOY_WORKFLOW      = os.getenv('DEPLOY_WORKFLOW', 'deploy.yml')
 BASE_URL             = os.getenv('BASE_URL', '').rstrip('/')  # external URL for OAuth
 
 # ══════════════════════════════════════════════════════════════════════════════
+# QA Tab — GitOps Deployment Configuration
+# ══════════════════════════════════════════════════════════════════════════════
+QA_DEPLOY_REPO       = os.getenv('QA_DEPLOY_REPO', '') or DEPLOY_REPO  # Repo for version.yaml push
+QA_NAMESPACE         = os.getenv('QA_NAMESPACE', 'uat-testing')
+QA_TEST_REPO         = os.getenv('QA_TEST_REPO', '')   # Repo with test pipelines
+QA_TEST_WORKFLOWS    = {
+    'smoke':      os.getenv('QA_TEST_SMOKE_WORKFLOW', 'smoke-tests.yml'),
+    'e2e':        os.getenv('QA_TEST_E2E_WORKFLOW', 'e2e-tests.yml'),
+    'regression': os.getenv('QA_TEST_REGRESSION_WORKFLOW', 'regression-tests.yml'),
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Jira Configuration
 # ══════════════════════════════════════════════════════════════════════════════
 JIRA_MCP_URL          = os.getenv('JIRA_MCP_URL', '')            # MCP server endpoint URL
@@ -5210,6 +5222,635 @@ def deploy_history():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# QA Tab — GitOps Deployment Pipeline
+# ══════════════════════════════════════════════════════════════════════════════
+
+# In-memory state for QA flow progress
+_qa_state = {
+    'status': 'idle',        # idle | preparing | e2e_pushed | error
+    'e2e_commit_url': None,
+    'version_manifest': None,
+    'error': None,
+    'nominated_count': 0,
+    'prod_count': 0,
+    'total_count': 0,
+    'prepared_at': None,
+    'prepared_by': None,
+    # Prod/preprod tracking
+    'prod_status': 'idle',   # idle | pushing | pushed | error
+    'prod_commit_url': None,
+    'preprod_commit_url': None,
+    'change_ticket': None,
+    'prod_pushed_at': None,
+    'prod_pushed_by': None,
+}
+
+
+def _fetch_prod_services_internal():
+    """Fetch production service list (reuses the prod cluster logic).
+    Returns a list of dicts: [{name, image, image_tag, kind, ...}]
+    """
+    prod_ns = os.environ.get('PROD_NAMESPACE', NAMESPACE)
+
+    if DEPLOY_ENV == 'prod':
+        # We ARE in prod — read local cluster
+        try:
+            return _list_services_from_api(client.ApiClient(), prod_ns, '[qa-prod-local]')
+        except Exception as e:
+            print(f'[qa] Error reading local prod: {e}')
+            return []
+    else:
+        # We're in UAT — connect remotely to prod
+        try:
+            api_client, error = _get_prod_api_client()
+            if error:
+                print(f'[qa] Prod client error: {error}')
+                return []
+            return _list_services_from_api(api_client, prod_ns, '[qa-prod-remote]')
+        except Exception as e:
+            print(f'[qa] Error connecting to prod: {e}')
+            return []
+
+
+def _build_version_manifest(board, change_ticket=None):
+    """Build a version manifest dict from board nominations + prod services.
+    Returns (manifest_dict, nominated_count, prod_count).
+    """
+    # Get nominated services from board
+    nominated = {}
+    for svc_name, svc_data in board.get('services', {}).items():
+        nominated[svc_name] = {
+            'image': svc_data.get('image', ''),
+            'image_tag': svc_data.get('image_tag', svc_data.get('version', '')),
+            'kind': svc_data.get('kind', 'Deployment'),
+            'source': 'board',
+            'nominated_by': svc_data.get('nominated_by', ''),
+        }
+
+    # Get prod services
+    prod_services = _fetch_prod_services_internal()
+
+    # Merge: board nominations + non-nominated prod versions
+    version_manifest = {}
+    if change_ticket:
+        version_manifest['change_ticket'] = change_ticket
+    version_manifest['release_date'] = board.get('release_date', '')
+    version_manifest['qa_namespace'] = QA_NAMESPACE
+    version_manifest['generated_at'] = datetime.datetime.utcnow().isoformat()
+    version_manifest['services'] = {}
+
+    for svc in prod_services:
+        svc_name = svc['name']
+        if svc_name in nominated:
+            version_manifest['services'][svc_name] = nominated[svc_name]
+        else:
+            version_manifest['services'][svc_name] = {
+                'image': svc.get('image', ''),
+                'image_tag': svc.get('image_tag', ''),
+                'kind': svc.get('kind', 'Deployment'),
+                'source': 'production',
+            }
+
+    # Also add any board nominations not found in prod (new services)
+    for svc_name, svc_data in nominated.items():
+        if svc_name not in version_manifest['services']:
+            version_manifest['services'][svc_name] = svc_data
+
+    prod_count = len(version_manifest['services']) - len(nominated)
+    return version_manifest, len(nominated), max(prod_count, 0)
+
+
+def _push_version_yaml(version_yaml_content, branch, commit_message):
+    """Push version.yaml to a specific branch in QA_DEPLOY_REPO.
+
+    Creates the branch from default branch if it doesn't exist.
+    Returns dict with commit_url, or error.
+    """
+    if not QA_DEPLOY_REPO:
+        return {'error': 'QA_DEPLOY_REPO not configured'}
+
+    try:
+        owner, repo = QA_DEPLOY_REPO.split('/', 1)
+    except ValueError:
+        return {'error': f'Invalid QA_DEPLOY_REPO format: "{QA_DEPLOY_REPO}"'}
+
+    file_path = 'version.yaml'
+
+    try:
+        # 1. Get default branch SHA
+        repo_info = _github_get(f'/repos/{owner}/{repo}')
+        default_branch = repo_info.get('default_branch', 'main')
+        main_ref = _github_get(f'/repos/{owner}/{repo}/git/ref/heads/{default_branch}')
+        main_sha = main_ref['object']['sha']
+
+        # 2. Create or update branch
+        try:
+            _github_get(f'/repos/{owner}/{repo}/git/ref/heads/{branch}')
+            # Branch exists — keep it (don't force-reset for prod/preprod)
+            print(f'[qa] Branch {branch} exists')
+        except Exception:
+            # Branch doesn't exist — create it
+            _github_post(f'/repos/{owner}/{repo}/git/refs', {
+                'ref': f'refs/heads/{branch}',
+                'sha': main_sha
+            })
+            print(f'[qa] Created {branch} branch from {default_branch} ({main_sha[:8]})')
+
+        # 3. Create/update version.yaml on the branch
+        existing_sha = None
+        try:
+            existing = _github_get(
+                f'/repos/{owner}/{repo}/contents/{file_path}?ref={branch}'
+            )
+            existing_sha = existing.get('sha')
+        except Exception:
+            pass
+
+        payload = {
+            'message': commit_message,
+            'content': base64.b64encode(version_yaml_content.encode()).decode(),
+            'branch': branch
+        }
+        if existing_sha:
+            payload['sha'] = existing_sha
+
+        put_resp = gh_http.put(
+            f'{GITHUB_API}/repos/{owner}/{repo}/contents/{file_path}',
+            headers=_github_headers(), json=payload, timeout=15
+        )
+        if put_resp.status_code not in (200, 201):
+            return {'error': f'Failed to push version.yaml: {put_resp.status_code} {put_resp.text[:200]}'}
+
+        commit_data = put_resp.json()
+        commit_url = (commit_data.get('commit') or {}).get('html_url', '')
+        print(f'[qa] Pushed version.yaml to {branch} branch')
+
+        return {'commit_url': commit_url, 'branch': branch}
+
+    except Exception as e:
+        print(f'[qa] Push error ({branch}): {e}')
+        return {'error': str(e)}
+
+
+def _fetch_version_yaml_from_branch(branch):
+    """Fetch and parse version.yaml from a branch in QA_DEPLOY_REPO.
+    Returns parsed dict or None.
+    """
+    if not QA_DEPLOY_REPO:
+        return None
+    try:
+        owner, repo = QA_DEPLOY_REPO.split('/', 1)
+        data = _github_get(f'/repos/{owner}/{repo}/contents/version.yaml?ref={branch}')
+        content = base64.b64decode(data.get('content', '')).decode('utf-8')
+        return yaml.safe_load(content)
+    except Exception as e:
+        print(f'[qa] Could not fetch version.yaml from {branch}: {e}')
+        return None
+
+
+# ── QA API Endpoints ──────────────────────────────────────────────────────────
+
+@app.route('/api/qa/prepare', methods=['POST'])
+def qa_prepare():
+    """Step 1: Generate version.yaml and push to e2e branch."""
+    global _qa_state
+
+    if not is_gh_authenticated():
+        return jsonify({'error': 'GitHub login required'}), 401
+    if not QA_DEPLOY_REPO:
+        return jsonify({'error': 'QA_DEPLOY_REPO not configured. Set QA_DEPLOY_REPO or DEPLOY_REPO environment variable.'}), 500
+
+    # Check board is locked
+    board = _read_board()
+    if not board:
+        return jsonify({'error': 'No release board found'}), 404
+
+    is_past_cutoff = datetime.datetime.utcnow().isoformat() > (board.get('cutoff') or '')
+    board_is_locked = board.get('status') == 'locked' or is_past_cutoff
+
+    if not board_is_locked:
+        return jsonify({
+            'error': 'Board must be locked before QA preparation. Lock the board or wait for cutoff.',
+            'board_status': board.get('status'),
+            'cutoff': board.get('cutoff')
+        }), 400
+
+    _qa_state['status'] = 'preparing'
+    _qa_state['error'] = None
+
+    try:
+        # Build version manifest
+        version_manifest, nom_count, prod_count = _build_version_manifest(board)
+
+        # Push to e2e branch
+        version_yaml = yaml.dump(version_manifest, default_flow_style=False, sort_keys=False)
+        release_date = board.get('release_date', '')
+        push_result = _push_version_yaml(
+            version_yaml,
+            branch='e2e',
+            commit_message=f'chore: update version.yaml for QA release {release_date}'
+        )
+
+        if 'error' in push_result:
+            _qa_state['status'] = 'error'
+            _qa_state['error'] = push_result['error']
+            return jsonify({'error': push_result['error']}), 500
+
+        gh_user = session.get('github_user', {}).get('login', 'unknown')
+        now = datetime.datetime.utcnow().isoformat()
+
+        # Update state
+        _qa_state.update({
+            'status': 'e2e_pushed',
+            'e2e_commit_url': push_result.get('commit_url'),
+            'version_manifest': version_manifest,
+            'nominated_count': nom_count,
+            'prod_count': prod_count,
+            'total_count': len(version_manifest.get('services', {})),
+            'prepared_at': now,
+            'prepared_by': gh_user,
+            'error': None,
+        })
+
+        # Audit trail
+        board['audit_trail'].append({
+            'action': 'qa_e2e_prepared',
+            'branch': 'e2e',
+            'services_count': len(version_manifest.get('services', {})),
+            'nominated': nom_count,
+            'from_prod': prod_count,
+            'commit_url': push_result.get('commit_url'),
+            'by': gh_user,
+            'at': now
+        })
+        _write_board(board)
+
+        return jsonify({
+            'status': 'e2e_pushed',
+            'commit_url': push_result.get('commit_url'),
+            'branch': 'e2e',
+            'services': version_manifest['services'],
+            'nominated_count': nom_count,
+            'prod_count': prod_count,
+            'total': len(version_manifest.get('services', {}))
+        })
+
+    except Exception as e:
+        _qa_state['status'] = 'error'
+        _qa_state['error'] = str(e)
+        print(f'[qa] Prepare error: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/qa/prepare/status')
+def qa_prepare_status():
+    """Get the current QA preparation status."""
+    return jsonify({
+        'status': _qa_state.get('status', 'idle'),
+        'e2e_commit_url': _qa_state.get('e2e_commit_url'),
+        'nominated_count': _qa_state.get('nominated_count', 0),
+        'prod_count': _qa_state.get('prod_count', 0),
+        'total_count': _qa_state.get('total_count', 0),
+        'prepared_at': _qa_state.get('prepared_at'),
+        'prepared_by': _qa_state.get('prepared_by'),
+        'error': _qa_state.get('error'),
+        # Prod/preprod status
+        'prod_status': _qa_state.get('prod_status', 'idle'),
+        'prod_commit_url': _qa_state.get('prod_commit_url'),
+        'preprod_commit_url': _qa_state.get('preprod_commit_url'),
+        'change_ticket': _qa_state.get('change_ticket'),
+        'prod_pushed_at': _qa_state.get('prod_pushed_at'),
+    })
+
+
+@app.route('/api/qa/drift-check', methods=['POST'])
+def qa_drift_check():
+    """Step 4: Compare current board+prod versions against the e2e version.yaml already pushed."""
+    if not is_gh_authenticated():
+        return jsonify({'error': 'GitHub login required'}), 401
+
+    board = _read_board()
+    if not board:
+        return jsonify({'error': 'No release board found'}), 404
+
+    try:
+        # Build current version manifest from live board + prod
+        current_manifest, nom_count, prod_count = _build_version_manifest(board)
+
+        # Fetch the existing e2e version.yaml from GitHub
+        e2e_manifest = _fetch_version_yaml_from_branch('e2e')
+        if not e2e_manifest:
+            return jsonify({
+                'error': 'Could not fetch version.yaml from e2e branch. Run "Prepare E2E" first.',
+                'drifts': [],
+                'status': 'no_e2e'
+            }), 404
+
+        # Compare service-by-service
+        drifts = []
+        e2e_services = e2e_manifest.get('services', {})
+        current_services = current_manifest.get('services', {})
+
+        all_services = set(list(e2e_services.keys()) + list(current_services.keys()))
+        for svc_name in sorted(all_services):
+            e2e_svc = e2e_services.get(svc_name)
+            cur_svc = current_services.get(svc_name)
+
+            if not e2e_svc and cur_svc:
+                drifts.append({
+                    'service': svc_name,
+                    'drift_type': 'new',
+                    'message': f'New service — not in e2e branch',
+                    'current_tag': cur_svc.get('image_tag', ''),
+                    'e2e_tag': None,
+                    'source': cur_svc.get('source', 'unknown'),
+                })
+            elif e2e_svc and not cur_svc:
+                drifts.append({
+                    'service': svc_name,
+                    'drift_type': 'removed',
+                    'message': f'Removed — was in e2e but no longer present',
+                    'current_tag': None,
+                    'e2e_tag': e2e_svc.get('image_tag', ''),
+                    'source': e2e_svc.get('source', 'unknown'),
+                })
+            elif e2e_svc and cur_svc:
+                e2e_tag = e2e_svc.get('image_tag', '')
+                cur_tag = cur_svc.get('image_tag', '')
+                if e2e_tag != cur_tag:
+                    drifts.append({
+                        'service': svc_name,
+                        'drift_type': 'version_changed',
+                        'message': f'Version drift: {e2e_tag} → {cur_tag}',
+                        'current_tag': cur_tag,
+                        'e2e_tag': e2e_tag,
+                        'source': cur_svc.get('source', 'unknown'),
+                    })
+
+        has_drift = len(drifts) > 0
+
+        # Audit trail
+        board['audit_trail'].append({
+            'action': 'qa_drift_check',
+            'drift_count': len(drifts),
+            'total_services': len(all_services),
+            'by': session.get('github_user', {}).get('login', 'unknown'),
+            'at': datetime.datetime.utcnow().isoformat()
+        })
+        _write_board(board)
+
+        return jsonify({
+            'status': 'drift' if has_drift else 'match',
+            'drifts': drifts,
+            'drift_count': len(drifts),
+            'total_services': len(all_services),
+            'e2e_generated_at': e2e_manifest.get('generated_at', ''),
+        })
+
+    except Exception as e:
+        print(f'[qa] Drift check error: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/qa/prepare-prod', methods=['POST'])
+def qa_prepare_prod():
+    """Step 5: Generate version.yaml with change_ticket and push to prod + preprod branches."""
+    global _qa_state
+
+    if not is_gh_authenticated():
+        return jsonify({'error': 'GitHub login required'}), 401
+    if not QA_DEPLOY_REPO:
+        return jsonify({'error': 'QA_DEPLOY_REPO not configured'}), 500
+
+    data = request.json or {}
+    change_ticket = (data.get('change_ticket') or '').strip()
+    if not change_ticket:
+        return jsonify({'error': 'Change ticket is required for production deployment'}), 400
+
+    board = _read_board()
+    if not board:
+        return jsonify({'error': 'No release board found'}), 404
+
+    _qa_state['prod_status'] = 'pushing'
+    _qa_state['change_ticket'] = change_ticket
+
+    try:
+        # Build version manifest with ONLY nominated services (not prod versions)
+        # Production deployment should only contain services being released
+        nominated_services = {}
+        for svc_name, svc_data in board.get('services', {}).items():
+            nominated_services[svc_name] = {
+                'image': svc_data.get('image', ''),
+                'image_tag': svc_data.get('image_tag', svc_data.get('version', '')),
+                'kind': svc_data.get('kind', 'Deployment'),
+                'source': 'board',
+                'nominated_by': svc_data.get('nominated_by', ''),
+            }
+
+        if not nominated_services:
+            _qa_state['prod_status'] = 'error'
+            _qa_state['error'] = 'No nominated services on the board'
+            return jsonify({'error': 'No nominated services found on the release board'}), 400
+
+        # Build the version manifest (nominated only + change ticket)
+        version_manifest = {}
+        version_manifest['change_ticket'] = change_ticket
+        version_manifest['release_date'] = board.get('release_date', '')
+        version_manifest['generated_at'] = datetime.datetime.utcnow().isoformat()
+        version_manifest['generated_by'] = session.get('github_user', {}).get('login', 'unknown')
+        version_manifest['services'] = nominated_services
+
+        version_yaml = yaml.dump(version_manifest, default_flow_style=False, sort_keys=False)
+        release_date = board.get('release_date', '')
+        gh_user = session.get('github_user', {}).get('login', 'unknown')
+        now = datetime.datetime.utcnow().isoformat()
+        commit_msg = f'chore: update version.yaml for release {release_date} [{change_ticket}]'
+
+        # Push to prod branch
+        prod_result = _push_version_yaml(version_yaml, branch='prod', commit_message=commit_msg)
+        if 'error' in prod_result:
+            _qa_state['prod_status'] = 'error'
+            _qa_state['error'] = f'prod: {prod_result["error"]}'
+            return jsonify({'error': f'Failed to push to prod: {prod_result["error"]}'}), 500
+
+        # Push to preprod branch
+        preprod_result = _push_version_yaml(version_yaml, branch='preprod', commit_message=commit_msg)
+        if 'error' in preprod_result:
+            _qa_state['prod_status'] = 'error'
+            _qa_state['error'] = f'preprod: {preprod_result["error"]}'
+            return jsonify({
+                'error': f'Pushed to prod but failed preprod: {preprod_result["error"]}',
+                'prod_commit_url': prod_result.get('commit_url'),
+            }), 500
+
+        # Update state
+        _qa_state.update({
+            'prod_status': 'pushed',
+            'prod_commit_url': prod_result.get('commit_url'),
+            'preprod_commit_url': preprod_result.get('commit_url'),
+            'prod_pushed_at': now,
+            'prod_pushed_by': gh_user,
+            'error': None,
+        })
+
+        # Audit trail
+        board['audit_trail'].append({
+            'action': 'qa_prod_prepared',
+            'change_ticket': change_ticket,
+            'branches': ['prod', 'preprod'],
+            'services_count': len(nominated_services),
+            'nominated_only': True,
+            'prod_commit_url': prod_result.get('commit_url'),
+            'preprod_commit_url': preprod_result.get('commit_url'),
+            'by': gh_user,
+            'at': now
+        })
+        _write_board(board)
+
+        return jsonify({
+            'status': 'pushed',
+            'change_ticket': change_ticket,
+            'prod_commit_url': prod_result.get('commit_url'),
+            'preprod_commit_url': preprod_result.get('commit_url'),
+            'services': nominated_services,
+            'total': len(nominated_services)
+        })
+
+    except Exception as e:
+        _qa_state['prod_status'] = 'error'
+        _qa_state['error'] = str(e)
+        print(f'[qa] Prepare-prod error: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/qa/env/services')
+def qa_env_services():
+    """List services currently running in the QA namespace."""
+    qa_ns = request.args.get('namespace', QA_NAMESPACE)
+
+    try:
+        # Use local cluster K8s API — QA namespace is on the same cluster
+        services = _list_services_from_api(
+            client.ApiClient(configuration=client.Configuration()),
+            qa_ns,
+            '[qa-env]'
+        )
+        return jsonify({
+            'services': services,
+            'namespace': qa_ns,
+            'count': len(services),
+        })
+    except Exception as e:
+        print(f'[qa] Error listing QA env services: {e}')
+        return jsonify({
+            'services': [],
+            'namespace': qa_ns,
+            'count': 0,
+            'error': str(e)
+        })
+
+
+@app.route('/api/qa/test/trigger', methods=['POST'])
+def qa_test_trigger():
+    """Trigger a QA test pipeline (placeholder — pipelines not ready yet)."""
+    data = request.json or {}
+    test_type = data.get('test_type', 'smoke')  # smoke | e2e | regression
+
+    # If not authenticated or not configured, return a mock/simulated response
+    if not is_gh_authenticated() or not QA_TEST_REPO:
+        reason = 'GitHub login required' if not is_gh_authenticated() else 'QA_TEST_REPO not configured'
+        # Return a simulated success so the UI flow can be demonstrated
+        board = _read_board()
+        if board:
+            board['audit_trail'].append({
+                'action': 'qa_test_triggered',
+                'test_type': test_type,
+                'namespace': QA_NAMESPACE,
+                'simulated': True,
+                'reason': reason,
+                'by': 'local-user',
+                'at': datetime.datetime.utcnow().isoformat()
+            })
+            _write_board(board)
+        return jsonify({
+            'status': 'simulated',
+            'test_type': test_type,
+            'message': f'{test_type.upper()} test triggered (simulated — {reason})',
+            'html_url': None,
+            'run_id': None,
+        })
+
+    try:
+        owner, repo = QA_TEST_REPO.split('/', 1)
+    except ValueError:
+        return jsonify({'error': f'Invalid QA_TEST_REPO: "{QA_TEST_REPO}"'}), 500
+
+    gh_user = session.get('github_user', {}).get('login', 'unknown')
+
+    # Resolve the workflow file for this test type
+    workflow_file = QA_TEST_WORKFLOWS.get(test_type)
+    if not workflow_file:
+        return jsonify({'error': f'Unknown test type: {test_type}. Valid: smoke, e2e, regression'}), 400
+
+    try:
+        response = _github_post(
+            f'/repos/{owner}/{repo}/actions/workflows/{workflow_file}/dispatches',
+            {
+                'ref': 'main',
+                'inputs': {
+                    'test_type': test_type,
+                    'environment': QA_NAMESPACE,
+                }
+            }
+        )
+
+        if response.status_code == 204:
+            # Wait briefly and fetch run
+            time.sleep(2)
+            run_info = {'run_id': None, 'html_url': None}
+            try:
+                runs_data = _github_get(
+                    f'/repos/{owner}/{repo}/actions/workflows/{workflow_file}/runs',
+                    {'per_page': 1, 'event': 'workflow_dispatch'}
+                )
+                if runs_data.get('workflow_runs'):
+                    latest = runs_data['workflow_runs'][0]
+                    run_info = {
+                        'run_id': latest['id'],
+                        'html_url': latest.get('html_url', ''),
+                    }
+            except Exception as e:
+                print(f'[qa-test] Could not fetch run ID: {e}')
+
+            # Audit trail
+            board = _read_board()
+            if board:
+                board['audit_trail'].append({
+                    'action': 'qa_test_triggered',
+                    'test_type': test_type,
+                    'namespace': QA_NAMESPACE,
+                    'run_id': run_info.get('run_id'),
+                    'by': gh_user,
+                    'at': datetime.datetime.utcnow().isoformat()
+                })
+                _write_board(board)
+
+            return jsonify({
+                'status': 'triggered',
+                'test_type': test_type,
+                'run_id': run_info.get('run_id'),
+                'html_url': run_info.get('html_url'),
+            })
+        else:
+            return jsonify({
+                'error': f'GitHub returned {response.status_code}: {response.text[:200]}'
+            }), response.status_code
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # AI Release Chatbot — Gemini Function Calling
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -5656,6 +6297,9 @@ if __name__ == '__main__':
         'UAT_CLUSTER_TOKEN': os.environ.get('UAT_CLUSTER_TOKEN', ''),
         'UAT_NAMESPACE': os.environ.get('UAT_NAMESPACE', ''),
         'UAT_CLUSTER_VERIFY_SSL': os.environ.get('UAT_CLUSTER_VERIFY_SSL', 'true'),
+        'QA_DEPLOY_REPO': QA_DEPLOY_REPO,
+        'QA_NAMESPACE': QA_NAMESPACE,
+        'QA_TEST_REPO': QA_TEST_REPO,
         'JIRA_MCP_URL': os.environ.get('JIRA_MCP_URL', ''),
         'JIRA_PAT_TOKEN': os.environ.get('JIRA_PAT_TOKEN', ''),
         'JIRA_BASE_URL': os.environ.get('JIRA_BASE_URL', ''),

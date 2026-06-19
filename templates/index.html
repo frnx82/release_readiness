@@ -738,6 +738,7 @@
                 <div class="tab" onclick="switchTab('prod')">🏭 Prod Env</div>
                 <div class="tab" onclick="switchTab('history')">📚 History</div>
                 <div class="tab" onclick="switchTab('deploy')">🚀 Deploy</div>
+                <div class="tab" onclick="switchTab('qa')">🧪 QA</div>
                 <div class="tab" onclick="switchTab('confluence')">📖 Confluence Agent</div>
                 <div class="tab" onclick="switchTab('chat')">💬 Chat</div>
                 <div class="tab" onclick="switchTab('help')">❓ Help</div>
@@ -941,6 +942,226 @@
                         <div id="deploy-tab-steps"></div>
                     </div>
                 </div>
+            </div>
+
+            <!-- 🧪 QA Tab -->
+            <div class="tab-content" id="tab-qa">
+                <!-- Board Lock Gate -->
+                <div id="qa-lock-gate" style="display:none;padding:24px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:var(--radius);margin-bottom:16px;text-align:center">
+                    <div style="font-size:36px;margin-bottom:8px">🔒</div>
+                    <h3 style="font-size:16px;margin-bottom:6px;color:#f59e0b">Board Must Be Locked</h3>
+                    <p style="font-size:13px;color:var(--text2);line-height:1.6">The release board must be locked before preparing the QA environment.<br>Lock the board on the <strong>📦 Export</strong> tab or wait for the cutoff time.</p>
+                </div>
+
+                <!-- QA Content (visible only when board is locked) -->
+                <div id="qa-content" style="display:none">
+
+                    <!-- Quality Gate Banner -->
+                    <div id="qa-quality-gate" style="padding:16px 20px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;display:flex;align-items:center;gap:14px">
+                        <div style="font-size:28px">🚦</div>
+                        <div style="flex:1">
+                            <div style="font-weight:700;font-size:14px;color:var(--text)">Quality Gate</div>
+                            <div style="font-size:12px;color:var(--text2);margin-top:2px">Prepare E2E → Test → Check Drift → Push to Prod/PreProd</div>
+                        </div>
+                        <span style="font-size:11px;padding:4px 12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text2);font-weight:600">⏳ Pending</span>
+                    </div>
+
+                    <!-- Step 1: Prepare E2E Environment -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                            <div>
+                                <h3 style="font-size:15px;margin:0;display:flex;align-items:center;gap:8px">
+                                    <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">1</span>
+                                    Prepare E2E Environment
+                                </h3>
+                                <p style="font-size:12px;color:var(--text2);margin:4px 0 0 32px">Generate <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">version.yaml</code> and push to <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">e2e</code> branch — ArgoCD auto-deploys</p>
+                            </div>
+                            <div style="display:flex;gap:8px">
+                                <button id="qa-prepare-btn" class="btn btn-primary" onclick="qaPrepareEnvironment()" style="font-size:13px">
+                                    🧪 Prepare E2E Environment
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Push Status -->
+                        <div id="qa-push-status" style="display:none;padding:12px 16px;background:var(--bg);border-radius:10px;border:1px solid var(--border);margin-bottom:14px">
+                            <div style="display:flex;align-items:center;gap:8px">
+                                <span id="qa-push-icon">✅</span>
+                                <strong style="font-size:13px" id="qa-push-text">Pushed to e2e branch</strong>
+                                <a id="qa-push-link" href="#" target="_blank" style="font-size:12px;color:var(--accent);text-decoration:none;margin-left:auto">View Commit ↗</a>
+                            </div>
+                        </div>
+
+                        <!-- Version Preview Table -->
+                        <div id="qa-version-preview" style="display:none">
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                                <span style="font-size:12px;font-weight:600;color:var(--text2)">Version Manifest Preview</span>
+                                <div style="display:flex;gap:12px;font-size:11px;color:var(--text2)">
+                                    <span>📋 Board: <strong id="qa-count-nominated" style="color:var(--accent2)">0</strong></span>
+                                    <span>🏭 Prod: <strong id="qa-count-prod" style="color:var(--text)">0</strong></span>
+                                    <span>Total: <strong id="qa-count-total" style="color:var(--text)">0</strong></span>
+                                </div>
+                            </div>
+                            <div style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
+                                <table class="list-view-table" style="font-size:12px;margin:0;width:100%">
+                                    <thead>
+                                        <tr>
+                                            <th style="padding-left:12px">Service</th>
+                                            <th>Image Tag</th>
+                                            <th>Source</th>
+                                            <th>Kind</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="qa-version-tbody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 2: QA Namespace Status -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                            <div>
+                                <h3 style="font-size:15px;margin:0;display:flex;align-items:center;gap:8px">
+                                    <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">2</span>
+                                    QA Namespace Status
+                                </h3>
+                                <p style="font-size:12px;color:var(--text2);margin:4px 0 0 32px">Live services running in the QA namespace</p>
+                            </div>
+                            <button class="btn btn-sm" onclick="qaLoadEnvServices()">🔄 Refresh</button>
+                        </div>
+                        <div id="qa-env-services">
+                            <div class="empty-state" style="padding:30px"><p>Click Refresh to load QA namespace services</p></div>
+                        </div>
+                    </div>
+
+                    <!-- Step 3: Test Pipelines -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                            <div>
+                                <h3 style="font-size:15px;margin:0;display:flex;align-items:center;gap:8px">
+                                    <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">3</span>
+                                    Test Pipelines
+                                </h3>
+                                <p style="font-size:12px;color:var(--text2);margin:4px 0 0 32px">Trigger test suites against the QA environment</p>
+                            </div>
+                        </div>
+                        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+                            <button class="btn" onclick="qaRunTest('smoke')" id="qa-test-smoke-btn" style="font-size:12px">▶ Smoke Tests</button>
+                            <button class="btn" onclick="qaRunTest('e2e')" id="qa-test-e2e-btn" style="font-size:12px">▶ E2E Tests</button>
+                            <button class="btn" onclick="qaRunTest('regression')" id="qa-test-regression-btn" style="font-size:12px">▶ Regression Tests</button>
+                            <button class="btn btn-primary" onclick="qaRunAllTests()" id="qa-test-all-btn" style="font-size:12px">▶▶ Run All Tests</button>
+                        </div>
+                        <div id="qa-test-status" style="display:none;padding:12px 16px;background:var(--bg);border-radius:10px;border:1px solid var(--border)">
+                            <div style="display:flex;align-items:center;gap:8px">
+                                <span id="qa-test-icon">⏳</span>
+                                <strong style="font-size:13px" id="qa-test-text">Running tests...</strong>
+                                <a id="qa-test-link" href="#" target="_blank" style="font-size:12px;color:var(--accent);text-decoration:none;margin-left:auto;display:none">View on GitHub ↗</a>
+                            </div>
+                        </div>
+                        <div id="qa-test-results" style="display:none;margin-top:12px">
+                            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+                                <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center">
+                                    <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px">🧪 Smoke</div>
+                                    <div id="qa-result-smoke" style="font-size:24px;font-weight:700;color:var(--text2)">—</div>
+                                    <div style="font-size:10px;color:var(--text2);margin-top:4px">Not run yet</div>
+                                </div>
+                                <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center">
+                                    <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px">🧪 E2E</div>
+                                    <div id="qa-result-e2e" style="font-size:24px;font-weight:700;color:var(--text2)">—</div>
+                                    <div style="font-size:10px;color:var(--text2);margin-top:4px">Not run yet</div>
+                                </div>
+                                <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center">
+                                    <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px">🧪 Regression</div>
+                                    <div id="qa-result-regression" style="font-size:24px;font-weight:700;color:var(--text2)">—</div>
+                                    <div style="font-size:10px;color:var(--text2);margin-top:4px">Not run yet</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 4: Version Drift Check -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                            <div>
+                                <h3 style="font-size:15px;margin:0;display:flex;align-items:center;gap:8px">
+                                    <span style="background:#f59e0b;color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">4</span>
+                                    Version Drift Check
+                                </h3>
+                                <p style="font-size:12px;color:var(--text2);margin:4px 0 0 32px">Compare current board + prod versions against E2E <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">version.yaml</code></p>
+                            </div>
+                            <button id="qa-drift-btn" class="btn" onclick="qaDriftCheck()" style="font-size:13px">
+                                🔍 Check Drift
+                            </button>
+                        </div>
+                        <!-- Drift Results -->
+                        <div id="qa-drift-results" style="display:none">
+                            <div id="qa-drift-summary" style="padding:12px 16px;background:var(--bg);border-radius:10px;border:1px solid var(--border);margin-bottom:10px">
+                                <div style="display:flex;align-items:center;gap:8px">
+                                    <span id="qa-drift-icon">✅</span>
+                                    <strong style="font-size:13px" id="qa-drift-text">No drift detected</strong>
+                                    <span id="qa-drift-count" style="font-size:11px;color:var(--text2);margin-left:auto"></span>
+                                </div>
+                            </div>
+                            <div id="qa-drift-table-wrap" style="display:none;max-height:250px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
+                                <table class="list-view-table" style="font-size:12px;margin:0;width:100%">
+                                    <thead>
+                                        <tr>
+                                            <th style="padding-left:12px">Service</th>
+                                            <th>E2E Tag</th>
+                                            <th>Current Tag</th>
+                                            <th>Drift Type</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="qa-drift-tbody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 5: Prepare Prod/PreProd -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px">
+                        <div style="margin-bottom:14px">
+                            <h3 style="font-size:15px;margin:0;display:flex;align-items:center;gap:8px">
+                                <span style="background:#10b981;color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">5</span>
+                                Prepare Prod / PreProd
+                            </h3>
+                            <p style="font-size:12px;color:var(--text2);margin:4px 0 0 32px">Generate final <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">version.yaml</code> with change ticket and push to <code style="background:rgba(16,185,129,.15);padding:1px 5px;border-radius:4px;font-size:11px;color:#10b981">prod</code> + <code style="background:rgba(16,185,129,.15);padding:1px 5px;border-radius:4px;font-size:11px;color:#10b981">preprod</code> branches</p>
+                        </div>
+
+                        <!-- Change Ticket Input -->
+                        <div style="display:flex;gap:12px;align-items:flex-end;margin-bottom:14px;flex-wrap:wrap">
+                            <div style="flex:1;min-width:200px">
+                                <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Change Ticket <span style="color:#ef4444">*</span></label>
+                                <input type="text" id="qa-change-ticket" placeholder="e.g. CHG0012345" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:13px;outline:none;box-sizing:border-box" />
+                            </div>
+                            <button id="qa-prod-btn" class="btn" onclick="qaPrepareProduction()" style="font-size:13px;background:#10b981;border-color:#10b981;color:#fff;white-space:nowrap">
+                                🏭 Prepare & Push to Prod/PreProd
+                            </button>
+                        </div>
+
+                        <!-- Prod Push Status -->
+                        <div id="qa-prod-status" style="display:none">
+                            <div style="display:flex;gap:10px;flex-wrap:wrap">
+                                <div id="qa-prod-push-card" style="flex:1;min-width:200px;padding:12px 16px;background:var(--bg);border-radius:10px;border:1px solid var(--border)">
+                                    <div style="display:flex;align-items:center;gap:8px">
+                                        <span id="qa-prod-push-icon">⏳</span>
+                                        <strong style="font-size:12px">prod</strong>
+                                        <a id="qa-prod-commit-link" href="#" target="_blank" style="font-size:11px;color:var(--accent);text-decoration:none;margin-left:auto;display:none">View ↗</a>
+                                    </div>
+                                </div>
+                                <div id="qa-preprod-push-card" style="flex:1;min-width:200px;padding:12px 16px;background:var(--bg);border-radius:10px;border:1px solid var(--border)">
+                                    <div style="display:flex;align-items:center;gap:8px">
+                                        <span id="qa-preprod-push-icon">⏳</span>
+                                        <strong style="font-size:12px">preprod</strong>
+                                        <a id="qa-preprod-commit-link" href="#" target="_blank" style="font-size:11px;color:var(--accent);text-decoration:none;margin-left:auto;display:none">View ↗</a>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div><!-- /qa-content -->
             </div>
 
             <!-- Confluence Agent Tab -->
@@ -2385,7 +2606,7 @@
             document.getElementById('modal-overlay').classList.add('active');
         }
         function switchTab(name) {
-            const tabs = ['board', 'drift', 'readiness', 'audit', 'export', 'uat', 'prod', 'history', 'deploy', 'confluence', 'chat', 'help'];
+            const tabs = ['board', 'drift', 'readiness', 'audit', 'export', 'uat', 'prod', 'history', 'deploy', 'qa', 'confluence', 'chat', 'help'];
             document.querySelectorAll('.tab').forEach((t, i) => {
                 t.classList.toggle('active', tabs[i] === name);
             });
@@ -2396,6 +2617,7 @@
             if (name === 'prod') loadProdServices();
             if (name === 'history') loadReleaseHistory();
             if (name === 'deploy') loadDeployWorkflows();
+            if (name === 'qa') qaCheckBoardStatus();
             if (name === 'confluence') { document.getElementById('confluence-search-input').focus(); }
             if (name === 'chat') { const el = document.getElementById('chat-messages'); el.scrollTop = el.scrollHeight; document.getElementById('chat-input').focus(); }
         }
@@ -3889,7 +4111,7 @@
         if (_boardView === 'list') { toggleBoardView('list'); }
         // Restore active tab from URL hash (persists across browser refresh)
         const _hashTab = window.location.hash.replace('#', '');
-        const _validTabs = ['board', 'drift', 'readiness', 'audit', 'export', 'uat', 'prod', 'history', 'deploy', 'chat', 'help'];
+        const _validTabs = ['board', 'drift', 'readiness', 'audit', 'export', 'uat', 'prod', 'history', 'deploy', 'qa', 'confluence', 'chat', 'help'];
         if (_hashTab && _validTabs.includes(_hashTab)) { switchTab(_hashTab); }
         refreshAll();
         checkGitHubStatus();
@@ -4631,6 +4853,415 @@
             this.style.height = 'auto';
             this.style.height = Math.min(this.scrollHeight, 120) + 'px';
         });
+
+        // ═══ QA Tab Functions ═══════════════════════════════════════════════════════
+
+
+
+        async function qaCheckBoardStatus() {
+            /** Check if board is locked and show/hide QA content accordingly. */
+            try {
+                const r = await fetch('/api/release/current');
+                const data = await r.json();
+                const board = data;
+                const isLocked = board.status === 'locked' || board.status === 'released';
+                // Also check cutoff
+                let pastCutoff = false;
+                if (board.cutoff) {
+                    pastCutoff = new Date().toISOString() > board.cutoff;
+                }
+                const canProceed = isLocked || pastCutoff;
+
+                document.getElementById('qa-lock-gate').style.display = canProceed ? 'none' : 'block';
+                document.getElementById('qa-content').style.display = canProceed ? 'block' : 'none';
+
+                // Also check existing QA state
+                if (canProceed) {
+                    qaCheckPrepareStatus();
+                }
+            } catch (e) {
+                console.error('[qa] Board status check failed:', e);
+                // Show content anyway so user can see the error
+                document.getElementById('qa-lock-gate').style.display = 'none';
+                document.getElementById('qa-content').style.display = 'block';
+            }
+        }
+
+        // ── QA Tab JavaScript ────────────────────────────────────────────────────
+
+        async function qaCheckPrepareStatus() {
+            /** Check if QA prepare has already been run (recover state on page load). */
+            try {
+                const r = await fetch('/api/qa/prepare/status');
+                const data = await r.json();
+                if (data.status === 'e2e_pushed') {
+                    // Show push status
+                    if (data.e2e_commit_url) {
+                        document.getElementById('qa-push-status').style.display = 'block';
+                        document.getElementById('qa-push-link').href = data.e2e_commit_url;
+                        document.getElementById('qa-push-text').textContent = 'Pushed to e2e branch';
+                    }
+                    // Show counts
+                    document.getElementById('qa-count-nominated').textContent = data.nominated_count || 0;
+                    document.getElementById('qa-count-prod').textContent = data.prod_count || 0;
+                    document.getElementById('qa-count-total').textContent = data.total_count || 0;
+                }
+                // Restore prod/preprod status
+                if (data.prod_status === 'pushed') {
+                    document.getElementById('qa-prod-status').style.display = 'block';
+                    document.getElementById('qa-prod-push-icon').textContent = '✅';
+                    document.getElementById('qa-preprod-push-icon').textContent = '✅';
+                    if (data.prod_commit_url) {
+                        const pl = document.getElementById('qa-prod-commit-link');
+                        pl.href = data.prod_commit_url;
+                        pl.style.display = 'inline';
+                    }
+                    if (data.preprod_commit_url) {
+                        const pl = document.getElementById('qa-preprod-commit-link');
+                        pl.href = data.preprod_commit_url;
+                        pl.style.display = 'inline';
+                    }
+                    if (data.change_ticket) {
+                        document.getElementById('qa-change-ticket').value = data.change_ticket;
+                    }
+                }
+            } catch (e) {
+                console.error('[qa] Status check failed:', e);
+            }
+        }
+
+        async function qaPrepareEnvironment() {
+            /** Generate version.yaml and push to e2e branch. */
+            const btn = document.getElementById('qa-prepare-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<div class="spinner" style="width:14px;height:14px;margin:0 6px 0 0;display:inline-block;vertical-align:middle"></div> Preparing...';
+
+            try {
+                const r = await fetch('/api/qa/prepare', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+                const data = await r.json();
+
+                if (!r.ok) {
+                    showToast(data.error || 'Failed to prepare E2E environment', 'error');
+                    btn.disabled = false;
+                    btn.innerHTML = '🧪 Prepare E2E Environment';
+                    return;
+                }
+
+                // Show push status
+                document.getElementById('qa-push-status').style.display = 'block';
+                document.getElementById('qa-push-link').href = data.commit_url || '#';
+                document.getElementById('qa-push-text').textContent = 'Pushed to e2e branch';
+
+                // Show version preview table
+                document.getElementById('qa-version-preview').style.display = 'block';
+                document.getElementById('qa-count-nominated').textContent = data.nominated_count || 0;
+                document.getElementById('qa-count-prod').textContent = data.prod_count || 0;
+                document.getElementById('qa-count-total').textContent = data.total || 0;
+
+                const tbody = document.getElementById('qa-version-tbody');
+                tbody.innerHTML = '';
+                if (data.services) {
+                    _qaRenderVersionTable(data.services, tbody);
+                }
+
+                btn.innerHTML = '✅ E2E Prepared';
+                btn.style.background = 'var(--green)';
+                showToast(`E2E environment prepared — ${data.total} services pushed to e2e branch`, 'success');
+
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+                btn.disabled = false;
+                btn.innerHTML = '🧪 Prepare E2E Environment';
+            }
+        }
+
+        function _qaRenderVersionTable(services, tbody) {
+            /** Render services into a version manifest preview table. */
+            const sorted = Object.entries(services).sort((a, b) => {
+                if (a[1].source !== b[1].source) return a[1].source === 'board' ? -1 : 1;
+                return a[0].localeCompare(b[0]);
+            });
+            for (const [name, svc] of sorted) {
+                const isBoard = svc.source === 'board';
+                const sourceHtml = isBoard
+                    ? '<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;background:rgba(99,102,241,.12);color:var(--accent2);border:1px solid rgba(99,102,241,.25)">📋 Board</span>'
+                    : '<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;background:rgba(16,185,129,.1);color:var(--green);border:1px solid rgba(16,185,129,.2)">🏭 Prod</span>';
+                tbody.innerHTML += `<tr style="${isBoard ? 'background:rgba(99,102,241,.04)' : ''}">
+                    <td style="padding-left:12px;font-weight:${isBoard ? '600' : '400'}">${name}</td>
+                    <td><code style="font-size:11px;background:rgba(99,102,241,.1);padding:1px 5px;border-radius:4px">${svc.image_tag || 'latest'}</code></td>
+                    <td>${sourceHtml}</td>
+                    <td style="color:var(--text2);font-size:11px">${svc.kind || 'Deployment'}</td>
+                </tr>`;
+            }
+        }
+
+        async function qaDriftCheck() {
+            /** Step 4: Compare current board+prod against E2E version.yaml. */
+            const btn = document.getElementById('qa-drift-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<div class="spinner" style="width:14px;height:14px;margin:0 6px 0 0;display:inline-block;vertical-align:middle"></div> Checking...';
+
+            try {
+                const r = await fetch('/api/qa/drift-check', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+                const data = await r.json();
+
+                document.getElementById('qa-drift-results').style.display = 'block';
+
+                if (!r.ok) {
+                    document.getElementById('qa-drift-icon').textContent = '⚠️';
+                    document.getElementById('qa-drift-text').textContent = data.error || 'Drift check failed';
+                    document.getElementById('qa-drift-text').style.color = 'var(--red)';
+                    btn.disabled = false;
+                    btn.innerHTML = '🔍 Check Drift';
+                    return;
+                }
+
+                const driftCount = data.drift_count || 0;
+                const totalSvcs = data.total_services || 0;
+
+                if (data.status === 'match') {
+                    document.getElementById('qa-drift-icon').textContent = '✅';
+                    document.getElementById('qa-drift-text').textContent = 'No drift detected — versions match E2E branch';
+                    document.getElementById('qa-drift-text').style.color = 'var(--green)';
+                    document.getElementById('qa-drift-count').textContent = `${totalSvcs} services checked`;
+                    document.getElementById('qa-drift-table-wrap').style.display = 'none';
+                } else {
+                    document.getElementById('qa-drift-icon').textContent = '⚠️';
+                    document.getElementById('qa-drift-text').textContent = `${driftCount} drift(s) detected`;
+                    document.getElementById('qa-drift-text').style.color = '#f59e0b';
+                    document.getElementById('qa-drift-count').textContent = `${driftCount}/${totalSvcs} services changed`;
+
+                    // Render drift table
+                    const tbody = document.getElementById('qa-drift-tbody');
+                    tbody.innerHTML = '';
+                    for (const d of (data.drifts || [])) {
+                        const typeColor = d.drift_type === 'new' ? 'var(--accent2)' : d.drift_type === 'removed' ? 'var(--red)' : '#f59e0b';
+                        const typeLabel = d.drift_type === 'version_changed' ? '🔄 Changed' : d.drift_type === 'new' ? '🆕 New' : '🗑️ Removed';
+                        tbody.innerHTML += `<tr>
+                            <td style="padding-left:12px;font-weight:500">${d.service}</td>
+                            <td><code style="font-size:11px;background:rgba(239,68,68,.1);padding:1px 5px;border-radius:4px">${d.e2e_tag || '—'}</code></td>
+                            <td><code style="font-size:11px;background:rgba(99,102,241,.1);padding:1px 5px;border-radius:4px">${d.current_tag || '—'}</code></td>
+                            <td style="color:${typeColor};font-weight:600;font-size:11px">${typeLabel}</td>
+                        </tr>`;
+                    }
+                    document.getElementById('qa-drift-table-wrap').style.display = 'block';
+                }
+
+                if (data.e2e_generated_at) {
+                    document.getElementById('qa-drift-count').textContent += ` · E2E from ${new Date(data.e2e_generated_at).toLocaleString()}`;
+                }
+
+                btn.innerHTML = '🔍 Check Drift';
+                btn.disabled = false;
+
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+                btn.disabled = false;
+                btn.innerHTML = '🔍 Check Drift';
+            }
+        }
+
+        async function qaPrepareProduction() {
+            /** Step 5: Push version.yaml with change ticket to prod + preprod branches. */
+            const changeTicket = (document.getElementById('qa-change-ticket').value || '').trim();
+            if (!changeTicket) {
+                showToast('Change ticket is required for production push', 'error');
+                document.getElementById('qa-change-ticket').focus();
+                document.getElementById('qa-change-ticket').style.borderColor = '#ef4444';
+                setTimeout(() => { document.getElementById('qa-change-ticket').style.borderColor = ''; }, 3000);
+                return;
+            }
+
+            const btn = document.getElementById('qa-prod-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<div class="spinner" style="width:14px;height:14px;margin:0 6px 0 0;display:inline-block;vertical-align:middle"></div> Pushing...';
+
+            // Show status cards immediately
+            document.getElementById('qa-prod-status').style.display = 'block';
+            document.getElementById('qa-prod-push-icon').textContent = '⏳';
+            document.getElementById('qa-preprod-push-icon').textContent = '⏳';
+
+            try {
+                const r = await fetch('/api/qa/prepare-prod', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ change_ticket: changeTicket })
+                });
+                const data = await r.json();
+
+                if (!r.ok) {
+                    showToast(data.error || 'Failed to push to prod/preprod', 'error');
+                    document.getElementById('qa-prod-push-icon').textContent = '❌';
+                    document.getElementById('qa-preprod-push-icon').textContent = '❌';
+                    btn.disabled = false;
+                    btn.innerHTML = '🏭 Prepare & Push to Prod/PreProd';
+                    return;
+                }
+
+                // Show success
+                document.getElementById('qa-prod-push-icon').textContent = '✅';
+                document.getElementById('qa-preprod-push-icon').textContent = '✅';
+
+                if (data.prod_commit_url) {
+                    const pl = document.getElementById('qa-prod-commit-link');
+                    pl.href = data.prod_commit_url;
+                    pl.style.display = 'inline';
+                }
+                if (data.preprod_commit_url) {
+                    const pl = document.getElementById('qa-preprod-commit-link');
+                    pl.href = data.preprod_commit_url;
+                    pl.style.display = 'inline';
+                }
+
+                btn.innerHTML = '✅ Pushed to Prod & PreProd';
+                btn.style.background = 'var(--green)';
+                showToast(`version.yaml pushed to prod + preprod (${data.total} services, ticket: ${changeTicket})`, 'success');
+
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+                document.getElementById('qa-prod-push-icon').textContent = '❌';
+                document.getElementById('qa-preprod-push-icon').textContent = '❌';
+                btn.disabled = false;
+                btn.innerHTML = '🏭 Prepare & Push to Prod/PreProd';
+            }
+        }
+
+        async function qaLoadEnvServices() {
+            /** Load services running in the QA namespace. */
+            const container = document.getElementById('qa-env-services');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading QA namespace services...</div>';
+
+            try {
+                const r = await fetch('/api/qa/env/services');
+                const data = await r.json();
+
+                if (data.error) {
+                    container.innerHTML = `<div class="empty-state" style="padding:20px"><p style="color:var(--red)">Error: ${data.error}</p></div>`;
+                    return;
+                }
+
+                if (!data.services || data.services.length === 0) {
+                    container.innerHTML = '<div class="empty-state" style="padding:20px"><p>No services found in QA namespace</p></div>';
+                    return;
+                }
+
+                let html = `<div style="font-size:11px;color:var(--text2);margin-bottom:8px">Namespace: <strong>${data.namespace}</strong> · ${data.count} services</div>`;
+                html += '<div style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:8px"><table class="list-view-table" style="font-size:12px;margin:0;width:100%"><thead><tr>';
+                html += '<th style="padding-left:12px">Service</th><th>Image Tag</th><th>Kind</th><th>Replicas</th><th>Status</th></tr></thead><tbody>';
+
+                for (const svc of data.services) {
+                    const ready = svc.available;
+                    const statusHtml = ready
+                        ? '<span style="color:var(--green);font-weight:600">✅ Running</span>'
+                        : `<span style="color:var(--red);font-weight:600">⚠️ ${svc.replicas}/${svc.desired_replicas}</span>`;
+                    html += `<tr>
+                        <td style="padding-left:12px;font-weight:500">${svc.name}</td>
+                        <td><code style="font-size:11px;background:rgba(99,102,241,.1);padding:1px 5px;border-radius:4px">${svc.image_tag || 'latest'}</code></td>
+                        <td style="color:var(--text2);font-size:11px">${svc.kind}</td>
+                        <td>${svc.replicas}/${svc.desired_replicas}</td>
+                        <td>${statusHtml}</td>
+                    </tr>`;
+                }
+
+                html += '</tbody></table></div>';
+                container.innerHTML = html;
+
+            } catch (e) {
+                container.innerHTML = `<div class="empty-state" style="padding:20px"><p style="color:var(--red)">Error loading services: ${e.message}</p></div>`;
+            }
+        }
+
+        async function qaRunTest(testType) {
+            /** Trigger a test pipeline. */
+            const btn = document.getElementById(`qa-test-${testType}-btn`);
+            const origText = btn.textContent;
+            btn.disabled = true;
+            btn.innerHTML = `<div class="spinner" style="width:12px;height:12px;margin:0 4px 0 0;display:inline-block;vertical-align:middle"></div> Running...`;
+
+            try {
+                const r = await fetch('/api/qa/test/trigger', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ test_type: testType })
+                });
+                const data = await r.json();
+
+                if (!r.ok) {
+                    showToast(data.error || `Failed to trigger ${testType} tests`, 'error');
+                    btn.disabled = false;
+                    btn.textContent = origText;
+                    return;
+                }
+
+                // Show test status
+                document.getElementById('qa-test-status').style.display = 'block';
+                document.getElementById('qa-test-text').textContent = `${testType.toUpperCase()} tests triggered`;
+                document.getElementById('qa-test-icon').textContent = '⏳';
+                document.getElementById('qa-test-results').style.display = 'block';
+
+                if (data.html_url) {
+                    const link = document.getElementById('qa-test-link');
+                    link.href = data.html_url;
+                    link.style.display = 'inline';
+                }
+
+                btn.innerHTML = '✅ Triggered';
+                btn.style.background = 'var(--green)';
+                btn.style.color = '#fff';
+                showToast(`${testType.toUpperCase()} tests triggered successfully`, 'success');
+
+                // Reset button after 5 seconds
+                setTimeout(() => {
+                    btn.disabled = false;
+                    btn.textContent = origText;
+                    btn.style.background = '';
+                    btn.style.color = '';
+                }, 5000);
+
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+                btn.disabled = false;
+                btn.textContent = origText;
+            }
+        }
+
+        async function qaRunAllTests() {
+            /** Run all test types sequentially. */
+            const btn = document.getElementById('qa-test-all-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<div class="spinner" style="width:12px;height:12px;margin:0 4px 0 0;display:inline-block;vertical-align:middle"></div> Running All...';
+
+            const types = ['smoke', 'e2e', 'regression'];
+            let success = 0;
+            for (const t of types) {
+                try {
+                    const r = await fetch('/api/qa/test/trigger', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ test_type: t })
+                    });
+                    if (r.ok) success++;
+                } catch (e) {
+                    console.error(`[qa] Failed to trigger ${t}:`, e);
+                }
+            }
+
+            document.getElementById('qa-test-status').style.display = 'block';
+            document.getElementById('qa-test-text').textContent = `All test suites triggered (${success}/${types.length})`;
+            document.getElementById('qa-test-icon').textContent = success === types.length ? '✅' : '⚠️';
+            document.getElementById('qa-test-results').style.display = 'block';
+
+            btn.innerHTML = `✅ All Triggered (${success}/${types.length})`;
+            btn.style.background = 'var(--green)';
+            showToast(`All ${success} test suites triggered`, 'success');
+
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.innerHTML = '▶▶ Run All Tests';
+                btn.style.background = '';
+            }, 5000);
+        }
+
     </script>
 </body>
 
