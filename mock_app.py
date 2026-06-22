@@ -1732,7 +1732,7 @@ def qa_test_trigger():
         'status': 'triggered',
         'test_type': test_type,
         'run_id': run_id,
-        'html_url': f'https://github.com/org/app-deployment/actions/runs/{run_id}',
+        'html_url': f'https://github.com/org/e2e-app-repo/actions/runs/{run_id}',
     })
 
 

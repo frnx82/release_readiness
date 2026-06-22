@@ -53,9 +53,9 @@ BASE_URL             = os.getenv('BASE_URL', '').rstrip('/')  # external URL for
 # ══════════════════════════════════════════════════════════════════════════════
 # QA Tab — GitOps Deployment Configuration
 # ══════════════════════════════════════════════════════════════════════════════
-QA_DEPLOY_REPO       = os.getenv('QA_DEPLOY_REPO', '') or DEPLOY_REPO  # Repo for version.yaml push
+QA_DEPLOY_REPO       = os.getenv('QA_DEPLOY_REPO', '') or DEPLOY_REPO  # Repo for version.yaml push (e.g. org/app-deployment)
 QA_NAMESPACE         = os.getenv('QA_NAMESPACE', 'uat-testing')
-QA_TEST_REPO         = os.getenv('QA_TEST_REPO', '')   # Repo with test pipelines
+QA_TEST_REPO         = os.getenv('QA_TEST_REPO', '')   # Repo with E2E test pipelines (e.g. org/e2e-app-repo)
 QA_TEST_WORKFLOWS    = {
     'smoke':      os.getenv('QA_TEST_SMOKE_WORKFLOW', 'smoke-tests.yml'),
     'e2e':        os.getenv('QA_TEST_E2E_WORKFLOW', 'e2e-tests.yml'),

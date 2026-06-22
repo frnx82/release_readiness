@@ -142,19 +142,23 @@ spec:
 
         # ════════════════════════════════════════════════════════════
         # QA Tab — GitOps Deployment Pipeline
+        # ────────────────────────────────────────────────────────────
+        # Two separate repos:
+        #   QA_DEPLOY_REPO  → where version.yaml is pushed (e2e/prod/preprod branches)
+        #   QA_TEST_REPO    → where E2E test pipelines live (smoke/e2e/regression workflows)
         # ════════════════════════════════════════════════════════════
         - name: QA_DEPLOY_REPO
-          value: "your-org/app-deployments"                 # ← Repo where version.yaml is pushed (defaults to DEPLOY_REPO if not set)
+          value: "org/app-deployment"                          # ← Repo for version.yaml (e2e, prod, preprod branches)
         - name: QA_NAMESPACE
-          value: "uat-testing"                              # ← Kubernetes namespace for QA environment
+          value: "uat-testing"                                 # ← Kubernetes namespace for QA environment
         - name: QA_TEST_REPO
-          value: ""                                         # ← Repo with QA test pipelines (optional, leave empty if not ready)
+          value: "org/e2e-app-repo"                            # ← Repo with E2E test pipeline workflows
         - name: QA_TEST_SMOKE_WORKFLOW
-          value: "smoke-tests.yml"                          # ← Workflow file for smoke tests
+          value: "smoke-tests.yml"                             # ← Workflow file in e2e-app-repo for smoke tests
         - name: QA_TEST_E2E_WORKFLOW
-          value: "e2e-tests.yml"                            # ← Workflow file for E2E tests
+          value: "e2e-tests.yml"                               # ← Workflow file in e2e-app-repo for E2E tests
         - name: QA_TEST_REGRESSION_WORKFLOW
-          value: "regression-tests.yml"                     # ← Workflow file for regression tests
+          value: "regression-tests.yml"                        # ← Workflow file in e2e-app-repo for regression tests
 
         # ════════════════════════════════════════════════════════════
         # Kubernetes — Namespace & Board Storage
