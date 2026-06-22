@@ -1540,6 +1540,202 @@ def ai_converse_reset():
     return jsonify({'status': 'cleared', 'session_id': request.headers.get('X-Session-Id', 'default')})
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# QA Tab — E2E Environment Preparation (Mock)
+# ══════════════════════════════════════════════════════════════════════════════
+_qa_state = {
+    'status': None,          # None, 'e2e_pushed', etc.
+    'e2e_commit_url': None,
+    'nominated_count': 0,
+    'prod_count': 0,
+    'total_count': 0,
+    'services': {},
+    'prod_status': None,
+    'prod_commit_url': None,
+    'preprod_commit_url': None,
+    'change_ticket': None,
+    'generated_at': None,
+}
+
+
+@app.route('/api/qa/prepare', methods=['POST'])
+def qa_prepare():
+    """Mock: Generate version.yaml and push to e2e branch."""
+    board = _read_board()
+    if not board:
+        return jsonify({'error': 'No active release board'}), 400
+
+    nominated = board.get('services', {})
+    if not nominated:
+        return jsonify({'error': 'No services nominated on the board'}), 400
+
+    # Build version manifest: nominated services + remaining prod services
+    services = {}
+    for name, svc in nominated.items():
+        services[name] = {
+            'image': svc.get('image', f'registry.example.com/{name}:{svc.get("image_tag", "latest")}'),
+            'image_tag': svc.get('image_tag', 'latest'),
+            'kind': svc.get('kind', 'Deployment'),
+            'helm_version': svc.get('helm_chart_version', svc.get('helm_version', '')),
+            'source': 'board',
+        }
+
+    # Add prod services not on the board
+    prod_count = 0
+    for svc in MOCK_SERVICES:
+        if svc['name'] not in services:
+            services[svc['name']] = {
+                'image': svc.get('image', ''),
+                'image_tag': svc.get('image_tag', 'latest'),
+                'kind': svc.get('kind', 'Deployment'),
+                'helm_version': svc.get('helm_version', ''),
+                'source': 'prod',
+            }
+            prod_count += 1
+
+    now = datetime.datetime.utcnow().isoformat()
+    commit_hash = uuid.uuid4().hex[:7]
+    commit_url = f'https://github.com/org/app-deployment/commit/{commit_hash}'
+
+    # Save QA state
+    _qa_state['status'] = 'e2e_pushed'
+    _qa_state['e2e_commit_url'] = commit_url
+    _qa_state['nominated_count'] = len(nominated)
+    _qa_state['prod_count'] = prod_count
+    _qa_state['total_count'] = len(services)
+    _qa_state['services'] = services
+    _qa_state['generated_at'] = now
+
+    # Audit trail
+    board.setdefault('audit_trail', []).append({
+        'action': 'qa_e2e_prepared',
+        'by': session.get('github_user', {}).get('login', 'mock-user'),
+        'at': now,
+        'service': f'{len(services)} services',
+    })
+    _write_board(board)
+
+    return jsonify({
+        'status': 'ok',
+        'commit_url': commit_url,
+        'nominated_count': len(nominated),
+        'prod_count': prod_count,
+        'total': len(services),
+        'services': services,
+        'generated_at': now,
+    })
+
+
+@app.route('/api/qa/prepare/status')
+def qa_prepare_status():
+    """Mock: Check if QA prepare has already been run."""
+    return jsonify(_qa_state)
+
+
+@app.route('/api/qa/drift-check', methods=['POST'])
+def qa_drift_check():
+    """Mock: Compare current board+prod against E2E version.yaml."""
+    if _qa_state['status'] != 'e2e_pushed':
+        return jsonify({'error': 'E2E environment not prepared yet. Run "Prepare E2E" first.'}), 400
+
+    e2e_services = _qa_state.get('services', {})
+    board = _read_board() or _new_board()
+    nominated = board.get('services', {})
+
+    drifts = []
+    # Simulate some drifts randomly
+    for name, e2e_svc in e2e_services.items():
+        if name in nominated:
+            board_tag = nominated[name].get('image_tag', 'latest')
+            e2e_tag = e2e_svc.get('image_tag', 'latest')
+            # 15% chance of drift
+            if random.random() < 0.15:
+                new_tag = e2e_tag.rsplit('.', 1)
+                if len(new_tag) == 2 and new_tag[1].isdigit():
+                    drifted_tag = f"{new_tag[0]}.{int(new_tag[1]) + 1}"
+                else:
+                    drifted_tag = e2e_tag + '-hotfix'
+                drifts.append({
+                    'service': name,
+                    'e2e_tag': e2e_tag,
+                    'current_tag': drifted_tag,
+                    'drift_type': 'version_changed',
+                })
+
+    return jsonify({
+        'status': 'drift' if drifts else 'match',
+        'drift_count': len(drifts),
+        'total_services': len(e2e_services),
+        'drifts': drifts,
+        'e2e_generated_at': _qa_state.get('generated_at'),
+    })
+
+
+@app.route('/api/qa/prepare-prod', methods=['POST'])
+def qa_prepare_prod():
+    """Mock: Push version.yaml to prod + preprod branches."""
+    data = request.json or {}
+    change_ticket = data.get('change_ticket', '').strip()
+    if not change_ticket:
+        return jsonify({'error': 'Change ticket is required'}), 400
+
+    if _qa_state['status'] != 'e2e_pushed':
+        return jsonify({'error': 'E2E environment not prepared yet'}), 400
+
+    prod_hash = uuid.uuid4().hex[:7]
+    preprod_hash = uuid.uuid4().hex[:7]
+    prod_url = f'https://github.com/org/app-deployment/commit/{prod_hash}'
+    preprod_url = f'https://github.com/org/app-deployment/commit/{preprod_hash}'
+
+    _qa_state['prod_status'] = 'pushed'
+    _qa_state['prod_commit_url'] = prod_url
+    _qa_state['preprod_commit_url'] = preprod_url
+    _qa_state['change_ticket'] = change_ticket
+
+    return jsonify({
+        'status': 'ok',
+        'prod_commit_url': prod_url,
+        'preprod_commit_url': preprod_url,
+        'total': _qa_state['total_count'],
+        'change_ticket': change_ticket,
+    })
+
+
+@app.route('/api/qa/env/services')
+def qa_env_services():
+    """Mock: List services running in the QA namespace."""
+    services = []
+    for svc in MOCK_SERVICES:
+        services.append({
+            'name': svc['name'],
+            'kind': svc.get('kind', 'Deployment'),
+            'image_tag': svc.get('image_tag', 'latest'),
+            'replicas': svc.get('replicas', 1),
+            'desired_replicas': svc.get('desired_replicas', 1),
+            'available': svc.get('available', True),
+        })
+    return jsonify({
+        'services': services,
+        'namespace': 'qa-e2e',
+        'count': len(services),
+    })
+
+
+@app.route('/api/qa/test/trigger', methods=['POST'])
+def qa_test_trigger():
+    """Mock: Trigger a test pipeline (smoke/e2e/regression)."""
+    data = request.json or {}
+    test_type = data.get('test_type', 'smoke')
+
+    run_id = uuid.uuid4().hex[:8]
+    return jsonify({
+        'status': 'triggered',
+        'test_type': test_type,
+        'run_id': run_id,
+        'html_url': f'https://github.com/org/app-deployment/actions/runs/{run_id}',
+    })
+
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 8090))
     print(f"\n🚀 Release Readiness Dashboard (MOCK MODE)")
