@@ -1690,6 +1690,35 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32))
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent',
                     ping_timeout=120, ping_interval=30)
 
+# ── Global JSON error handlers for API routes ─────────────────────────────────
+# Prevents Flask from returning HTML error pages to frontend API callers,
+# which causes "unexpected < ... invalid JSON" parse errors.
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Return JSON for API routes, HTML for page routes."""
+    from flask import request as req
+    if req.path.startswith('/api/'):
+        code = getattr(e, 'code', 500) if hasattr(e, 'code') else 500
+        print(f'[api-error] {req.method} {req.path}: {type(e).__name__}: {e}')
+        return jsonify({'error': f'{type(e).__name__}: {str(e)}'}), code
+    # Non-API routes: let Flask handle normally
+    raise e
+
+@app.errorhandler(404)
+def handle_404(e):
+    from flask import request as req
+    if req.path.startswith('/api/'):
+        return jsonify({'error': f'API endpoint not found: {req.path}'}), 404
+    return e
+
+@app.errorhandler(500)
+def handle_500(e):
+    from flask import request as req
+    if req.path.startswith('/api/'):
+        print(f'[api-error] 500 at {req.path}: {e}')
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+    return e
+
 try:
     config.load_incluster_config()
 except config.ConfigException:
@@ -5432,7 +5461,12 @@ def qa_prepare():
         return jsonify({'error': 'QA_DEPLOY_REPO not configured. Set QA_DEPLOY_REPO or DEPLOY_REPO environment variable.'}), 500
 
     # Check board is locked
-    board = _read_board()
+    try:
+        board = _read_board()
+    except Exception as e:
+        print(f'[qa] Error reading board: {e}')
+        return jsonify({'error': f'Failed to read release board: {str(e)}'}), 500
+
     if not board:
         return jsonify({'error': 'No release board found'}), 404
 
