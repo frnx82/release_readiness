@@ -138,8 +138,17 @@ gh_http = _build_gh_session()
 # Auth mode detection (same as Pipeline Hub)
 GH_AUTH_MODE = 'oauth' if (GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET) else 'pat'
 
+# Thread-local storage for token override in background greenlets
+# (Flask session isn't available outside a request context)
+import threading
+_token_local = threading.local()
+
 def get_gh_token():
-    """Get the GitHub token for the current request."""
+    """Get the GitHub token for the current request or background greenlet."""
+    # Check thread-local override first (set by background workers)
+    override = getattr(_token_local, 'github_token', None)
+    if override:
+        return override
     if GH_AUTH_MODE == 'oauth':
         return session.get('github_token', '')
     return GITHUB_TOKEN
@@ -5508,7 +5517,11 @@ def _fetch_version_yaml_from_branch(branch):
 
 @app.route('/api/qa/prepare', methods=['POST'])
 def qa_prepare():
-    """Step 1: Generate version.yaml and push to e2e branch."""
+    """Step 1: Generate version.yaml and push to e2e branch.
+
+    Returns 202 immediately — the GitHub push runs in a background greenlet.
+    Frontend polls /api/qa/prepare/status for completion.
+    """
     global _qa_state
 
     if not is_gh_authenticated():
@@ -5536,71 +5549,108 @@ def qa_prepare():
             'cutoff': board.get('cutoff')
         }), 400
 
+    # Prevent double-submit
+    if _qa_state.get('status') == 'preparing':
+        return jsonify({'status': 'preparing', 'message': 'Already in progress — poll /api/qa/prepare/status'}), 202
+
+    # Build version manifest (fast — no network calls)
+    try:
+        version_manifest, nom_count, prod_count = _build_version_manifest(board)
+    except Exception as e:
+        print(f'[qa] Error building version manifest: {e}')
+        return jsonify({'error': f'Failed to build version manifest: {str(e)}'}), 500
+
+    # Capture session data before spawning background (Flask session not available there)
+    gh_user = session.get('github_user', {}).get('login', 'unknown')
+    gh_token = get_gh_token()
+    release_date = board.get('release_date', '')
+
+    # Set state to preparing
     _qa_state['status'] = 'preparing'
     _qa_state['error'] = None
 
-    try:
-        # Build version manifest
-        version_manifest, nom_count, prod_count = _build_version_manifest(board)
+    # ── Background worker: push to GitHub ─────────────────────────
+    def _do_push():
+        """Run the GitHub push in background (gevent greenlet)."""
+        global _qa_state
+        # Set thread-local token so _github_headers() works outside Flask request
+        _token_local.github_token = gh_token
+        try:
+            version_yaml = yaml.dump(version_manifest, default_flow_style=False, sort_keys=False)
 
-        # Push to e2e branch
-        version_yaml = yaml.dump(version_manifest, default_flow_style=False, sort_keys=False)
-        release_date = board.get('release_date', '')
-        push_result = _push_version_yaml(
-            version_yaml,
-            branch='e2e',
-            commit_message=f'chore: update version.yaml for QA release {release_date}'
-        )
+            # Build headers with the captured token (not from session)
+            push_headers = {
+                'Authorization': f'token {gh_token}',
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'ReleaseReadiness/1.0'
+            }
 
-        if 'error' in push_result:
+            # Use _push_version_yaml (it reads token from session, which
+            # is fine because we're using the same gevent context)
+            push_result = _push_version_yaml(
+                version_yaml,
+                branch='e2e',
+                commit_message=f'chore: update version.yaml for QA release {release_date}'
+            )
+
+            if 'error' in push_result:
+                _qa_state['status'] = 'error'
+                _qa_state['error'] = push_result['error']
+                print(f'[qa] Background push failed: {push_result["error"]}')
+                return
+
+            now = datetime.datetime.utcnow().isoformat()
+
+            # Update state
+            _qa_state.update({
+                'status': 'e2e_pushed',
+                'e2e_commit_url': push_result.get('commit_url'),
+                'version_manifest': version_manifest,
+                'nominated_count': nom_count,
+                'prod_count': prod_count,
+                'total_count': len(version_manifest.get('services', {})),
+                'prepared_at': now,
+                'prepared_by': gh_user,
+                'error': None,
+            })
+
+            # Audit trail
+            try:
+                board_now = _read_board()
+                if board_now:
+                    board_now['audit_trail'].append({
+                        'action': 'qa_e2e_prepared',
+                        'branch': 'e2e',
+                        'services_count': len(version_manifest.get('services', {})),
+                        'nominated': nom_count,
+                        'from_prod': prod_count,
+                        'commit_url': push_result.get('commit_url'),
+                        'by': gh_user,
+                        'at': now
+                    })
+                    _write_board(board_now)
+            except Exception as audit_err:
+                print(f'[qa] Audit trail update failed (non-fatal): {audit_err}')
+
+            print(f'[qa] Background push completed — {len(version_manifest.get("services", {}))} services pushed to e2e branch')
+
+        except Exception as e:
             _qa_state['status'] = 'error'
-            _qa_state['error'] = push_result['error']
-            return jsonify({'error': push_result['error']}), 500
+            _qa_state['error'] = str(e)
+            print(f'[qa] Background push error: {e}')
 
-        gh_user = session.get('github_user', {}).get('login', 'unknown')
-        now = datetime.datetime.utcnow().isoformat()
+    # Spawn background greenlet (gevent — non-blocking)
+    import gevent
+    gevent.spawn(_do_push)
 
-        # Update state
-        _qa_state.update({
-            'status': 'e2e_pushed',
-            'e2e_commit_url': push_result.get('commit_url'),
-            'version_manifest': version_manifest,
-            'nominated_count': nom_count,
-            'prod_count': prod_count,
-            'total_count': len(version_manifest.get('services', {})),
-            'prepared_at': now,
-            'prepared_by': gh_user,
-            'error': None,
-        })
-
-        # Audit trail
-        board['audit_trail'].append({
-            'action': 'qa_e2e_prepared',
-            'branch': 'e2e',
-            'services_count': len(version_manifest.get('services', {})),
-            'nominated': nom_count,
-            'from_prod': prod_count,
-            'commit_url': push_result.get('commit_url'),
-            'by': gh_user,
-            'at': now
-        })
-        _write_board(board)
-
-        return jsonify({
-            'status': 'e2e_pushed',
-            'commit_url': push_result.get('commit_url'),
-            'branch': 'e2e',
-            'services': version_manifest['services'],
-            'nominated_count': nom_count,
-            'prod_count': prod_count,
-            'total': len(version_manifest.get('services', {}))
-        })
-
-    except Exception as e:
-        _qa_state['status'] = 'error'
-        _qa_state['error'] = str(e)
-        print(f'[qa] Prepare error: {e}')
-        return jsonify({'error': str(e)}), 500
+    # Return immediately — frontend polls /api/qa/prepare/status
+    return jsonify({
+        'status': 'preparing',
+        'message': 'Preparing E2E environment — push to GitHub in progress...',
+        'nominated_count': nom_count,
+        'prod_count': prod_count,
+        'total': len(version_manifest.get('services', {})),
+    }), 202
 
 
 @app.route('/api/qa/prepare/status')

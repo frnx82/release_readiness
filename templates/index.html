@@ -5168,69 +5168,94 @@
         }
 
         async function qaPrepareEnvironment() {
-            /** Generate version.yaml and push to e2e branch. */
+            /** Generate version.yaml and push to e2e branch (async with polling). */
             const btn = document.getElementById('qa-prepare-btn');
             btn.disabled = true;
             btn.innerHTML = '<div class="spinner" style="width:14px;height:14px;margin:0 6px 0 0;display:inline-block;vertical-align:middle"></div> Preparing...';
 
             try {
-                const r = await fetch('/api/qa/prepare', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+                // Step 1: Kick off the prepare (returns 202 immediately)
+                const { data, error, response: r } = await _safeApiFetch('/api/qa/prepare', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }
+                });
 
-                // Safe JSON parsing — handle HTML responses from proxy/gateway errors
-                let data;
-                const ct = (r.headers.get('content-type') || '');
-                if (ct.includes('application/json')) {
-                    data = await r.json();
-                } else {
-                    // Server returned non-JSON (HTML error page, proxy 407, etc.)
-                    const text = await r.text();
-                    console.error('[qa] Non-JSON response:', r.status, text.substring(0, 300));
-                    if (r.status === 401 || r.status === 403 || text.includes('login') || text.includes('Sign in')) {
-                        showToast('GitHub session expired — please re-login', 'error');
-                        setTimeout(() => { window.location.href = '/login'; }, 1500);
-                    } else {
-                        showToast(`Server error (HTTP ${r.status}) — try again or check pod logs`, 'error');
-                    }
+                if (error) {
+                    showToast(error, 'error');
                     btn.disabled = false;
                     btn.innerHTML = '🧪 Prepare E2E Environment';
                     return;
                 }
 
-                if (!r.ok) {
-                    // Handle 401 from the API (session expired but Flask still returned JSON)
-                    if (r.status === 401) {
-                        showToast(data.error || 'GitHub session expired — please re-login', 'error');
-                        setTimeout(() => { window.location.href = '/login'; }, 1500);
-                        btn.disabled = false;
-                        btn.innerHTML = '🧪 Prepare E2E Environment';
-                        return;
-                    }
+                // If the server returned an immediate error (4xx)
+                if (r.status >= 400) {
                     showToast(data.error || 'Failed to prepare E2E environment', 'error');
                     btn.disabled = false;
                     btn.innerHTML = '🧪 Prepare E2E Environment';
                     return;
                 }
 
-                // Show push status
-                document.getElementById('qa-push-status').style.display = 'block';
-                document.getElementById('qa-push-link').href = data.commit_url || '#';
-                document.getElementById('qa-push-text').textContent = 'Pushed to e2e branch';
+                // Step 2: Poll for completion (status changes from 'preparing')
+                showToast('Pushing to GitHub — this may take 30-60 seconds...', 'info');
+                let attempts = 0;
+                const maxAttempts = 60;  // 60 × 2s = 2 minutes max
+                const pollInterval = 2000;
 
-                // Show version preview table
-                document.getElementById('qa-version-preview').style.display = 'block';
-                document.getElementById('qa-count-nominated').textContent = data.nominated_count || 0;
-                document.getElementById('qa-count-prod').textContent = data.prod_count || 0;
-                document.getElementById('qa-count-total').textContent = data.total || 0;
+                const pollTimer = setInterval(async () => {
+                    attempts++;
+                    try {
+                        const { data: statusData, error: statusError } = await _safeApiFetch('/api/qa/prepare/status');
 
-                const tbody = document.getElementById('qa-version-tbody');
-                tbody.innerHTML = '';
-                if (data.services) {
-                    _qaRenderVersionTable(data.services, tbody);
-                }
+                        if (statusError) {
+                            clearInterval(pollTimer);
+                            showToast(statusError, 'error');
+                            btn.disabled = false;
+                            btn.innerHTML = '🧪 Prepare E2E Environment';
+                            return;
+                        }
 
-                btn.innerHTML = '✅ E2E Prepared';
-                btn.style.background = 'var(--green)';
-                showToast(`E2E environment prepared — ${data.total} services pushed to e2e branch`, 'success');
+                        if (statusData.status === 'e2e_pushed') {
+                            // ✅ Success!
+                            clearInterval(pollTimer);
+
+                            document.getElementById('qa-push-status').style.display = 'block';
+                            document.getElementById('qa-push-link').href = statusData.e2e_commit_url || '#';
+                            document.getElementById('qa-push-text').textContent = 'Pushed to e2e branch';
+
+                            document.getElementById('qa-version-preview').style.display = 'block';
+                            document.getElementById('qa-count-nominated').textContent = statusData.nominated_count || 0;
+                            document.getElementById('qa-count-prod').textContent = statusData.prod_count || 0;
+                            document.getElementById('qa-count-total').textContent = statusData.total_count || 0;
+
+                            btn.innerHTML = '✅ E2E Prepared';
+                            btn.style.background = 'var(--green)';
+                            showToast(`E2E environment prepared — ${statusData.total_count} services pushed to e2e branch`, 'success');
+
+                        } else if (statusData.status === 'error') {
+                            // ❌ Failed
+                            clearInterval(pollTimer);
+                            showToast(statusData.error || 'Failed to prepare E2E environment', 'error');
+                            btn.disabled = false;
+                            btn.innerHTML = '🧪 Prepare E2E Environment';
+
+                        } else if (attempts >= maxAttempts) {
+                            // ⏰ Timeout
+                            clearInterval(pollTimer);
+                            showToast('Preparation is taking longer than expected — check pod logs', 'error');
+                            btn.disabled = false;
+                            btn.innerHTML = '🧪 Prepare E2E Environment';
+                        }
+                        // else: status is still 'preparing' — keep polling
+                    } catch (pollErr) {
+                        console.error('[qa] Poll error:', pollErr);
+                        // Don't stop polling on transient errors
+                        if (attempts >= maxAttempts) {
+                            clearInterval(pollTimer);
+                            showToast('Lost connection while preparing — check pod logs', 'error');
+                            btn.disabled = false;
+                            btn.innerHTML = '🧪 Prepare E2E Environment';
+                        }
+                    }
+                }, pollInterval);
 
             } catch (e) {
                 showToast('Error: ' + e.message, 'error');
