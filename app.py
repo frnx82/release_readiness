@@ -5359,12 +5359,17 @@ def _push_version_yaml(version_yaml_content, branch, commit_message):
         # 3. Create/update version.yaml on the branch
         existing_sha = None
         try:
-            existing = _github_get(
-                f'/repos/{owner}/{repo}/contents/{file_path}?ref={branch}'
+            check_resp = gh_http.get(
+                f'{GITHUB_API}/repos/{owner}/{repo}/contents/{file_path}?ref={branch}',
+                headers=_github_headers(), timeout=15
             )
-            existing_sha = existing.get('sha')
+            if check_resp.status_code == 200:
+                existing_sha = check_resp.json().get('sha')
+                print(f'[qa] Found existing version.yaml on {branch} (sha={existing_sha[:8]})')
+            else:
+                print(f'[qa] version.yaml not found on {branch} branch (HTTP {check_resp.status_code}) — will create fresh')
         except Exception:
-            pass
+            print(f'[qa] Could not check version.yaml on {branch} — will create fresh')
 
         payload = {
             'message': commit_message,
@@ -5400,8 +5405,14 @@ def _fetch_version_yaml_from_branch(branch):
         return None
     try:
         owner, repo = QA_DEPLOY_REPO.split('/', 1)
-        data = _github_get(f'/repos/{owner}/{repo}/contents/version.yaml?ref={branch}')
-        content = base64.b64decode(data.get('content', '')).decode('utf-8')
+        resp = gh_http.get(
+            f'{GITHUB_API}/repos/{owner}/{repo}/contents/version.yaml?ref={branch}',
+            headers=_github_headers(), timeout=15
+        )
+        if resp.status_code != 200:
+            print(f'[qa] version.yaml not found on {branch} (HTTP {resp.status_code})')
+            return None
+        content = base64.b64decode(resp.json().get('content', '')).decode('utf-8')
         return yaml.safe_load(content)
     except Exception as e:
         print(f'[qa] Could not fetch version.yaml from {branch}: {e}')
