@@ -53,6 +53,9 @@ spec:
       rewrite:
         {{- toYaml .rewrite | nindent 8 }}
       {{- end }}
+      {{- if .timeout }}
+      timeout: {{ .timeout }}
+      {{- end }}
     {{- end }}
     # The below ALWAYS needs to be at the end
     - name: "ui-route"
@@ -65,4 +68,8 @@ spec:
             port:
               number: 8080
           weight: 100
+      # Timeout must cover long-running API calls (QA prepare, AI readiness, etc.)
+      # that make multiple sequential outbound HTTP calls through a Kerberos proxy.
+      # Istio default is 15s which is too short — these flows need 60-90s.
+      timeout: 120s
     # DO NOT ADD ANY ROUTES AFTER THE BASE ROUTE ABOVE

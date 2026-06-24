@@ -112,7 +112,17 @@ def _build_gh_session():
         try:
             from requests_kerberos import HTTPKerberosAuth, OPTIONAL
             from requests.adapters import HTTPAdapter
-            adapter = HTTPAdapter(max_retries=3)
+            from urllib3.util.retry import Retry
+            # ⚠️ Keep retries LOW — each retry through a Kerberos proxy involves
+            # a full 407→negotiate→CONNECT cycle that takes 5-15 seconds.
+            # With 5 sequential API calls in qa_prepare, total time must stay
+            # under the Istio VirtualService timeout (120s).
+            retry_strategy = Retry(
+                total=1,                    # 1 retry max (was 3 — caused 504s)
+                backoff_factor=0.5,
+                status_forcelist=[502, 503], # Only retry on gateway errors, NOT 401/407
+            )
+            adapter = HTTPAdapter(max_retries=retry_strategy)
             s.mount('https://', adapter)
             s.mount('http://', adapter)
             s.auth = HTTPKerberosAuth(mutual_authentication=OPTIONAL)
@@ -152,7 +162,7 @@ def _github_get(path, params=None):
     """GET request to GitHub API."""
     url = f'{GITHUB_API}{path}'
     try:
-        r = gh_http.get(url, headers=_github_headers(), params=params, timeout=15)
+        r = gh_http.get(url, headers=_github_headers(), params=params, timeout=(5, 10))
         r.raise_for_status()
         return r.json()
     except requests.exceptions.HTTPError as e:
@@ -166,7 +176,7 @@ def _github_post(path, data=None):
     """POST request to GitHub API."""
     url = f'{GITHUB_API}{path}'
     try:
-        r = gh_http.post(url, headers=_github_headers(), json=data, timeout=15)
+        r = gh_http.post(url, headers=_github_headers(), json=data, timeout=(5, 10))
         return r
     except Exception as e:
         print(f"[GitHub API] POST error for {path}: {e}")
@@ -5416,7 +5426,7 @@ def _push_version_yaml(version_yaml_content, branch, commit_message):
         try:
             check_resp = gh_http.get(
                 f'{GITHUB_API}/repos/{owner}/{repo}/contents/{file_path}?ref={branch}',
-                headers=_github_headers(), timeout=15
+                headers=_github_headers(), timeout=(5, 10)
             )
             if check_resp.status_code == 200:
                 ct = check_resp.headers.get('content-type', '')
@@ -5442,7 +5452,7 @@ def _push_version_yaml(version_yaml_content, branch, commit_message):
 
         put_resp = gh_http.put(
             f'{GITHUB_API}/repos/{owner}/{repo}/contents/{file_path}',
-            headers=_github_headers(), json=payload, timeout=15
+            headers=_github_headers(), json=payload, timeout=(5, 10)
         )
         if put_resp.status_code == 401:
             return {'error': 'GitHub token expired or revoked. Please re-login.'}
@@ -5482,7 +5492,7 @@ def _fetch_version_yaml_from_branch(branch):
         owner, repo = QA_DEPLOY_REPO.split('/', 1)
         resp = gh_http.get(
             f'{GITHUB_API}/repos/{owner}/{repo}/contents/version.yaml?ref={branch}',
-            headers=_github_headers(), timeout=15
+            headers=_github_headers(), timeout=(5, 10)
         )
         if resp.status_code != 200:
             print(f'[qa] version.yaml not found on {branch} (HTTP {resp.status_code})')
