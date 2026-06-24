@@ -1685,7 +1685,27 @@ def _confluence_get_page(page_id):
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32))
+
+# Session secret key:
+# - FLASK_SECRET_KEY env var → stable across restarts and workers (recommended)
+# - Fallback → derive from POD_NAMESPACE + hostname so it's at least consistent
+#   across gunicorn workers in the same pod (but changes on pod restart)
+_explicit_secret = os.environ.get('FLASK_SECRET_KEY', '')
+if _explicit_secret:
+    app.secret_key = _explicit_secret
+else:
+    import hashlib
+    _ns = os.environ.get('POD_NAMESPACE', 'default')
+    _host = os.environ.get('HOSTNAME', 'release-readiness')
+    _fallback = hashlib.sha256(f'release-readiness-{_ns}-{_host}'.encode()).hexdigest()
+    app.secret_key = _fallback
+    print('[Release Readiness] ⚠️  No FLASK_SECRET_KEY set — using derived key.')
+    print('    Sessions will be lost on pod restart. Set FLASK_SECRET_KEY in your K8s secret for stable sessions.')
+
+# Session cookie settings — keep sessions alive for 7 days and survive browser restarts
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['PERMANENT_SESSION_LIFETIME'] = datetime.timedelta(days=7)
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent',
                     ping_timeout=120, ping_interval=30)
@@ -4846,6 +4866,7 @@ def auth_callback():
 
         access_token = token_data['access_token']
         session['github_token'] = access_token
+        session.permanent = True  # Use PERMANENT_SESSION_LIFETIME (7 days)
 
         # Fetch user info
         user_response = gh_http.get(
@@ -5365,6 +5386,11 @@ def _push_version_yaml(version_yaml_content, branch, commit_message):
 
     file_path = 'version.yaml'
 
+    # Pre-flight: check if the token is actually valid
+    token = get_gh_token()
+    if not token:
+        return {'error': 'GitHub token is empty — session may have expired. Please re-login.'}
+
     try:
         # 1. Get default branch SHA
         repo_info = _github_get(f'/repos/{owner}/{repo}')
@@ -5393,8 +5419,14 @@ def _push_version_yaml(version_yaml_content, branch, commit_message):
                 headers=_github_headers(), timeout=15
             )
             if check_resp.status_code == 200:
-                existing_sha = check_resp.json().get('sha')
-                print(f'[qa] Found existing version.yaml on {branch} (sha={existing_sha[:8]})')
+                ct = check_resp.headers.get('content-type', '')
+                if 'application/json' in ct or 'application/vnd.github' in ct:
+                    existing_sha = check_resp.json().get('sha')
+                    print(f'[qa] Found existing version.yaml on {branch} (sha={existing_sha[:8]})')
+                else:
+                    print(f'[qa] version.yaml check returned non-JSON (content-type: {ct}) — will create fresh')
+            elif check_resp.status_code == 401:
+                return {'error': 'GitHub token expired or revoked. Please re-login.'}
             else:
                 print(f'[qa] version.yaml not found on {branch} branch (HTTP {check_resp.status_code}) — will create fresh')
         except Exception:
@@ -5412,15 +5444,29 @@ def _push_version_yaml(version_yaml_content, branch, commit_message):
             f'{GITHUB_API}/repos/{owner}/{repo}/contents/{file_path}',
             headers=_github_headers(), json=payload, timeout=15
         )
+        if put_resp.status_code == 401:
+            return {'error': 'GitHub token expired or revoked. Please re-login.'}
         if put_resp.status_code not in (200, 201):
             return {'error': f'Failed to push version.yaml: {put_resp.status_code} {put_resp.text[:200]}'}
 
-        commit_data = put_resp.json()
+        # Safe JSON parse for the commit response
+        ct = put_resp.headers.get('content-type', '')
+        if 'application/json' in ct or 'application/vnd.github' in ct:
+            commit_data = put_resp.json()
+        else:
+            print(f'[qa] Push succeeded (HTTP {put_resp.status_code}) but response is not JSON — commit URL unavailable')
+            commit_data = {}
         commit_url = (commit_data.get('commit') or {}).get('html_url', '')
         print(f'[qa] Pushed version.yaml to {branch} branch')
 
         return {'commit_url': commit_url, 'branch': branch}
 
+    except requests.exceptions.HTTPError as e:
+        status = getattr(e.response, 'status_code', None)
+        if status == 401:
+            return {'error': 'GitHub token expired or revoked. Please re-login.'}
+        print(f'[qa] Push error ({branch}): HTTP {status}: {e}')
+        return {'error': f'GitHub API error (HTTP {status}): {str(e)[:200]}'}
     except Exception as e:
         print(f'[qa] Push error ({branch}): {e}')
         return {'error': str(e)}

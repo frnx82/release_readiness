@@ -5098,6 +5098,34 @@
 
         // ── QA Tab JavaScript ────────────────────────────────────────────────────
 
+        /**
+         * Safe API fetch helper — parses JSON or handles HTML/non-JSON errors gracefully.
+         * Returns { data, response } on success, or { error, response } on failure.
+         * Automatically detects expired sessions and redirects to /login.
+         */
+        async function _safeApiFetch(url, options = {}) {
+            const r = await fetch(url, options);
+            const ct = (r.headers.get('content-type') || '');
+            if (ct.includes('application/json')) {
+                const data = await r.json();
+                if (r.status === 401) {
+                    showToast(data.error || 'GitHub session expired — please re-login', 'error');
+                    setTimeout(() => { window.location.href = '/login'; }, 1500);
+                    return { error: data.error || 'Session expired', response: r };
+                }
+                return { data, response: r };
+            } else {
+                const text = await r.text();
+                console.error('[api] Non-JSON response:', r.status, url, text.substring(0, 300));
+                if (r.status === 401 || r.status === 403 || text.includes('login') || text.includes('Sign in')) {
+                    showToast('GitHub session expired — please re-login', 'error');
+                    setTimeout(() => { window.location.href = '/login'; }, 1500);
+                    return { error: 'Session expired', response: r };
+                }
+                return { error: `Server error (HTTP ${r.status})`, response: r };
+            }
+        }
+
         async function qaCheckPrepareStatus() {
             /** Check if QA prepare has already been run (recover state on page load). */
             try {
@@ -5147,9 +5175,36 @@
 
             try {
                 const r = await fetch('/api/qa/prepare', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-                const data = await r.json();
+
+                // Safe JSON parsing — handle HTML responses from proxy/gateway errors
+                let data;
+                const ct = (r.headers.get('content-type') || '');
+                if (ct.includes('application/json')) {
+                    data = await r.json();
+                } else {
+                    // Server returned non-JSON (HTML error page, proxy 407, etc.)
+                    const text = await r.text();
+                    console.error('[qa] Non-JSON response:', r.status, text.substring(0, 300));
+                    if (r.status === 401 || r.status === 403 || text.includes('login') || text.includes('Sign in')) {
+                        showToast('GitHub session expired — please re-login', 'error');
+                        setTimeout(() => { window.location.href = '/login'; }, 1500);
+                    } else {
+                        showToast(`Server error (HTTP ${r.status}) — try again or check pod logs`, 'error');
+                    }
+                    btn.disabled = false;
+                    btn.innerHTML = '🧪 Prepare E2E Environment';
+                    return;
+                }
 
                 if (!r.ok) {
+                    // Handle 401 from the API (session expired but Flask still returned JSON)
+                    if (r.status === 401) {
+                        showToast(data.error || 'GitHub session expired — please re-login', 'error');
+                        setTimeout(() => { window.location.href = '/login'; }, 1500);
+                        btn.disabled = false;
+                        btn.innerHTML = '🧪 Prepare E2E Environment';
+                        return;
+                    }
                     showToast(data.error || 'Failed to prepare E2E environment', 'error');
                     btn.disabled = false;
                     btn.innerHTML = '🧪 Prepare E2E Environment';
@@ -5211,8 +5266,14 @@
             btn.innerHTML = '<div class="spinner" style="width:14px;height:14px;margin:0 6px 0 0;display:inline-block;vertical-align:middle"></div> Checking...';
 
             try {
-                const r = await fetch('/api/qa/drift-check', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-                const data = await r.json();
+                const { data, error, response: r } = await _safeApiFetch('/api/qa/drift-check', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+
+                if (error) {
+                    showToast(error, 'error');
+                    btn.disabled = false;
+                    btn.innerHTML = '🔍 Check Drift';
+                    return;
+                }
 
                 document.getElementById('qa-drift-results').style.display = 'block';
 
@@ -5291,12 +5352,20 @@
             document.getElementById('qa-preprod-push-icon').textContent = '⏳';
 
             try {
-                const r = await fetch('/api/qa/prepare-prod', {
+                const { data, error, response: r } = await _safeApiFetch('/api/qa/prepare-prod', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ change_ticket: changeTicket })
                 });
-                const data = await r.json();
+
+                if (error) {
+                    showToast(error, 'error');
+                    document.getElementById('qa-prod-push-icon').textContent = '❌';
+                    document.getElementById('qa-preprod-push-icon').textContent = '❌';
+                    btn.disabled = false;
+                    btn.innerHTML = '🏭 Prepare & Push to Prod/PreProd';
+                    return;
+                }
 
                 if (!r.ok) {
                     showToast(data.error || 'Failed to push to prod/preprod', 'error');
@@ -5341,8 +5410,12 @@
             container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading QA namespace services...</div>';
 
             try {
-                const r = await fetch('/api/qa/env/services');
-                const data = await r.json();
+                const { data, error, response: r } = await _safeApiFetch('/api/qa/env/services');
+
+                if (error) {
+                    container.innerHTML = `<div class="empty-state" style="padding:20px"><p style="color:var(--red)">Error: ${error}</p></div>`;
+                    return;
+                }
 
                 if (data.error) {
                     container.innerHTML = `<div class="empty-state" style="padding:20px"><p style="color:var(--red)">Error: ${data.error}</p></div>`;
@@ -5388,12 +5461,18 @@
             btn.innerHTML = `<div class="spinner" style="width:12px;height:12px;margin:0 4px 0 0;display:inline-block;vertical-align:middle"></div> Running...`;
 
             try {
-                const r = await fetch('/api/qa/test/trigger', {
+                const { data, error, response: r } = await _safeApiFetch('/api/qa/test/trigger', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ test_type: testType })
                 });
-                const data = await r.json();
+
+                if (error) {
+                    showToast(error, 'error');
+                    btn.disabled = false;
+                    btn.textContent = origText;
+                    return;
+                }
 
                 if (!r.ok) {
                     showToast(data.error || `Failed to trigger ${testType} tests`, 'error');
