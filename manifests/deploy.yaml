@@ -469,6 +469,51 @@ spec:
 
 ---
 # ──────────────────────────────────────────────────────────────────
+# Ingress — Timeout annotations for long-running API calls
+# ──────────────────────────────────────────────────────────────────
+# The QA Prepare and AI Readiness endpoints make multiple sequential
+# outbound HTTP calls (GitHub API via Kerberos proxy). These can take
+# 30-90 seconds total. The default Ingress timeout (60s for NGINX,
+# 30s for HAProxy) causes 504 Gateway Timeout errors.
+#
+# Annotations cover the two most common Ingress controllers:
+#   - NGINX:   nginx.ingress.kubernetes.io/proxy-read-timeout
+#   - HAProxy: haproxy.org/timeout-server
+#
+# ⚠️  Replace YOUR_HOSTNAME with your actual external hostname.
+# ──────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: release-readiness
+  labels:
+    app: release-readiness
+  annotations:
+    # ── NGINX Ingress Controller ──────────────────────────────────
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    # Keep websocket connections alive for SocketIO
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$remote_addr"
+    # ── HAProxy Ingress Controller ────────────────────────────────
+    haproxy.org/timeout-server: "120s"
+    haproxy.org/timeout-connect: "10s"
+spec:
+  rules:
+  - host: YOUR_HOSTNAME                      # ← Replace with your external hostname
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: release-readiness
+            port:
+              number: 8080
+
+---
+# ──────────────────────────────────────────────────────────────────
 # RBAC — ServiceAccount + Role for K8s API access
 # ──────────────────────────────────────────────────────────────────
 # The app needs:
