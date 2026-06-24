@@ -1275,6 +1275,11 @@
                             <div style="font-size:12px;font-weight:600">UAT Deploy</div>
                             <div style="font-size:10px;color:var(--text2);margin-top:2px">GitHub Actions dispatch</div>
                         </div>
+                        <div style="background:var(--surface2);border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:14px;text-align:center">
+                            <div style="font-size:24px;margin-bottom:4px">🧪</div>
+                            <div style="font-size:12px;font-weight:600">QA Pipeline</div>
+                            <div style="font-size:10px;color:var(--text2);margin-top:2px">E2E → Test → Drift → Prod</div>
+                        </div>
                         <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
                             <div style="font-size:24px;margin-bottom:4px">📝</div>
                             <div style="font-size:12px;font-weight:600">AI Release Notes</div>
@@ -2001,6 +2006,210 @@
                         <div style="margin-top:12px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--green)">
                             💡 <strong>Tip:</strong> Workflows need a <code>workflow_dispatch</code> trigger with inputs.
                             <code>choice</code> inputs render as dropdowns, <code>string</code> inputs as text fields.
+                        </div>
+                    </div>
+
+
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <!-- SECTION: QA Pipeline (Quality Gate)               -->
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <h3 style="font-size:16px;margin:24px 0 12px;color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:8px">🧪 QA Pipeline (Quality Gate)</h3>
+
+                    <!-- Overview -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px">🧪 Overview</h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            The <strong>QA tab</strong> provides a structured <strong>5-stage quality gate pipeline</strong> that takes your release from
+                            a locked board all the way to production-ready. It uses a GitOps approach — pushing <code>version.yaml</code>
+                            manifests to specific branches in your deployment repo, which ArgoCD (or your CD tool) can auto-deploy from.
+                        </p>
+                        <div style="margin-top:12px;padding:12px 14px;background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(99,102,241,.08));border-radius:10px;border:1px solid rgba(16,185,129,.2);font-size:12px;color:var(--text2);line-height:1.7">
+                            <strong style="color:var(--accent2)">🔄 Flow:</strong>
+                            <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">Board Lock</code>
+                            → <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">Prepare E2E</code>
+                            → <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">QA Status</code>
+                            → <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">Run Tests</code>
+                            → <code style="background:rgba(245,158,11,.15);padding:1px 5px;border-radius:4px;font-size:11px;color:#f59e0b">Drift Check</code>
+                            → <code style="background:rgba(16,185,129,.15);padding:1px 5px;border-radius:4px;font-size:11px;color:#10b981">Push to Prod/PreProd</code>
+                        </div>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.8">
+                            <strong style="color:var(--accent2)">Prerequisites:</strong>
+                            <ul style="margin-left:18px;color:var(--text2)">
+                                <li>GitHub authentication (OAuth or PAT)</li>
+                                <li><code>QA_DEPLOY_REPO</code> — the GitHub repo where <code>version.yaml</code> is pushed (e.g. <code>org/app-deployment</code>)</li>
+                                <li><code>QA_TEST_REPO</code> — the GitHub repo containing your test pipeline workflows</li>
+                                <li>The release board must be <strong>locked</strong> (manually or via cutoff time)</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Stage 1: Prepare E2E -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px;display:flex;align-items:center;gap:8px">
+                            <span style="background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">1</span>
+                            Prepare E2E Environment
+                        </h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Generates a <code>version.yaml</code> manifest from the locked release board and pushes it to the
+                            <code>e2e</code> branch of your <code>QA_DEPLOY_REPO</code>. If ArgoCD is watching this branch,
+                            it auto-deploys to the E2E environment.
+                        </p>
+                        <div style="margin-top:10px;font-size:12px;line-height:1.8;color:var(--text2)">
+                            <strong style="color:var(--text)">What the manifest contains:</strong>
+                            <ul style="margin-left:18px">
+                                <li><strong>Nominated services</strong> from the board (with their locked image tags)</li>
+                                <li><strong>Non-nominated production services</strong> — carried forward from the current prod cluster to form a complete deployment</li>
+                                <li>Metadata: release date, QA namespace, generation timestamp</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:10px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--accent)">
+                            💡 <strong>Tip:</strong> After clicking <strong>Prepare E2E</strong>, a version preview table shows all services
+                            with their source (Board vs Production). You'll also get a direct link to the commit on GitHub.
+                        </div>
+                    </div>
+
+                    <!-- Stage 2: QA Namespace Status -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px;display:flex;align-items:center;gap:8px">
+                            <span style="background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">2</span>
+                            QA Namespace Status
+                        </h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Displays live services running in the QA/UAT Kubernetes namespace (configured via <code>QA_NAMESPACE</code>,
+                            defaults to <code>uat-testing</code>). Use this to verify that ArgoCD has synced the E2E deployment and
+                            all pods are healthy.
+                        </p>
+                        <div style="margin-top:10px;font-size:12px;line-height:1.8;color:var(--text2)">
+                            <strong style="color:var(--text)">What you see:</strong>
+                            <ul style="margin-left:18px">
+                                <li>Service name, running image tag, kind (Deployment/StatefulSet), and pod status</li>
+                                <li>Ready replicas vs desired replicas</li>
+                                <li>Click <strong>🔄 Refresh</strong> to poll the cluster for the latest state</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Stage 3: Test Pipelines -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px;display:flex;align-items:center;gap:8px">
+                            <span style="background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">3</span>
+                            Test Pipelines
+                        </h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Triggers test suites against the QA environment via <strong>GitHub Actions workflow_dispatch</strong>.
+                            Tests run in your <code>QA_TEST_REPO</code> and are configurable per suite.
+                        </p>
+                        <div style="margin-top:10px;font-size:12px;line-height:1.8;color:var(--text2)">
+                            <strong style="color:var(--text)">Available test suites:</strong>
+                            <ul style="margin-left:18px">
+                                <li><strong>🧪 Smoke Tests</strong> — Quick health checks (workflow: <code>QA_TEST_SMOKE_WORKFLOW</code>)</li>
+                                <li><strong>🧪 E2E Tests</strong> — Full end-to-end scenario tests (workflow: <code>QA_TEST_E2E_WORKFLOW</code>)</li>
+                                <li><strong>🧪 Regression Tests</strong> — Comprehensive regression suite (workflow: <code>QA_TEST_REGRESSION_WORKFLOW</code>)</li>
+                                <li><strong>▶▶ Run All</strong> — Triggers all three suites in parallel</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:10px;padding:10px 14px;background:var(--bg);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid var(--accent)">
+                            💡 <strong>Tip:</strong> Each test shows a status card (Pass ✅ / Fail ❌ / Running ⏳) and a link
+                            to view the full workflow run on GitHub. You can run individual tests or all at once.
+                        </div>
+                    </div>
+
+                    <!-- Stage 4: Version Drift Check -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px;display:flex;align-items:center;gap:8px">
+                            <span style="background:#f59e0b;color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">4</span>
+                            Version Drift Check
+                        </h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            Compares the <strong>current</strong> board nominations + production service versions against the
+                            <code>version.yaml</code> that was pushed to the <code>e2e</code> branch. This catches any changes
+                            made <em>after</em> the initial E2E preparation — for example, late exception nominations or
+                            production hotfixes that happened since the E2E push.
+                        </p>
+                        <div style="margin-top:10px;font-size:12px;line-height:1.8;color:var(--text2)">
+                            <strong style="color:var(--text)">Drift types detected:</strong>
+                            <ul style="margin-left:18px">
+                                <li><strong style="color:#f59e0b">Tag Changed</strong> — A service's image tag differs from what was pushed to E2E</li>
+                                <li><strong style="color:#ef4444">New Service</strong> — A service was added to the board after E2E was prepared</li>
+                                <li><strong style="color:var(--text2)">Removed</strong> — A service that was in E2E is no longer on the board</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:10px;padding:10px 14px;background:rgba(245,158,11,.06);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid #f59e0b">
+                            ⚠️ <strong>If drift is detected:</strong> Consider re-running Step 1 (Prepare E2E) to push an updated
+                            <code>version.yaml</code>, then re-run your test suites before proceeding to production.
+                        </div>
+                    </div>
+
+                    <!-- Stage 5: Prepare Prod/PreProd -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px;display:flex;align-items:center;gap:8px">
+                            <span style="background:#10b981;color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">5</span>
+                            Prepare Prod / PreProd
+                        </h3>
+                        <p style="color:var(--text2);font-size:13px;line-height:1.8">
+                            The final stage. Generates the production-ready <code>version.yaml</code> (including a <strong>change ticket</strong> reference)
+                            and pushes it to both the <code>prod</code> and <code>preprod</code> branches of your <code>QA_DEPLOY_REPO</code>.
+                        </p>
+                        <div style="margin-top:10px;font-size:12px;line-height:1.8;color:var(--text2)">
+                            <strong style="color:var(--text)">What happens:</strong>
+                            <ul style="margin-left:18px">
+                                <li>Enter your <strong>Change Ticket</strong> number (e.g. <code>CHG0012345</code>) — this is embedded in the manifest for traceability</li>
+                                <li>The <code>version.yaml</code> is pushed to <strong>both</strong> <code>prod</code> and <code>preprod</code> branches simultaneously</li>
+                                <li>ArgoCD (or your CD tool) watching these branches will begin the production rollout</li>
+                                <li>Commit links are displayed for both branches so you can verify the push on GitHub</li>
+                            </ul>
+                        </div>
+                        <div style="margin-top:10px;padding:10px 14px;background:rgba(16,185,129,.06);border-radius:8px;font-size:12px;color:var(--text2);border-left:3px solid #10b981">
+                            ✅ <strong>After this step:</strong> Your release is deployed to production. Return to the <strong>📋 Board</strong>
+                            tab and click <strong>✅ Mark Released</strong> to archive the board and start the next release cycle.
+                        </div>
+                    </div>
+
+                    <!-- QA Environment Variables -->
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                        <h3 style="font-size:15px;margin-bottom:8px">⚙️ QA Configuration (Environment Variables)</h3>
+                        <div style="overflow-x:auto">
+                            <table style="width:100%;font-size:12px;border-collapse:collapse;color:var(--text2)">
+                                <thead>
+                                    <tr style="border-bottom:1px solid var(--border)">
+                                        <th style="text-align:left;padding:8px;font-weight:600;color:var(--text)">Variable</th>
+                                        <th style="text-align:left;padding:8px;font-weight:600;color:var(--text)">Purpose</th>
+                                        <th style="text-align:left;padding:8px;font-weight:600;color:var(--text)">Example</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr style="border-bottom:1px solid var(--border)">
+                                        <td style="padding:8px"><code>QA_DEPLOY_REPO</code></td>
+                                        <td style="padding:8px">Repo for version.yaml pushes (e2e/prod/preprod branches)</td>
+                                        <td style="padding:8px"><code>org/app-deployment</code></td>
+                                    </tr>
+                                    <tr style="border-bottom:1px solid var(--border)">
+                                        <td style="padding:8px"><code>QA_NAMESPACE</code></td>
+                                        <td style="padding:8px">Kubernetes namespace for QA environment</td>
+                                        <td style="padding:8px"><code>uat-testing</code></td>
+                                    </tr>
+                                    <tr style="border-bottom:1px solid var(--border)">
+                                        <td style="padding:8px"><code>QA_TEST_REPO</code></td>
+                                        <td style="padding:8px">Repo with E2E test pipeline workflows</td>
+                                        <td style="padding:8px"><code>org/e2e-app-repo</code></td>
+                                    </tr>
+                                    <tr style="border-bottom:1px solid var(--border)">
+                                        <td style="padding:8px"><code>QA_TEST_SMOKE_WORKFLOW</code></td>
+                                        <td style="padding:8px">Workflow file for smoke tests</td>
+                                        <td style="padding:8px"><code>smoke-tests.yml</code></td>
+                                    </tr>
+                                    <tr style="border-bottom:1px solid var(--border)">
+                                        <td style="padding:8px"><code>QA_TEST_E2E_WORKFLOW</code></td>
+                                        <td style="padding:8px">Workflow file for E2E tests</td>
+                                        <td style="padding:8px"><code>e2e-tests.yml</code></td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding:8px"><code>QA_TEST_REGRESSION_WORKFLOW</code></td>
+                                        <td style="padding:8px">Workflow file for regression tests</td>
+                                        <td style="padding:8px"><code>regression-tests.yml</code></td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
 
