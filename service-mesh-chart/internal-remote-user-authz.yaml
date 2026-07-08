@@ -43,8 +43,7 @@ spec:
   rules:
     - from:
         - source:
-            # Only trust these specific service accounts to set
-            # the X-Internal-Remote-User header
+            # Only trust these specific service accounts
             principals:
             {{- range .Values.internalRemoteUser.allowedServiceAccounts }}
             {{- if eq . "*" }}
@@ -53,12 +52,5 @@ spec:
               - "cluster.local/ns/{{ $.Values.namespace }}/sa/{{ . }}"
             {{- end }}
             {{- end }}
-      when:
-        # Only match requests that carry the internal remote user header.
-        # This ensures the policy only applies to cron/service traffic
-        # that is explicitly setting identity, not all internal traffic.
-        - key: "request.headers[{{ .Values.internalRemoteUser.headerName }}]"
-          notValues:
-            - ""
 {{- end }}
 {{- end }}
