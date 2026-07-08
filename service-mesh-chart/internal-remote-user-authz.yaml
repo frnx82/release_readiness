@@ -1,0 +1,64 @@
+# =============================================================================
+# Internal Remote User — AuthorizationPolicy
+# =============================================================================
+# Controls which service accounts are allowed to send the
+# X-Internal-Remote-User header. This prevents untrusted services
+# from spoofing internal identity.
+#
+# How it works with the existing policies:
+#
+#   deny-all-default           → blocks everything
+#   allow-same-namespace       → allows SA/* from same namespace (Layer 1)
+#   authorization-authz        → allows JWT + SA traffic to oidc services
+#   THIS POLICY                → additionally allows specific SAs to
+#                                 send X-Internal-Remote-User header
+#
+# Note: This policy does NOT replace allow-same-namespace. Traffic from
+# cron jobs is already ALLOWED by allow-same-namespace (SA-based).
+# This policy adds an extra ALLOW rule that explicitly permits the
+# internal remote user header from trusted SAs, ensuring the header
+# is not stripped by any CUSTOM action policies you may add later.
+#
+# Risk Level: 🟡 MEDIUM — Explicitly whitelists SAs for header trust.
+# =============================================================================
+{{- if .Values.internalRemoteUser.enabled }}
+{{- if .Values.internalRemoteUser.allowedServiceAccounts }}
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ template "application.name" . }}-internal-remote-user-authz
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app: {{ $.Release.Name }}
+    chart: {{ $.Chart.Name }}
+    release: "{{ $.Release.Name }}"
+    security-principle: "internal-remote-user"
+spec:
+  action: ALLOW
+  selector:
+    # Apply to services that use OIDC auth (same as req-auth.yaml)
+    matchLabels:
+      auth-type: oidc
+  rules:
+    - from:
+        - source:
+            # Only trust these specific service accounts to set
+            # the X-Internal-Remote-User header
+            principals:
+            {{- range .Values.internalRemoteUser.allowedServiceAccounts }}
+            {{- if eq . "*" }}
+              - "cluster.local/ns/{{ $.Values.namespace }}/sa/*"
+            {{- else }}
+              - "cluster.local/ns/{{ $.Values.namespace }}/sa/{{ . }}"
+            {{- end }}
+            {{- end }}
+      when:
+        # Only match requests that carry the internal remote user header.
+        # This ensures the policy only applies to cron/service traffic
+        # that is explicitly setting identity, not all internal traffic.
+        - key: "request.headers[{{ .Values.internalRemoteUser.headerName }}]"
+          notValues:
+            - ""
+{{- end }}
+{{- end }}

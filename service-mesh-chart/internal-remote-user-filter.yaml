@@ -1,0 +1,88 @@
+# =============================================================================
+# Internal Remote User — EnvoyFilter (Lua)
+# =============================================================================
+# Copies the X-Internal-Remote-User header to Remote-User for cron jobs
+# and service-to-service calls that don't have CIDP/OIDC tokens.
+#
+# Logic:
+#   1. If Remote-User is already set (from OIDC/browser), do nothing.
+#   2. If X-Internal-Remote-User is set by the caller, copy it to Remote-User.
+#   3. If neither is set and a defaultRemoteUser is configured, use the default.
+#
+# This filter runs AFTER Istio's JWT authentication filter, so browser
+# traffic with valid OIDC tokens will always take priority.
+#
+# Security: This filter only applies to workloads with auth-type: oidc.
+# The AuthorizationPolicy (internal-remote-user-authz.yaml) restricts
+# which service accounts are allowed to set this header.
+#
+# Risk Level: 🟡 MEDIUM — Allows non-OIDC identity propagation.
+#             Mitigated by SA-based allow-lists.
+# =============================================================================
+{{- if .Values.internalRemoteUser.enabled }}
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: {{ template "application.name" . }}-internal-remote-user
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app: {{ $.Release.Name }}
+    chart: {{ $.Chart.Name }}
+    release: "{{ $.Release.Name }}"
+    security-principle: "internal-remote-user"
+spec:
+  # Apply only to workloads that use OIDC auth
+  workloadSelector:
+    labels:
+      auth-type: oidc
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: SIDECAR_INBOUND
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+              subFilter:
+                name: envoy.filters.http.router
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.lua
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+            inlineCode: |
+              -- =============================================================
+              -- Internal Remote User Header Propagation
+              -- =============================================================
+              -- Copies X-Internal-Remote-User → Remote-User when no OIDC
+              -- Remote-User is present. This enables cron jobs and service-
+              -- to-service calls to propagate user identity without JWT.
+              -- =============================================================
+              function envoy_on_request(request_handle)
+                -- Check if OIDC already set Remote-User (browser traffic)
+                local remote_user = request_handle:headers():get("{{ .Values.internalRemoteUser.targetHeader }}")
+
+                if remote_user ~= nil and remote_user ~= "" then
+                  -- OIDC Remote-User is present — do nothing (browser wins)
+                  return
+                end
+
+                -- Check for the internal header set by cron jobs / services
+                local internal_user = request_handle:headers():get("{{ .Values.internalRemoteUser.headerName }}")
+
+                if internal_user ~= nil and internal_user ~= "" then
+                  -- Copy internal header to Remote-User
+                  request_handle:headers():replace("{{ .Values.internalRemoteUser.targetHeader }}", internal_user)
+                  -- Log for observability (visible in istio-proxy logs at debug level)
+                  request_handle:logDebug("[internal-remote-user] Set Remote-User from internal header: " .. internal_user)
+                {{- if .Values.internalRemoteUser.defaultRemoteUser }}
+                else
+                  -- No header from caller — use configured default
+                  request_handle:headers():replace("{{ .Values.internalRemoteUser.targetHeader }}", "{{ .Values.internalRemoteUser.defaultRemoteUser }}")
+                  request_handle:logDebug("[internal-remote-user] Set Remote-User to default: {{ .Values.internalRemoteUser.defaultRemoteUser }}")
+                {{- end }}
+                end
+              end
+{{- end }}

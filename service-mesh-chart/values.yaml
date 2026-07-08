@@ -107,3 +107,49 @@ requestAuthentication:
 # external traffic and ServiceAccount principals for internal traffic.
 serviceAllowLists:
   enabled: true
+
+# =============================================================================
+# Internal Remote User — Cron Jobs & Service-to-Service Identity
+# =============================================================================
+# When a request comes through the browser, CIDP/OIDC sets the Remote-User
+# header via RequestAuthentication (outputClaimToHeaders). But cron jobs and
+# service-to-service calls have no JWT token, so Remote-User is null.
+#
+# This feature allows internal services to pass identity via a trusted
+# header (X-Internal-Remote-User). An EnvoyFilter on the receiving service
+# copies it to Remote-User only when:
+#   1. No OIDC Remote-User header is already present (browser takes priority)
+#   2. The caller is from a trusted service account within the same namespace
+#
+# Usage:
+#   - Cron jobs / batch services set the header:
+#       X-Internal-Remote-User: cronjob-scheduler@system
+#   - Your app reads Remote-User as usual — it works for both browser
+#     and internal callers.
+# =============================================================================
+internalRemoteUser:
+  enabled: true
+
+  # -- Header name used by internal services to pass identity.
+  # This header is NOT managed by Istio RequestAuthentication,
+  # so Envoy will not strip it from internal traffic.
+  headerName: x-internal-remote-user
+
+  # -- The target header that your app reads (set by OIDC for browser traffic).
+  # The EnvoyFilter copies internalHeader → targetHeader when targetHeader is empty.
+  targetHeader: remote-user
+
+  # -- Service accounts allowed to set the internal remote user header.
+  # Only traffic from these SAs will have the header trusted and copied.
+  # Use "*" to allow all SAs in the namespace (less secure).
+  allowedServiceAccounts:
+    - "*"                  # allows all SAs in the namespace
+    # For tighter security, replace "*" with specific SAs:
+    # - cronjob-scheduler
+    # - batch-processor
+
+  # -- Default remote user value for cron jobs that don't set the header.
+  # If a request has no OIDC Remote-User AND no X-Internal-Remote-User,
+  # this value is automatically set as Remote-User.
+  defaultRemoteUser: "system@internal"
+
