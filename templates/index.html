@@ -2691,9 +2691,11 @@
                                 <option value="">— Select version —</option>
                             </select>
                             <div id="art-freshness-badge" style="display:none;margin-top:4px"></div>
-                            <div style="margin-top:4px">
+                            <div style="margin-top:4px;display:flex;gap:6px">
                                 <button type="button" class="btn btn-sm" style="font-size:10px;padding:2px 8px" onclick="toggleManualVersion()"
                                     id="btn-manual-toggle">✏️ Enter manually</button>
+                                <button type="button" class="btn btn-sm" style="font-size:10px;padding:2px 8px" onclick="refreshArtifactoryVersions()"
+                                    id="btn-art-refresh" title="Force refresh from Artifactory (clears cache)">🔄 Refresh</button>
                             </div>
                         </div>
                         <!-- Manual version (shown by default for non-artifactory, or as override) -->
@@ -3169,8 +3171,9 @@
             const toggleBtn = document.getElementById('btn-manual-toggle');
             if (toggleBtn) { toggleBtn.textContent = '✏️ Enter manually'; }
 
-            if (c && c.artifactory_path) {
-                // Show Artifactory section, hide manual
+            if (c && c.has_artifactory) {
+                // Show Artifactory section, hide manual (has_artifactory is true
+                // only when BOTH artifactory_path AND ARTIFACTORY_URL are configured)
                 document.getElementById('art-version-section').style.display = '';
                 document.getElementById('manual-version-section').style.display = 'none';
                 fetchArtifactoryVersions(name);
@@ -3178,7 +3181,7 @@
             validateNominateForm();
         }
 
-        async function fetchArtifactoryVersions(componentName) {
+        async function fetchArtifactoryVersions(componentName, forceRefresh = false) {
             const loadEl = document.getElementById('art-version-loading');
             const selEl = document.getElementById('art-version-select');
             const badgeEl = document.getElementById('art-freshness-badge');
@@ -3188,7 +3191,8 @@
             badgeEl.style.display = 'none';
 
             try {
-                const r = await fetch(`/api/artifactory/versions/${encodeURIComponent(componentName)}`);
+                const refreshParam = forceRefresh ? '?refresh=1' : '';
+                const r = await fetch(`/api/artifactory/versions/${encodeURIComponent(componentName)}${refreshParam}`);
                 const d = await r.json();
                 loadEl.style.display = 'none';
 
@@ -3216,6 +3220,9 @@
                         return `<option value="${v.version}" data-freshness="${v.freshness}" data-date="${v.date}" style="${optBg}">${badge} ${v.version}${dateStr}</option>`;
                     }).join('');
                 selEl.style.display = '';
+                if (forceRefresh) {
+                    showToast(`Refreshed: ${d.version_count} versions loaded`, 'success');
+                }
             } catch (e) {
                 loadEl.style.display = 'none';
                 console.error('Artifactory fetch error:', e);
@@ -3223,6 +3230,15 @@
                 document.getElementById('art-version-section').style.display = 'none';
                 showToast('Artifactory error — enter version manually', 'warn');
             }
+        }
+
+        function refreshArtifactoryVersions() {
+            const name = document.getElementById('custom-select').value;
+            if (!name) return;
+            // Reset selection
+            document.getElementById('nom-custom-version').value = '';
+            document.getElementById('art-freshness-badge').style.display = 'none';
+            fetchArtifactoryVersions(name, true);
         }
 
         function onArtifactoryVersionSelect() {

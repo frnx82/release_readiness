@@ -3045,35 +3045,72 @@ def _fetch_artifactory_versions(artifactory_path):
             pass
         return None
 
-    # ── Sort by upload date descending (newest first) ──────────────────
-    # Versions with dates sort first; versions without dates sort last
+    # ── Parse version strings into comparable tuples for proper ordering ──
+    def _parse_version_tuple(version_str):
+        """Parse a version string into a sortable tuple of integers.
+        Handles: '1.2.3', '1.2.3-rc1', '1.2.3.4', 'v1.2.3', '20260723.1', etc.
+        Returns a tuple of ints for numeric comparison (e.g., (1, 2, 3)).
+        Falls back to (0,) for unparseable versions so they sort last.
+        """
+        # Strip common prefixes
+        cleaned = version_str.lower().lstrip('v').strip()
+        # Extract all numeric parts (split on any non-digit)
+        parts = re.split(r'[^0-9]+', cleaned)
+        nums = []
+        for p in parts:
+            if p:
+                try:
+                    nums.append(int(p))
+                except ValueError:
+                    break
+        return tuple(nums) if nums else (0,)
+
+    # ── Sort: primary by upload date (newest first), secondary by version number ──
+    # This ensures that:
+    #  1. If dates are available → sorted by actual upload date (most accurate)
+    #  2. If dates are missing → sorted by version number descending (best guess)
+    #  3. Tiebreaker: version number descending (when two versions uploaded same day)
     epoch = datetime.datetime(1970, 1, 1)  # For unknown dates
     for v in versions:
         v['_parsed_date'] = _parse_date(v['date']) or epoch
+        v['_version_tuple'] = _parse_version_tuple(v['version'])
 
-    versions.sort(key=lambda v: v['_parsed_date'], reverse=True)
+    # Check how many versions have real dates
+    dated_versions = [v for v in versions if v['_parsed_date'] != epoch]
+    has_dates = len(dated_versions) > len(versions) * 0.5  # >50% have dates
 
-    if versions and versions[0]['_parsed_date'] != epoch:
-        print(f'[artifactory] Sorted by upload date. Newest: {versions[0]["version"]} ({versions[0]["date"]})')
-    elif versions:
-        print(f'[artifactory] ⚠ No upload dates available — version order may not reflect recency')
+    if has_dates:
+        # Primary: date descending, Secondary: version number descending
+        versions.sort(key=lambda v: (v['_parsed_date'], v['_version_tuple']), reverse=True)
+        print(f'[artifactory] Sorted by upload date (with version tiebreaker). '
+              f'Newest: {versions[0]["version"]} ({versions[0]["date"]})')
+    else:
+        # Dates mostly missing — sort purely by version number descending
+        # This ensures 10.0.0 > 9.0.0 > 2.0.0 > 1.0.0 (numeric, not alphabetical)
+        versions.sort(key=lambda v: v['_version_tuple'], reverse=True)
+        print(f'[artifactory] ⚠ Dates mostly unavailable — sorted by version number. '
+              f'Highest: {versions[0]["version"]}')
 
     # Clean up internal fields and add freshness labels
     for v in versions:
         del v['_parsed_date']
+        del v['_version_tuple']
         v['freshness'] = _version_freshness(v['date']) if v['date'] else 'unknown'
 
-    # Limit to 20 most recent
-    versions = versions[:20]
+    # Limit to 30 most recent (increased from 20 to ensure latest versions are visible)
+    versions = versions[:30]
 
-    # Cache for 5 minutes
+    # Cache for 2 minutes (reduced from 5 to surface newly-published versions faster)
     _cache_set(cache_key, versions)
     return versions
 
 
 @app.route('/api/artifactory/versions/<component_name>')
 def get_artifactory_versions(component_name):
-    """Fetch available versions from Artifactory for a custom component."""
+    """Fetch available versions from Artifactory for a custom component.
+    Query params:
+      ?refresh=1  — bust cache and re-fetch from Artifactory
+    """
     comp = CUSTOM_COMPONENTS_MAP.get(component_name)
     if not comp:
         return jsonify({'error': f'Component {component_name} not found'}), 404
@@ -3095,6 +3132,12 @@ def get_artifactory_versions(component_name):
             'versions': []
         })
 
+    # Support cache-bust: ?refresh=1 clears the cached versions
+    if request.args.get('refresh', '').strip() in ('1', 'true', 'yes'):
+        cache_key = f'artifactory_{art_path}'
+        _cache.pop(cache_key, None)
+        print(f'[artifactory] Cache cleared for {component_name} (manual refresh)')
+
     versions = _fetch_artifactory_versions(art_path)
 
     return jsonify({
@@ -3104,6 +3147,7 @@ def get_artifactory_versions(component_name):
         'version_count': len(versions),
         'versions': versions
     })
+
 
 
 # ── Production Cluster (Remote OpenShift) ─────────────────────────────────────
