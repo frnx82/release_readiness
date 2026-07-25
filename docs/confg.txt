@@ -1,3 +1,6 @@
+# ══════════════════════════════════════════════════════════
+# Option A: Use /tmp/ (always exists, no extra setup)
+# ══════════════════════════════════════════════════════════
 containerEnv:
   - name: JENKINS_JAVA_OPTIONS
     value: >-
@@ -11,8 +14,8 @@ containerEnv:
       -XX:+UseStringDeduplication
       -XX:+UnlockExperimentalVMOptions
       -XX:+HeapDumpOnOutOfMemoryError
-      -XX:HeapDumpPath=/var/lib/jenkins/userContent/support
-      -Xlog:gc*,safepoint:file=/var/lib/jenkins/userContent/support/gc.log:time,uptime:filecount=5,filesize=100M
+      -XX:HeapDumpPath=/tmp/jenkins-heapdump.hprof
+      -Xlog:gc*,safepoint:file=/tmp/gc.log:time,uptime:filecount=5,filesize=100M
       -Dpermissive-script-security.enabled=no_security
       -Dio.jenkins.blueocean.rest.impl.pipeline.credential.BlueOceanCredentialsProvider.enabled=true
       -Dgrape.config=/var/lib/jenkins/.groovy/grapeConfig.xml
@@ -20,3 +23,17 @@ containerEnv:
       -Dhudson.util.XStream2.collectionUpdateLimit=90
       -Dhudson.slaves.SlaveComputer.allowUnsupportedRemotingVersions=true
       -Djenkins.InitReactorRunner.concurrency=96
+
+# ══════════════════════════════════════════════════════════
+# Option B: Keep /var/lib/jenkins/userContent/support/ path
+#           but create the directory first via initContainers
+# ══════════════════════════════════════════════════════════
+# Add this to your Helm values alongside containerEnv:
+#
+# initContainers:
+#   - name: create-support-dir
+#     image: busybox:latest
+#     command: ['sh', '-c', 'mkdir -p /var/lib/jenkins/userContent/support && chown 1000:1000 /var/lib/jenkins/userContent/support']
+#     volumeMounts:
+#       - name: jenkins-home
+#         mountPath: /var/lib/jenkins
