@@ -1,0 +1,22 @@
+containerEnv:
+  - name: JENKINS_JAVA_OPTIONS
+    value: >-
+      -Djava.awt.headless=true
+      -Xms8g
+      -Xmx11g
+      -Xss384k
+      -XX:SoftMaxHeapSize=9G
+      -XX:+UseZGC
+      -XX:+ZGenerational
+      -XX:+UseStringDeduplication
+      -XX:+UnlockExperimentalVMOptions
+      -XX:+HeapDumpOnOutOfMemoryError
+      -XX:HeapDumpPath=/var/lib/jenkins/userContent/support
+      -Xlog:gc*,safepoint:file=/var/lib/jenkins/userContent/support/gc.log:time,uptime:filecount=5,filesize=100M
+      -Dpermissive-script-security.enabled=no_security
+      -Dio.jenkins.blueocean.rest.impl.pipeline.credential.BlueOceanCredentialsProvider.enabled=true
+      -Dgrape.config=/var/lib/jenkins/.groovy/grapeConfig.xml
+      -Duser.timezone=Europe/Berlin
+      -Dhudson.util.XStream2.collectionUpdateLimit=90
+      -Dhudson.slaves.SlaveComputer.allowUnsupportedRemotingVersions=true
+      -Djenkins.InitReactorRunner.concurrency=96
