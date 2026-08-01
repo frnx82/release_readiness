@@ -2959,7 +2959,6 @@ def _fetch_artifactory_versions(artifactory_path):
             elif uri and not item.get('folder', False):
                 # File-based: extract version from filename
                 # e.g. "app-1.2.3.jar" → "1.2.3"
-                import re
                 match = re.search(r'(\d+\.\d+[\w.-]*)', uri)
                 if match:
                     versions.append({
