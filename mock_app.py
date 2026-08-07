@@ -84,16 +84,23 @@ _release_history = []  # archived boards from previous release cycles
 def _get_release_date():
     today = datetime.date.today()
     days = (4 - today.weekday()) % 7
-    if days == 0 and datetime.datetime.now().hour >= 18:
+    # FIX: Convert 6pm local to UTC. 18:00 EDT (offset=-4) → 22:00 UTC
+    # Old code used datetime.now().hour >= 18 which breaks on UTC servers.
+    tz_offset = int(os.environ.get('CUTOFF_TZ_OFFSET', '-4'))
+    rollover_hour_utc = 18 - tz_offset
+    if days == 0 and datetime.datetime.utcnow().hour >= rollover_hour_utc:
         days = 7
     return (today + datetime.timedelta(days=days)).isoformat()
 
 def _get_cutoff():
     cutoff_day = int(os.environ.get('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
     cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '12'))  # 12:00 (noon)
+    tz_offset = int(os.environ.get('CUTOFF_TZ_OFFSET', '-4'))
     today = datetime.date.today()
     days = (4 - today.weekday()) % 7
-    if days == 0 and datetime.datetime.now().hour >= 18:
+    # FIX: Use UTC-aware rollover check (same fix as _get_release_date)
+    rollover_hour_utc = 18 - tz_offset
+    if days == 0 and datetime.datetime.utcnow().hour >= rollover_hour_utc:
         days = 7
     friday = today + datetime.timedelta(days=days)
     cutoff = friday - datetime.timedelta(days=(4 - cutoff_day) % 7)

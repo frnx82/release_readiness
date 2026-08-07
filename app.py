@@ -1911,7 +1911,12 @@ def _get_current_release_date():
     """Calculate the next release Friday (or whatever cadence)."""
     today = datetime.date.today()
     days_until_friday = (4 - today.weekday()) % 7
-    if days_until_friday == 0 and datetime.datetime.now().hour >= 18:
+    # FIX: Convert 6pm local to UTC using CUTOFF_TZ_OFFSET.
+    # e.g. 18:00 EDT (offset=-4) → 18 - (-4) = 22:00 UTC
+    # Old code used datetime.now().hour >= 18 which breaks on UTC servers
+    # because now() returns UTC hour, not local hour.
+    rollover_hour_utc = 18 - CUTOFF_TZ_OFFSET
+    if days_until_friday == 0 and datetime.datetime.utcnow().hour >= rollover_hour_utc:
         days_until_friday = 7
     return (today + datetime.timedelta(days=days_until_friday)).isoformat()
 
@@ -1925,7 +1930,10 @@ def _get_cutoff_datetime():
     """
     today = datetime.date.today()
     days_until_friday = (4 - today.weekday()) % 7
-    if days_until_friday == 0 and datetime.datetime.utcnow().hour >= 22:
+    # FIX: Use dynamic rollover threshold instead of hardcoded 22.
+    # 18:00 local → (18 - TZ_OFFSET) UTC. e.g. EDT(-4): 18-(-4)=22, EST(-5): 18-(-5)=23
+    rollover_hour_utc = 18 - CUTOFF_TZ_OFFSET
+    if days_until_friday == 0 and datetime.datetime.utcnow().hour >= rollover_hour_utc:
         days_until_friday = 7
     release_friday = today + datetime.timedelta(days=days_until_friday)
     cutoff_date = release_friday - datetime.timedelta(days=(4 - CUTOFF_DAY) % 7)
