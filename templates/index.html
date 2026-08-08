@@ -2936,6 +2936,12 @@
             // Countdown
             updateCountdown();
 
+            // Sync export tab buttons and nominate form with board status
+            // IMPORTANT: Must be BEFORE the card rendering block which may return early
+            // when there are 0 services, preventing these from running.
+            updateExportButtons();
+            updateNominateFormState();
+
             // Cards
             const container = document.getElementById('board-cards');
             if (keys.length === 0) {
@@ -3013,11 +3019,6 @@
             </div>`;
                 }).join('');
             }
-
-            // Sync export tab buttons with board status
-            updateExportButtons();
-            // Sync nominate form enable/disable with board status
-            updateNominateFormState();
         }
 
         function updateNominateFormState() {

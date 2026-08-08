@@ -19,7 +19,7 @@
 # Risk Level: 🟡 MEDIUM — Allows non-OIDC identity propagation.
 #             Mitigated by SA-based allow-lists.
 # =============================================================================
-{{- if .Values.internalRemoteUser.enabled }}
+{{- if (dig "internalRemoteUser" "enabled" false .Values) }}
 apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
@@ -77,7 +77,7 @@ spec:
                   request_handle:headers():replace("{{ .Values.internalRemoteUser.targetHeader }}", internal_user)
                   -- Log for observability (visible in istio-proxy logs at debug level)
                   request_handle:logDebug("[internal-remote-user] Set Remote-User from internal header: " .. internal_user)
-                {{- if .Values.internalRemoteUser.defaultRemoteUser }}
+                {{- if (dig "internalRemoteUser" "defaultRemoteUser" "" .Values) }}
                 else
                   -- No header from caller — use configured default
                   request_handle:headers():replace("{{ .Values.internalRemoteUser.targetHeader }}", "{{ .Values.internalRemoteUser.defaultRemoteUser }}")

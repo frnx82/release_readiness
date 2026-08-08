@@ -94,7 +94,7 @@ def _get_release_date():
 
 def _get_cutoff():
     cutoff_day = int(os.environ.get('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
-    cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '12'))  # 12:00 (noon)
+    cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '12'))  # 12:00 (noon) in local TZ
     tz_offset = int(os.environ.get('CUTOFF_TZ_OFFSET', '-4'))
     today = datetime.date.today()
     days = (4 - today.weekday()) % 7
@@ -104,7 +104,12 @@ def _get_cutoff():
         days = 7
     friday = today + datetime.timedelta(days=days)
     cutoff = friday - datetime.timedelta(days=(4 - cutoff_day) % 7)
-    return datetime.datetime.combine(cutoff, datetime.time(cutoff_hour, 0)).isoformat()
+    # FIX: Convert local cutoff time to UTC for consistent server-side comparison.
+    # Old code stored local time (e.g., 12:00 EDT) but compared against utcnow(),
+    # causing the board to lock 4 hours early (noon local treated as noon UTC).
+    cutoff_local = datetime.datetime.combine(cutoff, datetime.time(cutoff_hour, 0))
+    cutoff_utc = cutoff_local - datetime.timedelta(hours=tz_offset)  # e.g., 12:00 - (-4) = 16:00 UTC
+    return cutoff_utc.isoformat()
 
 def _generate_fix_version(release_date_str):
     """Generate Jira fix version from release date.
@@ -263,9 +268,12 @@ def get_current():
     board['exception_count'] = len(board.get('exception_nominations', []))
 
     # Auto-reflect locked state in UI when past cutoff
+    # FIX: Persist the auto-lock so the Export tab buttons update correctly.
+    # Old code changed status in-memory only, so each request re-read 'open'.
     if board['is_past_cutoff'] and board.get('status') == 'open':
         board['status'] = 'locked'
         board['auto_locked'] = True
+        _write_board(board)  # Persist so Export tab shows "Board Locked" correctly
 
     return jsonify(board)
 

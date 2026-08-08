@@ -21,8 +21,8 @@
 #
 # Risk Level: 🟡 MEDIUM — Explicitly whitelists SAs for header trust.
 # =============================================================================
-{{- if .Values.internalRemoteUser.enabled }}
-{{- if .Values.internalRemoteUser.allowedServiceAccounts }}
+{{- if (dig "internalRemoteUser" "enabled" false .Values) }}
+{{- if (dig "internalRemoteUser" "allowedServiceAccounts" list .Values) }}
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
 metadata:
