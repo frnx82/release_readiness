@@ -3487,22 +3487,21 @@ def get_current_release():
             print(f"[release] Auto-archive date parse error: {e}")
 
     # Enrich with live metadata
-    # ── CRITICAL: Use the LIVE cutoff for the current release window, not the
-    # stored cutoff which can become stale if the board rolls over weeks.
-    # The stored cutoff is from when the board was created — if that was last
-    # week, it's already in the past and would incorrectly show "Locked".
+    # ── ALWAYS use the LIVE cutoff, not the stored cutoff.
+    # Reason 1: The stored cutoff can become stale if the board rolls over weeks.
+    # Reason 2: The stored cutoff may have been calculated by pre-fix code that
+    #            had a timezone bug (stored local time instead of UTC).
+    # The live cutoff is always correct because _get_cutoff_datetime() now
+    # properly converts to UTC.
     live_cutoff = _get_cutoff_datetime()
     stored_cutoff = board.get('cutoff', '')
+    effective_cutoff = live_cutoff
 
-    # If the board's release_date matches the current release window, use the
-    # stored cutoff (it's correct). Otherwise use the live recalculated cutoff.
-    current_release = _get_current_release_date()
-    effective_cutoff = stored_cutoff if board.get('release_date') == current_release else live_cutoff
-
-    # Update the board's cutoff to the effective one so the UI always shows the right time
+    # Update the board's stored cutoff to match the live one
     if effective_cutoff != stored_cutoff:
         board['cutoff'] = effective_cutoff
-        print(f"[release] Updated stale cutoff {stored_cutoff} → {effective_cutoff} (board release_date={board.get('release_date')}, current={current_release})")
+        _write_board(board)  # Persist the corrected cutoff
+        print(f"[release] Updated cutoff {stored_cutoff} → {effective_cutoff}")
 
     now_iso = datetime.datetime.utcnow().isoformat()
     board['is_past_cutoff'] = now_iso > effective_cutoff
