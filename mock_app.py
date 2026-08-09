@@ -275,6 +275,13 @@ def get_current():
         board['auto_locked'] = True
         _write_board(board)  # Persist so Export tab shows "Board Locked" correctly
 
+    # Auto-UNLOCK: If the board was auto-locked but we're NOT past cutoff anymore
+    # (e.g. after a timezone fix or new release cycle), restore to 'open'.
+    if not board['is_past_cutoff'] and board.get('status') == 'locked' and board.get('auto_locked'):
+        board['status'] = 'open'
+        board['auto_locked'] = False
+        _write_board(board)
+
     return jsonify(board)
 
 @app.route('/api/release/nominate', methods=['POST'])

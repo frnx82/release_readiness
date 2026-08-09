@@ -3523,6 +3523,19 @@ def get_current_release():
         _write_board(board)  # Persist so the lock state survives pod restarts
         print(f"[release] ✅ Auto-locked board (past cutoff {effective_cutoff})")
 
+    # Auto-UNLOCK: If the board was auto-locked (not manually locked/finalized)
+    # but we're NOT past cutoff anymore, restore it to 'open'.
+    # This handles:
+    #   1. Stale lock from pre-fix code that calculated cutoff incorrectly (timezone bug)
+    #   2. Board that rolled over to a new release cycle but kept the old 'locked' status
+    # IMPORTANT: Only auto-unlock if auto_locked=True. If a release manager manually
+    # locked the board (via finalize), we must NOT override that.
+    if not board['is_past_cutoff'] and board.get('status') == 'locked' and board.get('auto_locked'):
+        board['status'] = 'open'
+        board['auto_locked'] = False
+        _write_board(board)
+        print(f"[release] 🔓 Auto-unlocked board (cutoff {effective_cutoff} hasn't passed yet, was auto-locked)")
+
     return jsonify(board)
 
 
