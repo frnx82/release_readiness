@@ -16,6 +16,14 @@ spec:
     - issuer: {{ .Values.virtualservice.cidp_oauth2_base_url }}
       jwksUri: {{ .Values.virtualService.cidp_oauth2_base_url }}/connect/jwk_uri
       forwardOriginalToken: true
+      {{- if .Values.virtualservice.audiences }}
+      # Accept tokens for ALL listed OIDC client IDs (audiences).
+      # Required when multiple apps share this namespace with different client IDs.
+      audiences:
+        {{- range .Values.virtualservice.audiences }}
+        - {{ . }}
+        {{- end }}
+      {{- end }}
       outputClaimToHeaders:
         - header: Remote-User
           claim: email

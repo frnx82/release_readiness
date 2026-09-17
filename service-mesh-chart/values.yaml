@@ -30,7 +30,21 @@ virtualservice:
   # -- CIDP / OIDC provider URLs
   cidp_oauth2_base_url: "https://cidp.example.gdc.corp/oauth2"
 
-  # -- API routes served by backend microservices
+  # -- OIDC audiences (client IDs) accepted by RequestAuthentication.
+  # When multiple apps share a namespace with different OIDC client IDs,
+  # list ALL client IDs here so tokens for any app are accepted.
+  # Leave empty [] to accept tokens for any audience (less secure).
+  audiences: []
+    # - client-id-for-release-readiness
+    # - client-id-for-new-ui-app
+
+  # -- Additional app hosts sharing this namespace's auth policies.
+  # These hosts are added to AuthorizationPolicy ALLOW rules so that
+  # requests to these hosts are not blocked with 403.
+  additionalHosts: []
+    # - newapp.example.gdc.corp
+    # - thirdapp.example.gdc.corp
+
   # Each route maps a URI prefix to a destination service.
   # The VirtualService iterates over this list to generate route rules.
   routes:

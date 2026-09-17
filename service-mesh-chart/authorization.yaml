@@ -19,6 +19,10 @@ spec:
             hosts:
               # Allow requests via the external gateway (external traffic)
               - {{ include "aarui.virtualservice_host" . }}
+              # Additional app hosts sharing this namespace's auth policies
+              {{- range .Values.virtualservice.additionalHosts }}
+              - {{ . }}
+              {{- end }}
               # Allow internal service-to-service calls (all mesh services)
               {{- range .Values.virtualService.routes }}
               - {{ .destination.host }}.{{ $.Values.namespace }}.svc.cluster.local

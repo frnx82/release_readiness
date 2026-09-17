@@ -20,6 +20,10 @@ spec:
             hosts:
               # Allow requests to the external gateway and all internal services
               - {{ include "aarui.virtualservice_host" . }}
+              # Additional app hosts sharing this namespace's auth policies
+              {{- range .Values.virtualservice.additionalHosts }}
+              - {{ . }}
+              {{- end }}
       from:
         # RULE 1: Allow requests from external traffic that have a valid end-user JWT.
         - source:
