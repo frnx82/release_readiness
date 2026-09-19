@@ -32,10 +32,10 @@ metadata:
     release: "{{ $.Release.Name }}"
     security-principle: "internal-remote-user"
 spec:
-  # Apply only to workloads that use OIDC auth
+  # Apply only to THIS app's workloads
   workloadSelector:
     labels:
-      auth-type: oidc
+      {{- toYaml .Values.appSelector.matchLabels | nindent 6 }}
   configPatches:
     - applyTo: HTTP_FILTER
       match:

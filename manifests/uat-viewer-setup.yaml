@@ -1,0 +1,84 @@
+---
+# ──────────────────────────────────────────────────────────────────
+# Release Readiness — UAT Cluster Viewer Setup
+# ──────────────────────────────────────────────────────────────────
+#
+# Apply this on the GDC UAT cluster to create a read-only service
+# account that the prod-deployed Release Readiness app uses to
+# remotely read services from the UAT namespace.
+#
+# Usage:
+#   kubectl apply -f uat-viewer-setup.yaml -n uat
+#
+# Then retrieve the token:
+#   UAT_TOKEN=$(kubectl get secret release-readiness-viewer-token \
+#     -n uat -o jsonpath='{.data.token}' | base64 -d)
+#   echo "$UAT_TOKEN"
+#
+# Then on the PROD cluster, create the remote connection secret:
+#   UAT_API=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+#   kubectl create secret generic release-readiness-uat \
+#     --from-literal=api-url=$UAT_API \
+#     --from-literal=token=$UAT_TOKEN \
+#     --from-literal=namespace=uat \
+#     -n prod
+#
+# ──────────────────────────────────────────────────────────────────
+
+# 1. ServiceAccount — the identity used by the remote prod app
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-readiness-viewer
+  namespace: uat
+  labels:
+    app: release-readiness
+    purpose: remote-cluster-viewer
+    managed-by: release-readiness
+
+---
+
+# 2. RoleBinding — grants read-only access to the uat namespace
+#    Uses the built-in "view" ClusterRole which allows:
+#      - GET/LIST/WATCH on Deployments, StatefulSets, DaemonSets,
+#        Pods, Services, ConfigMaps, Secrets (names only), etc.
+#      - No CREATE, UPDATE, DELETE, or EXEC permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-readiness-viewer
+  namespace: uat
+  labels:
+    app: release-readiness
+    purpose: remote-cluster-viewer
+    managed-by: release-readiness
+subjects:
+  - kind: ServiceAccount
+    name: release-readiness-viewer
+    namespace: uat
+roleRef:
+  kind: ClusterRole
+  name: view                    # Built-in read-only role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+
+# 3. Long-lived Token Secret — creates a non-expiring bearer token
+#    for the ServiceAccount. This is used by the prod app to
+#    authenticate against the UAT cluster's API server.
+#
+#    ⚠️  Security note: This token does NOT expire automatically.
+#    Rotate it periodically by deleting and recreating this secret.
+#    The "view" role ensures it can only READ, never modify.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-readiness-viewer-token
+  namespace: uat
+  labels:
+    app: release-readiness
+    purpose: remote-cluster-viewer
+    managed-by: release-readiness
+  annotations:
+    kubernetes.io/service-account.name: release-readiness-viewer
+type: kubernetes.io/service-account-token

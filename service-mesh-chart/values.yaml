@@ -97,28 +97,55 @@ virtualservice:
 # Security Principles — Istio Policy Configuration
 # =============================================================================
 
+# -- App-Specific Policy Selector
+# Controls which pods THIS chart's auth policies (RequestAuthentication,
+# AuthorizationPolicy) apply to. Each app sets its OWN selector so that
+# multiple apps can coexist in the same namespace with independent policies.
+#
+# SHARED policies (deny-all-default, allow-same-namespace, peer-authentication)
+# are namespace-wide and should only be deployed ONCE per namespace.
+# Set tenantIsolation.enabled and peerAuthentication.enabled to false
+# in App 2's values.yaml if App 1 already deployed them.
+appSelector:
+  # App 1 example: { app: release-readiness }
+  # App 2 example: { app: new-ui-app }
+  matchLabels:
+    app: release-readiness
+
+# -- OIDC audience (client ID) for THIS app.
+# Each app registers its own OIDC client ID with CIDP.
+# The RequestAuthentication will only accept JWTs with this audience.
+# Leave empty to accept tokens for any audience (less secure).
+oicdAudience: ""
+  # Example: "my-app-client-id-from-cidp"
+
 # -- Principle 1: Tenant Isolation
 # Blocks all traffic from outside this namespace by default,
 # then explicitly allows traffic from within the same namespace.
+# ⚠️  Deploy ONCE per namespace. Set to false in App 2 if App 1
+#     already deployed these policies.
 tenantIsolation:
   enabled: true
 
 # -- Principle 2: mTLS
 # Enforces mutual TLS for all service-to-service communication.
 # Modes: STRICT (production), PERMISSIVE (migration), DISABLE (not recommended)
+# ⚠️  Deploy ONCE per namespace. Set to false in App 2 if App 1
+#     already deployed this policy.
 peerAuthentication:
   enabled: true
   mtlsMode: STRICT    # Change to PERMISSIVE during migration
 
 # -- Principle 3: CIDP / OIDC Token Validation
-# Validates JWT tokens from the Cloud Identity Provider on services
-# with label auth-type: oidc.
+# Validates JWT tokens from the Cloud Identity Provider.
+# Uses appSelector to target ONLY this app's pods.
 requestAuthentication:
   enabled: true
 
 # -- Principle 4: Service-to-Service Allow-Lists
 # Controls which services can call which. Uses JWT principals for
 # external traffic and ServiceAccount principals for internal traffic.
+# Uses appSelector to target ONLY this app's pods.
 serviceAllowLists:
   enabled: true
 

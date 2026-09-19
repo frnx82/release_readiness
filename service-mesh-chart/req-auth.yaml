@@ -2,7 +2,7 @@ apiVersion: security.istio.io/v1beta1
 kind: RequestAuthentication
 metadata:
   name: {{ template "application.name" . }}-jwt-auth
-  namespace: {{ .Release.Namespace }}  # This MUST be the namespace of your ingress gateway
+  namespace: {{ .Release.Namespace }}
   labels:
     app: {{ $.Release.Name }}
     chart: {{ $.Chart.Name }}
@@ -10,15 +10,18 @@ metadata:
 spec:
   selector:
     matchLabels:
-      # Apply to any workload with this label
-      auth-type: oidc
+      {{- toYaml .Values.appSelector.matchLabels | nindent 6 }}
   jwtRules:
     - issuer: {{ .Values.virtualservice.cidp_oauth2_base_url }}
       jwksUri: {{ .Values.virtualService.cidp_oauth2_base_url }}/connect/jwk_uri
       forwardOriginalToken: true
+      {{- if .Values.oicdAudience }}
+      # Only accept JWTs issued for THIS app's OIDC client ID.
+      audiences:
+        - {{ .Values.oicdAudience }}
+      {{- end }}
       {{- if .Values.virtualservice.audiences }}
-      # Accept tokens for ALL listed OIDC client IDs (audiences).
-      # Required when multiple apps share this namespace with different client IDs.
+      # Legacy: accept tokens for multiple client IDs (shared mode).
       audiences:
         {{- range .Values.virtualservice.audiences }}
         - {{ . }}

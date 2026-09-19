@@ -10,9 +10,8 @@ metadata:
 spec:
   action: ALLOW
   selector:
-    # Select all services that require OIDC authentication
     matchLabels:
-      auth-type: oidc
+      {{- toYaml .Values.appSelector.matchLabels | nindent 6 }}
   # An empty 'rules' block here means it applies to all requests that reach it.
   rules:
     - to:

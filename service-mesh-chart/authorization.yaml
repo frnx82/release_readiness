@@ -10,9 +10,8 @@ metadata:
 spec:
   # This selector targets the application pods in this namespace.
   selector:
-    # Select all services that require OIDC authentication
     matchLabels:
-      auth-type: oidc
+      {{- toYaml .Values.appSelector.matchLabels | nindent 6 }}
   rules:
     - to:
         - operation:

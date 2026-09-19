@@ -37,9 +37,8 @@ metadata:
 spec:
   action: ALLOW
   selector:
-    # Apply to services that use OIDC auth (same as req-auth.yaml)
     matchLabels:
-      auth-type: oidc
+      {{- toYaml .Values.appSelector.matchLabels | nindent 6 }}
   rules:
     - from:
         - source:
