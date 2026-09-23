@@ -27,10 +27,17 @@ spec:
         # RULE 1: Allow requests from external traffic that have a valid end-user JWT.
         - source:
             requestPrincipals:
-              - "{{ .Values.virtualService.cidp_oauth2_base_url }}/*"
+              - "{{ .Values.virtualservice.cidp_oauth2_base_url }}/*"
     - from:
         # RULE 2: Allow requests from any other service within the same namespace.
         # This enables secure service-to-service communication.
         - source:
             principals:
               - "cluster.local/ns/{{ .Values.namespace }}/sa/*"
+    - from:
+        # RULE 3: Allow requests forwarded by the ASM ingress gateway.
+        # The gateway pod runs in its own namespace (e.g., asm-gateway),
+        # so its SA principal doesn't match the same-namespace rule above.
+        - source:
+            principals:
+              - "cluster.local/ns/asm-gateway/sa/*"

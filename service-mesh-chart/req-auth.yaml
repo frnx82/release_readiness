@@ -13,17 +13,16 @@ spec:
       {{- toYaml .Values.appSelector.matchLabels | nindent 6 }}
   jwtRules:
     - issuer: {{ .Values.virtualservice.cidp_oauth2_base_url }}
-      jwksUri: {{ .Values.virtualService.cidp_oauth2_base_url }}/connect/jwk_uri
+      jwksUri: {{ .Values.virtualservice.cidp_oauth2_base_url }}/connect/jwk_uri
       forwardOriginalToken: true
-      {{- if .Values.oicdAudience }}
-      # Only accept JWTs issued for THIS app's OIDC client ID.
+      {{- if or .Values.oicdAudience .Values.virtualservice.audiences }}
       audiences:
+        {{- if .Values.oicdAudience }}
+        # Per-app audience — this app's own OIDC client ID.
         - {{ .Values.oicdAudience }}
-      {{- end }}
-      {{- if .Values.virtualservice.audiences }}
-      # Legacy: accept tokens for multiple client IDs (shared mode).
-      audiences:
+        {{- end }}
         {{- range .Values.virtualservice.audiences }}
+        # Shared audience — accept tokens for multiple apps in the namespace.
         - {{ . }}
         {{- end }}
       {{- end }}

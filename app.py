@@ -1806,7 +1806,7 @@ NAMESPACE = os.getenv('POD_NAMESPACE', 'default')
 DEPLOY_ENV = os.getenv('DEPLOY_ENV', 'uat').lower()  # 'uat' or 'prod' — determines which cluster is local
 RELEASE_CADENCE = os.getenv('RELEASE_CADENCE', 'friday')  # 'friday' or 'custom'
 CUTOFF_DAY = int(os.getenv('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
-CUTOFF_HOUR = int(os.getenv('CUTOFF_HOUR', '12'))  # 12:00 (noon) in CUTOFF_TZ
+CUTOFF_HOUR = int(os.getenv('CUTOFF_HOUR', '16'))  # 16:00 (4 PM) in CUTOFF_TZ
 CUTOFF_TZ_OFFSET = int(os.getenv('CUTOFF_TZ_OFFSET', '-4'))  # UTC offset: -4=EDT, -5=EST
 
 # ── Artifactory (Custom Component Version Detection) ─────────────────────────
@@ -1872,6 +1872,7 @@ _detect_storage_mode()
 
 # ── History persistence helpers ───────────────────────────────────────────────
 _HISTORY_FILE = os.path.join(BOARD_DATA_DIR, 'release_history.json')
+_HISTORY_CM_NAME = 'release-readiness-history'
 
 
 def _read_history_file():
@@ -1889,22 +1890,122 @@ def _read_history_file():
         return []
 
 
+def _read_history_configmap():
+    """Load release history from a ConfigMap (backup/cross-cluster persistence)."""
+    if _STORAGE_MODE != 'configmap':
+        return []
+    try:
+        v1 = client.CoreV1Api(api_client=_local_api_client)
+        cm = _k8s_retry(v1.read_namespaced_config_map, _HISTORY_CM_NAME, NAMESPACE)
+        raw = cm.data.get('history.json', '[]') if cm.data else '[]'
+        data = json.loads(raw)
+        return data if isinstance(data, list) else []
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            return []
+        print(f"[storage] Error reading history ConfigMap: {e}")
+        return []
+    except Exception as e:
+        print(f"[storage] Error reading history ConfigMap: {e}")
+        return []
+
+
+def _recover_history_from_board_configmaps():
+    """Recover history by scanning for old released board ConfigMaps.
+
+    When deploying to a new cluster/PVC and history is empty, this looks for
+    any past board ConfigMaps that have status='released' and rebuilds history.
+    """
+    if _STORAGE_MODE != 'configmap':
+        return []
+    try:
+        v1 = client.CoreV1Api(api_client=_local_api_client)
+        cm_list = _k8s_retry(
+            v1.list_namespaced_config_map, NAMESPACE,
+            label_selector='app=release-readiness'
+        )
+        recovered = []
+        for cm in cm_list.items:
+            # Skip probe and history ConfigMaps
+            if cm.metadata.name in (_HISTORY_CM_NAME, 'release-readiness-probe'):
+                continue
+            if not cm.data or 'manifest.json' not in cm.data:
+                continue
+            try:
+                board = json.loads(cm.data['manifest.json'])
+                if board.get('status') == 'released':
+                    recovered.append(board)
+            except Exception:
+                continue
+        # Sort by release_date ascending
+        recovered.sort(key=lambda b: b.get('release_date', ''))
+        if recovered:
+            print(f"[storage] 🔄 Recovered {len(recovered)} released boards from ConfigMaps")
+        return recovered
+    except Exception as e:
+        print(f"[storage] Recovery from ConfigMaps failed: {e}")
+        return []
+
+
 def _write_history_file():
-    """Persist the in-memory _release_history list to the PVC."""
+    """Persist the in-memory _release_history list to PVC and ConfigMap."""
+    # Write to file
     try:
         os.makedirs(os.path.dirname(_HISTORY_FILE), exist_ok=True)
         with open(_HISTORY_FILE, 'w') as f:
             json.dump(_release_history, f, indent=2)
         print(f"[storage] ✅ History persisted ({len(_release_history)} releases → {_HISTORY_FILE})")
     except Exception as e:
-        print(f"[storage] ⚠️  History write failed: {e}")
+        print(f"[storage] ⚠️  History file write failed: {e}")
+
+    # Write to ConfigMap (backup for cross-cluster/PVC loss)
+    if _STORAGE_MODE == 'configmap':
+        try:
+            v1 = client.CoreV1Api(api_client=_local_api_client)
+            body = client.V1ConfigMap(
+                metadata=client.V1ObjectMeta(
+                    name=_HISTORY_CM_NAME,
+                    labels={'app': 'release-readiness', 'component': 'history'}
+                ),
+                data={'history.json': json.dumps(_release_history, indent=2)}
+            )
+            try:
+                _k8s_retry(v1.read_namespaced_config_map, _HISTORY_CM_NAME, NAMESPACE)
+                _k8s_retry(v1.replace_namespaced_config_map, _HISTORY_CM_NAME, NAMESPACE, body)
+            except client.exceptions.ApiException as e:
+                if e.status == 404:
+                    _k8s_retry(v1.create_namespaced_config_map, NAMESPACE, body)
+                else:
+                    raise
+            print(f"[storage] ✅ History ConfigMap updated ({len(_release_history)} releases)")
+        except Exception as e:
+            print(f"[storage] ⚠️  History ConfigMap write failed: {e}")
 
 # ── Load persisted history on startup ─────────────────────────────────────────
+# Priority: file → ConfigMap → recover from old board ConfigMaps
 _release_history = _read_history_file()
 if _release_history:
     print(f"[storage] ✅ Loaded {len(_release_history)} past releases from history file")
 else:
-    print(f"[storage] No release history file found — starting fresh")
+    # Try ConfigMap backup
+    _release_history = _read_history_configmap()
+    if _release_history:
+        print(f"[storage] ✅ Loaded {len(_release_history)} past releases from history ConfigMap")
+        # Sync back to file
+        try:
+            os.makedirs(os.path.dirname(_HISTORY_FILE), exist_ok=True)
+            with open(_HISTORY_FILE, 'w') as f:
+                json.dump(_release_history, f, indent=2)
+        except Exception:
+            pass
+    else:
+        # Last resort: recover from released board ConfigMaps
+        _release_history = _recover_history_from_board_configmaps()
+        if _release_history:
+            print(f"[storage] 🔄 Recovered {len(_release_history)} past releases from board ConfigMaps")
+            _write_history_file()  # Persist the recovered history
+        else:
+            print(f"[storage] No release history found — starting fresh")
 
 
 def _get_current_release_date():
@@ -2080,6 +2181,89 @@ def _extract_helm_version(labels):
     return (labels.get('helm.sh/chart') or
             labels.get('app.kubernetes.io/version') or
             labels.get('chart') or None)
+
+
+def _get_deployment_rollout_status(d):
+    """Determine rollout status from a Deployment's status conditions.
+
+    Returns (status, detail) where status is one of:
+      'running'     - fully rolled out and healthy
+      'rolling'     - rollout in progress (new version deploying)
+      'degraded'    - some pods not ready (crash, image pull error, etc.)
+      'failed'      - rollout failed (ProgressDeadlineExceeded)
+      'scaling'     - scaling up/down but not a version change
+
+    This solves the problem where a failed deployment shows 1/2 ready + "Running"
+    because the old replica is still alive, masking the rollout failure.
+    """
+    spec_replicas = d.spec.replicas or 1
+    ready = d.status.ready_replicas or 0
+    updated = d.status.updated_replicas or 0
+    available = d.status.available_replicas or 0
+    unavailable = d.status.unavailable_replicas or 0
+    observed_gen = d.status.observed_generation or 0
+    generation = d.metadata.generation or 0
+
+    # Check conditions for ProgressDeadlineExceeded
+    conditions = d.status.conditions or []
+    progress_deadline_exceeded = False
+    pod_failure_reason = ''
+    for c in conditions:
+        if c.type == 'Progressing' and c.status == 'False' and c.reason == 'ProgressDeadlineExceeded':
+            progress_deadline_exceeded = True
+        if c.type == 'Available' and c.status == 'False':
+            pod_failure_reason = c.message or c.reason or ''
+
+    # 1. Controller hasn't seen latest spec yet
+    if observed_gen < generation:
+        return 'rolling', f'Waiting for controller (gen {observed_gen}/{generation})'
+
+    # 2. Rollout explicitly failed
+    if progress_deadline_exceeded:
+        return 'failed', f'Rollout failed: progress deadline exceeded ({ready}/{spec_replicas} ready, {updated}/{spec_replicas} updated)'
+
+    # 3. New version still rolling out (updated < desired means old pods still running)
+    if updated < spec_replicas:
+        return 'rolling', f'Rolling update: {updated}/{spec_replicas} updated, {ready}/{spec_replicas} ready'
+
+    # 4. All updated but not all available yet (new pods starting)
+    if available < updated:
+        return 'rolling', f'New pods starting: {available}/{spec_replicas} available, {ready}/{spec_replicas} ready'
+
+    # 5. All updated and available, but some not ready
+    if ready < spec_replicas:
+        detail = f'{ready}/{spec_replicas} ready'
+        if pod_failure_reason:
+            detail += f' ({pod_failure_reason})'
+        return 'degraded', detail
+
+    # 6. There are unavailable pods (shouldn't happen if ready == desired, but safety check)
+    if unavailable > 0:
+        return 'degraded', f'{unavailable} pod(s) unavailable'
+
+    # 7. All good
+    return 'running', f'{ready}/{spec_replicas} ready'
+
+
+def _get_statefulset_rollout_status(s):
+    """Determine rollout status for a StatefulSet."""
+    spec_replicas = s.spec.replicas or 1
+    ready = s.status.ready_replicas or 0
+    updated = s.status.updated_replicas or 0
+    current = s.status.current_replicas or 0
+    observed_gen = s.status.observed_generation or 0
+    generation = s.metadata.generation or 0
+
+    if observed_gen < generation:
+        return 'rolling', f'Waiting for controller (gen {observed_gen}/{generation})'
+
+    if updated < spec_replicas:
+        return 'rolling', f'Rolling update: {updated}/{spec_replicas} updated'
+
+    if ready < spec_replicas:
+        return 'degraded', f'{ready}/{spec_replicas} ready'
+
+    return 'running', f'{ready}/{spec_replicas} ready'
 
 
 # ── Custom components (non-K8s: Spark/PySpark on Linux servers) ───────────────
@@ -2768,6 +2952,7 @@ def list_services():
             for d in deploys:
                 containers = d.spec.template.spec.containers or []
                 image = containers[0].image if containers else ''
+                rollout_status, rollout_detail = _get_deployment_rollout_status(d)
                 services.append({
                     'name': d.metadata.name,
                     'kind': 'Deployment',
@@ -2776,7 +2961,12 @@ def list_services():
                     'helm_version': _extract_helm_version(d.metadata.labels),
                     'replicas': d.status.ready_replicas or 0,
                     'desired_replicas': d.spec.replicas or 1,
+                    'updated_replicas': d.status.updated_replicas or 0,
+                    'available_replicas': d.status.available_replicas or 0,
+                    'unavailable_replicas': d.status.unavailable_replicas or 0,
                     'available': (d.status.ready_replicas or 0) >= (d.spec.replicas or 1),
+                    'rollout_status': rollout_status,
+                    'rollout_detail': rollout_detail,
                     'created': d.metadata.creation_timestamp.isoformat() if d.metadata.creation_timestamp else None
                 })
         except Exception as e:
@@ -2791,6 +2981,7 @@ def list_services():
             for s in sts:
                 containers = s.spec.template.spec.containers or []
                 image = containers[0].image if containers else ''
+                rollout_status, rollout_detail = _get_statefulset_rollout_status(s)
                 services.append({
                     'name': s.metadata.name,
                     'kind': 'StatefulSet',
@@ -2799,7 +2990,10 @@ def list_services():
                     'helm_version': _extract_helm_version(s.metadata.labels),
                     'replicas': s.status.ready_replicas or 0,
                     'desired_replicas': s.spec.replicas or 1,
+                    'updated_replicas': s.status.updated_replicas or 0,
                     'available': (s.status.ready_replicas or 0) >= (s.spec.replicas or 1),
+                    'rollout_status': rollout_status,
+                    'rollout_detail': rollout_detail,
                     'created': s.metadata.creation_timestamp.isoformat() if s.metadata.creation_timestamp else None
                 })
         except Exception as e:
@@ -2827,6 +3021,59 @@ def list_services():
                 })
         except Exception as e:
             err_msg = f'DaemonSets: {type(e).__name__}: {str(e)[:200]}'
+            errors.append(err_msg)
+            print(f"[services] ❌ {err_msg}")
+
+        # CronJobs
+        try:
+            batch_v1 = client.BatchV1Api(api_client=_local_api_client)
+            cron_jobs = _k8s_retry(batch_v1.list_namespaced_cron_job, namespace).items
+            print(f'[services] ✅ CronJobs: {len(cron_jobs)} found')
+            for cj in cron_jobs:
+                containers = cj.spec.job_template.spec.template.spec.containers or []
+                image = containers[0].image if containers else ''
+                services.append({
+                    'name': cj.metadata.name,
+                    'kind': 'CronJob',
+                    'image': image,
+                    'image_tag': _extract_image_tag(image),
+                    'helm_version': _extract_helm_version(cj.metadata.labels),
+                    'replicas': 1 if cj.spec.suspend is not True else 0,
+                    'desired_replicas': 1,
+                    'available': cj.spec.suspend is not True,
+                    'created': cj.metadata.creation_timestamp.isoformat() if cj.metadata.creation_timestamp else None
+                })
+        except Exception as e:
+            err_msg = f'CronJobs: {type(e).__name__}: {str(e)[:200]}'
+            errors.append(err_msg)
+            print(f"[services] ❌ {err_msg}")
+
+        # Jobs (standalone, not owned by a CronJob)
+        try:
+            if not batch_v1:
+                batch_v1 = client.BatchV1Api(api_client=_local_api_client)
+            jobs = _k8s_retry(batch_v1.list_namespaced_job, namespace).items
+            # Filter out Jobs owned by CronJobs (they're already listed above)
+            standalone_jobs = [j for j in jobs if not any(
+                ref.kind == 'CronJob' for ref in (j.metadata.owner_references or [])
+            )]
+            print(f'[services] ✅ Jobs: {len(jobs)} total, {len(standalone_jobs)} standalone')
+            for j in standalone_jobs:
+                containers = j.spec.template.spec.containers or []
+                image = containers[0].image if containers else ''
+                services.append({
+                    'name': j.metadata.name,
+                    'kind': 'Job',
+                    'image': image,
+                    'image_tag': _extract_image_tag(image),
+                    'helm_version': _extract_helm_version(j.metadata.labels),
+                    'replicas': j.status.succeeded or 0,
+                    'desired_replicas': j.spec.completions or 1,
+                    'available': (j.status.succeeded or 0) >= (j.spec.completions or 1),
+                    'created': j.metadata.creation_timestamp.isoformat() if j.metadata.creation_timestamp else None
+                })
+        except Exception as e:
+            err_msg = f'Jobs: {type(e).__name__}: {str(e)[:200]}'
             errors.append(err_msg)
             print(f"[services] ❌ {err_msg}")
 
@@ -3271,6 +3518,7 @@ def _list_services_from_api(api_client, namespace, log_prefix='[remote]'):
         for d in deploys:
             containers = d.spec.template.spec.containers or []
             image = containers[0].image if containers else ''
+            rollout_status, rollout_detail = _get_deployment_rollout_status(d)
             services.append({
                 'name': d.metadata.name,
                 'kind': 'Deployment',
@@ -3279,7 +3527,12 @@ def _list_services_from_api(api_client, namespace, log_prefix='[remote]'):
                 'helm_version': _extract_helm_version(d.metadata.labels),
                 'replicas': d.status.ready_replicas or 0,
                 'desired_replicas': d.spec.replicas or 1,
+                'updated_replicas': d.status.updated_replicas or 0,
+                'available_replicas': d.status.available_replicas or 0,
+                'unavailable_replicas': d.status.unavailable_replicas or 0,
                 'available': (d.status.ready_replicas or 0) >= (d.spec.replicas or 1),
+                'rollout_status': rollout_status,
+                'rollout_detail': rollout_detail,
                 'created': d.metadata.creation_timestamp.isoformat() if d.metadata.creation_timestamp else None
             })
     except Exception as e:
@@ -3291,6 +3544,7 @@ def _list_services_from_api(api_client, namespace, log_prefix='[remote]'):
         for s in sts:
             containers = s.spec.template.spec.containers or []
             image = containers[0].image if containers else ''
+            rollout_status, rollout_detail = _get_statefulset_rollout_status(s)
             services.append({
                 'name': s.metadata.name,
                 'kind': 'StatefulSet',
@@ -3299,7 +3553,10 @@ def _list_services_from_api(api_client, namespace, log_prefix='[remote]'):
                 'helm_version': _extract_helm_version(s.metadata.labels),
                 'replicas': s.status.ready_replicas or 0,
                 'desired_replicas': s.spec.replicas or 1,
+                'updated_replicas': s.status.updated_replicas or 0,
                 'available': (s.status.ready_replicas or 0) >= (s.spec.replicas or 1),
+                'rollout_status': rollout_status,
+                'rollout_detail': rollout_detail,
                 'created': s.metadata.creation_timestamp.isoformat() if s.metadata.creation_timestamp else None
             })
     except Exception as e:
@@ -3324,6 +3581,52 @@ def _list_services_from_api(api_client, namespace, log_prefix='[remote]'):
             })
     except Exception as e:
         print(f"{log_prefix} DaemonSets error: {e}")
+
+    # CronJobs
+    try:
+        batch_v1 = client.BatchV1Api(api_client)
+        cron_jobs = batch_v1.list_namespaced_cron_job(namespace, _request_timeout=_timeout_seconds).items
+        for cj in cron_jobs:
+            containers = cj.spec.job_template.spec.template.spec.containers or []
+            image = containers[0].image if containers else ''
+            services.append({
+                'name': cj.metadata.name,
+                'kind': 'CronJob',
+                'image': image,
+                'image_tag': _extract_image_tag(image),
+                'helm_version': _extract_helm_version(cj.metadata.labels),
+                'replicas': 1 if cj.spec.suspend is not True else 0,
+                'desired_replicas': 1,
+                'available': cj.spec.suspend is not True,
+                'created': cj.metadata.creation_timestamp.isoformat() if cj.metadata.creation_timestamp else None
+            })
+    except Exception as e:
+        print(f"{log_prefix} CronJobs error: {e}")
+
+    # Jobs (standalone, not owned by a CronJob)
+    try:
+        if not batch_v1:
+            batch_v1 = client.BatchV1Api(api_client)
+        jobs = batch_v1.list_namespaced_job(namespace, _request_timeout=_timeout_seconds).items
+        standalone_jobs = [j for j in jobs if not any(
+            ref.kind == 'CronJob' for ref in (j.metadata.owner_references or [])
+        )]
+        for j in standalone_jobs:
+            containers = j.spec.template.spec.containers or []
+            image = containers[0].image if containers else ''
+            services.append({
+                'name': j.metadata.name,
+                'kind': 'Job',
+                'image': image,
+                'image_tag': _extract_image_tag(image),
+                'helm_version': _extract_helm_version(j.metadata.labels),
+                'replicas': j.status.succeeded or 0,
+                'desired_replicas': j.spec.completions or 1,
+                'available': (j.status.succeeded or 0) >= (j.spec.completions or 1),
+                'created': j.metadata.creation_timestamp.isoformat() if j.metadata.creation_timestamp else None
+            })
+    except Exception as e:
+        print(f"{log_prefix} Jobs error: {e}")
 
     return services
 
@@ -3643,7 +3946,26 @@ def nominate_service():
                         helm_version = _extract_helm_version(s.metadata.labels)
                         kind = 'StatefulSet'
                     except client.exceptions.ApiException:
-                        pass
+                        try:
+                            batch_v1 = client.BatchV1Api(api_client=apps_v1.api_client)
+                            cj = _k8s_retry(batch_v1.read_namespaced_cron_job, service_name, namespace)
+                            containers = cj.spec.job_template.spec.template.spec.containers or []
+                            image = containers[0].image if containers else ''
+                            image_tag = _extract_image_tag(image)
+                            helm_version = _extract_helm_version(cj.metadata.labels)
+                            kind = 'CronJob'
+                        except client.exceptions.ApiException:
+                            try:
+                                if not batch_v1:
+                                    batch_v1 = client.BatchV1Api(api_client=apps_v1.api_client)
+                                j = _k8s_retry(batch_v1.read_namespaced_job, service_name, namespace)
+                                containers = j.spec.template.spec.containers or []
+                                image = containers[0].image if containers else ''
+                                image_tag = _extract_image_tag(image)
+                                helm_version = _extract_helm_version(j.metadata.labels)
+                                kind = 'Job'
+                            except client.exceptions.ApiException:
+                                pass
         except Exception as e:
             print(f"[nominate] K8s lookup error: {e}")
 
@@ -4099,6 +4421,16 @@ def check_drift():
                 s = _k8s_retry(apps_v1.read_namespaced_stateful_set, svc_name, namespace)
                 containers = s.spec.template.spec.containers or []
                 live_image = containers[0].image if containers else ''
+            elif kind == 'CronJob':
+                batch_v1 = client.BatchV1Api(api_client=apps_v1.api_client)
+                cj = _k8s_retry(batch_v1.read_namespaced_cron_job, svc_name, namespace)
+                containers = cj.spec.job_template.spec.template.spec.containers or []
+                live_image = containers[0].image if containers else ''
+            elif kind == 'Job':
+                batch_v1 = client.BatchV1Api(api_client=apps_v1.api_client)
+                j = _k8s_retry(batch_v1.read_namespaced_job, svc_name, namespace)
+                containers = j.spec.template.spec.containers or []
+                live_image = containers[0].image if containers else ''
             live_tag = _extract_image_tag(live_image)
         except Exception as e:
             print(f"[drift] Error checking {svc_name}: {e}")
@@ -4189,9 +4521,24 @@ def ai_release_readiness():
 
         # Check for probes
         try:
+            svc_kind = svc_data.get('kind', 'Deployment')
             apps_v1 = client.AppsV1Api(api_client=_local_api_client)
-            d = _k8s_retry(apps_v1.read_namespaced_deployment, svc_name, namespace)
-            for c in (d.spec.template.spec.containers or []):
+            containers_spec = []
+            if svc_kind == 'Deployment':
+                d = _k8s_retry(apps_v1.read_namespaced_deployment, svc_name, namespace)
+                containers_spec = d.spec.template.spec.containers or []
+            elif svc_kind == 'StatefulSet':
+                s = _k8s_retry(apps_v1.read_namespaced_stateful_set, svc_name, namespace)
+                containers_spec = s.spec.template.spec.containers or []
+            elif svc_kind == 'CronJob':
+                batch_v1 = client.BatchV1Api(api_client=_local_api_client)
+                cj = _k8s_retry(batch_v1.read_namespaced_cron_job, svc_name, namespace)
+                containers_spec = cj.spec.job_template.spec.template.spec.containers or []
+            elif svc_kind == 'Job':
+                batch_v1 = client.BatchV1Api(api_client=_local_api_client)
+                j = _k8s_retry(batch_v1.read_namespaced_job, svc_name, namespace)
+                containers_spec = j.spec.template.spec.containers or []
+            for c in containers_spec:
                 has_readiness = 'yes' if c.readiness_probe else 'MISSING'
                 has_liveness = 'yes' if c.liveness_probe else 'MISSING'
                 summary_lines.append(f"  Probes: readiness={has_readiness}, liveness={has_liveness}")
@@ -6181,6 +6528,16 @@ def _tool_check_drift() -> str:
                 elif kind == 'StatefulSet':
                     s = _k8s_retry(apps_v1.read_namespaced_stateful_set, svc_name, namespace)
                     containers = s.spec.template.spec.containers or []
+                    live_tag = _extract_image_tag(containers[0].image) if containers else '?'
+                elif kind == 'CronJob':
+                    batch_v1 = client.BatchV1Api(api_client=apps_v1.api_client)
+                    cj = _k8s_retry(batch_v1.read_namespaced_cron_job, svc_name, namespace)
+                    containers = cj.spec.job_template.spec.template.spec.containers or []
+                    live_tag = _extract_image_tag(containers[0].image) if containers else '?'
+                elif kind == 'Job':
+                    batch_v1 = client.BatchV1Api(api_client=apps_v1.api_client)
+                    j = _k8s_retry(batch_v1.read_namespaced_job, svc_name, namespace)
+                    containers = j.spec.template.spec.containers or []
                     live_tag = _extract_image_tag(containers[0].image) if containers else '?'
             except Exception:
                 live_tag = 'unknown'

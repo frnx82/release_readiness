@@ -33,7 +33,7 @@ spec:
           httpStatus: 200
           percentage:
             value: 100
-    {{- range .Values.virtualService.routes }}
+    {{- range .Values.virtualservice.routes }}
     - name: {{ .name }}
       match:
         {{- toYaml .match | nindent 8 }}

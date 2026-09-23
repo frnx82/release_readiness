@@ -23,7 +23,7 @@ spec:
               - {{ . }}
               {{- end }}
               # Allow internal service-to-service calls (all mesh services)
-              {{- range .Values.virtualService.routes }}
+              {{- range .Values.virtualservice.routes }}
               - {{ .destination.host }}.{{ $.Values.namespace }}.svc.cluster.local
               {{- end }}
       from:

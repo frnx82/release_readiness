@@ -3848,7 +3848,21 @@
                 _lastProdAllServices = svcs; // Store ALL for full export
 
                 const rows = svcs.map((s, i) => {
-                    const status = s.available ? '<span style="color:var(--green)">● Running</span>' : '<span style="color:var(--red)">● Down</span>';
+                    // Rollout-aware status badge
+                    let status;
+                    const rs = s.rollout_status || (s.available ? 'running' : 'degraded');
+                    const rd = s.rollout_detail || `${s.replicas}/${s.desired_replicas} ready`;
+                    if (rs === 'running') {
+                        status = `<span style="color:var(--green)" title="${rd}">● Running</span>`;
+                    } else if (rs === 'rolling') {
+                        status = `<span style="color:var(--warning, #f59e0b);font-weight:600" title="${rd}">◐ Rolling</span>`;
+                    } else if (rs === 'failed') {
+                        status = `<span style="color:var(--red);font-weight:600" title="${rd}">✖ Failed</span>`;
+                    } else if (rs === 'degraded') {
+                        status = `<span style="color:var(--red)" title="${rd}">▲ Degraded</span>`;
+                    } else {
+                        status = `<span style="color:var(--text2)" title="${rd}">○ ${rs}</span>`;
+                    }
                     const helmBadge = s.helm_version ? `<span style="font-size:11px;padding:2px 8px;background:rgba(99,102,241,.12);color:var(--accent);border-radius:4px">${s.helm_version}</span>` : '<span style="color:var(--text2)">—</span>';
 
                     const isNominated = !!boardSvcs[s.name];
@@ -3868,7 +3882,7 @@
                         <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span></td>
                         <td>${helmBadge}</td>
                         <td style="text-align:center">${s.replicas}/${s.desired_replicas}</td>
-                        <td>${status}</td>
+                        <td>${status}${rs !== 'running' ? `<div style="font-size:9px;color:var(--text2);margin-top:2px">${rd}</div>` : ''}</td>
                         <td>${boardStatusHtml}</td>
                     </tr>`;
                 }).join('');
@@ -3912,10 +3926,12 @@
         function exportAllProdCSV() {
             if (!_lastProdAllServices.length) { showToast('No prod services loaded', 'warn'); return; }
             const boardSvcs = (_board && _board.services) ? _board.services : {};
-            const header = 'Service,Kind,Image,Tag,Helm Chart,Replicas,Status,Board Status';
+            const header = 'Service,Kind,Image,Tag,Helm Chart,Replicas,Status,Rollout Detail,Board Status';
             const csvRows = _lastProdAllServices.map(s => {
                 const boardStatus = boardSvcs[s.name] ? 'Nominated' : 'Not Nominated';
-                return `"${s.name}","${s.kind}","${s.image}","'${s.image_tag || ''}","'${s.helm_version || ''}","'${s.replicas}/${s.desired_replicas}","${s.available ? 'Running' : 'Down'}","${boardStatus}"`;
+                const rolloutLabel = s.rollout_status ? s.rollout_status.charAt(0).toUpperCase() + s.rollout_status.slice(1) : (s.available ? 'Running' : 'Down');
+                const rolloutDetail = s.rollout_detail || '';
+                return `"${s.name}","${s.kind}","${s.image}","'${s.image_tag || ''}","'${s.helm_version || ''}","'${s.replicas}/${s.desired_replicas}","${rolloutLabel}","${rolloutDetail}","${boardStatus}"`;
             });
             const csv = [header, ...csvRows].join('\n');
             const blob = new Blob([csv], { type: 'text/csv' });
@@ -3931,10 +3947,11 @@
 
             if (format === 'csv') {
                 // Download as CSV
-                const header = 'Service,Kind,Image,Tag,Helm Chart,Replicas,Status';
-                const csvRows = _lastProdNotNominated.map(s =>
-                    `"${s.name}","${s.kind}","${s.image}","'${s.image_tag || ''}","'${s.helm_version || ''}","'${s.replicas}/${s.desired_replicas}","${s.available ? 'Running' : 'Down'}"`
-                );
+                const header = 'Service,Kind,Image,Tag,Helm Chart,Replicas,Status,Rollout Detail';
+                const csvRows = _lastProdNotNominated.map(s => {
+                    const rolloutLabel = s.rollout_status ? s.rollout_status.charAt(0).toUpperCase() + s.rollout_status.slice(1) : (s.available ? 'Running' : 'Down');
+                    return `"${s.name}","${s.kind}","${s.image}","'${s.image_tag || ''}","'${s.helm_version || ''}","'${s.replicas}/${s.desired_replicas}","${rolloutLabel}","${s.rollout_detail || ''}"`;
+                });
                 const csv = [header, ...csvRows].join('\n');
                 const blob = new Blob([csv], { type: 'text/csv' });
                 const url = URL.createObjectURL(blob);
@@ -4226,7 +4243,21 @@
                 let nominatedCount = 0, driftCount = 0, prodMatchCount = 0;
 
                 const rows = svcs.map((s, i) => {
-                    const status = s.available ? '<span style="color:var(--green)">● Running</span>' : '<span style="color:var(--red)">● Down</span>';
+                    // Rollout-aware status badge
+                    let status;
+                    const rs = s.rollout_status || (s.available ? 'running' : 'degraded');
+                    const rd = s.rollout_detail || `${s.replicas}/${s.desired_replicas} ready`;
+                    if (rs === 'running') {
+                        status = `<span style="color:var(--green)" title="${rd}">● Running</span>`;
+                    } else if (rs === 'rolling') {
+                        status = `<span style="color:var(--warning, #f59e0b);font-weight:600" title="${rd}">◐ Rolling</span>`;
+                    } else if (rs === 'failed') {
+                        status = `<span style="color:var(--red);font-weight:600" title="${rd}">✖ Failed</span>`;
+                    } else if (rs === 'degraded') {
+                        status = `<span style="color:var(--red)" title="${rd}">▲ Degraded</span>`;
+                    } else {
+                        status = `<span style="color:var(--text2)" title="${rd}">○ ${rs}</span>`;
+                    }
                     const helmBadge = s.helm_version ? `<span style="font-size:11px;padding:2px 8px;background:rgba(99,102,241,.12);color:var(--accent);border-radius:4px">${s.helm_version}</span>` : '<span style="color:var(--text2)">—</span>';
 
                     // Helm chart prod comparison badge
@@ -4284,7 +4315,7 @@
                         <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span>${prodBadgeHtml}</td>
                         <td>${helmBadge}${helmProdBadge}</td>
                         <td style="text-align:center">${s.replicas}/${s.desired_replicas}</td>
-                        <td>${status}</td>
+                        <td>${status}${rs !== 'running' ? `<div style="font-size:9px;color:var(--text2);margin-top:2px">${rd}</div>` : ''}</td>
                         <td>${boardStatusHtml}</td>
                     </tr>`;
                 }).join('');

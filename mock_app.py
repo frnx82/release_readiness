@@ -21,23 +21,29 @@ app = Flask(__name__)
 app.secret_key = 'mock-secret-key-for-sessions'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
-# ── Fake services (simulates a K8s cluster with 15 microservices) ─────────────
+# ── Fake services (simulates a K8s cluster with various workload types) ───────
 MOCK_SERVICES = [
-    {"name":"billing-service","kind":"Deployment","image":"registry.example.com/billing:v2.3.3","image_tag":"v2.3.3","helm_version":"billing-chart-0.5.0","replicas":3,"desired_replicas":3,"available":True},
-    {"name":"payment-gateway","kind":"Deployment","image":"registry.example.com/payment:v2.0.0","image_tag":"v2.0.0","helm_version":"payment-chart-0.4.0","replicas":2,"desired_replicas":2,"available":True},
-    {"name":"user-service","kind":"Deployment","image":"registry.example.com/user:v3.2.0","image_tag":"v3.2.0","helm_version":"user-chart-1.1.0","replicas":3,"desired_replicas":3,"available":True},
-    {"name":"order-service","kind":"Deployment","image":"registry.example.com/order:v1.5.2","image_tag":"v1.5.2","helm_version":"order-chart-0.3.1","replicas":2,"desired_replicas":2,"available":True},
-    {"name":"notification-svc","kind":"Deployment","image":"registry.example.com/notify:v1.8.0","image_tag":"v1.8.0","helm_version":"notify-chart-0.2.0","replicas":1,"desired_replicas":1,"available":True},
-    {"name":"inventory-service","kind":"Deployment","image":"registry.example.com/inventory:v4.1.1","image_tag":"v4.1.1","helm_version":"inventory-chart-1.0.0","replicas":2,"desired_replicas":2,"available":True},
-    {"name":"auth-service","kind":"Deployment","image":"registry.example.com/auth:v2.7.0","image_tag":"v2.7.0","helm_version":"auth-chart-0.8.0","replicas":2,"desired_replicas":2,"available":True},
-    {"name":"search-service","kind":"Deployment","image":"registry.example.com/search:v1.3.5","image_tag":"v1.3.5","helm_version":"search-chart-0.1.2","replicas":1,"desired_replicas":1,"available":True},
-    {"name":"report-engine","kind":"Deployment","image":"registry.example.com/report:v3.0.1","image_tag":"v3.0.1","helm_version":"report-chart-0.6.0","replicas":1,"desired_replicas":1,"available":True},
-    {"name":"config-service","kind":"Deployment","image":"registry.example.com/config:v1.0.4","image_tag":"v1.0.4","helm_version":"config-chart-0.1.0","replicas":1,"desired_replicas":1,"available":True},
-    {"name":"gateway-api","kind":"Deployment","image":"registry.example.com/gateway:v5.2.0","image_tag":"v5.2.0","helm_version":"gateway-chart-2.0.0","replicas":3,"desired_replicas":3,"available":True},
-    {"name":"cache-service","kind":"StatefulSet","image":"registry.example.com/cache:v2.1.0","image_tag":"v2.1.0","helm_version":"cache-chart-0.4.0","replicas":3,"desired_replicas":3,"available":True},
-    {"name":"message-broker","kind":"StatefulSet","image":"registry.example.com/broker:v1.9.2","image_tag":"v1.9.2","helm_version":"broker-chart-0.5.0","replicas":3,"desired_replicas":3,"available":True},
-    {"name":"scheduler-service","kind":"Deployment","image":"registry.example.com/scheduler:v1.2.0","image_tag":"v1.2.0","helm_version":"scheduler-chart-0.2.0","replicas":1,"desired_replicas":1,"available":True},
-    {"name":"analytics-engine","kind":"Deployment","image":"registry.example.com/analytics:latest","image_tag":"latest","helm_version":None,"replicas":2,"desired_replicas":2,"available":True},
+    {"name":"billing-service","kind":"Deployment","image":"registry.example.com/billing:v2.3.3","image_tag":"v2.3.3","helm_version":"billing-chart-0.5.0","replicas":3,"desired_replicas":3,"updated_replicas":3,"available_replicas":3,"unavailable_replicas":0,"available":True,"rollout_status":"running","rollout_detail":"3/3 ready"},
+    {"name":"payment-gateway","kind":"Deployment","image":"registry.example.com/payment:v2.0.0","image_tag":"v2.0.0","helm_version":"payment-chart-0.4.0","replicas":2,"desired_replicas":2,"updated_replicas":2,"available_replicas":2,"unavailable_replicas":0,"available":True,"rollout_status":"running","rollout_detail":"2/2 ready"},
+    {"name":"user-service","kind":"Deployment","image":"registry.example.com/user:v3.2.0","image_tag":"v3.2.0","helm_version":"user-chart-1.1.0","replicas":3,"desired_replicas":3,"updated_replicas":3,"available_replicas":3,"unavailable_replicas":0,"available":True,"rollout_status":"running","rollout_detail":"3/3 ready"},
+    {"name":"order-service","kind":"Deployment","image":"registry.example.com/order:v1.5.2","image_tag":"v1.5.2","helm_version":"order-chart-0.3.1","replicas":2,"desired_replicas":2,"updated_replicas":2,"available_replicas":2,"unavailable_replicas":0,"available":True,"rollout_status":"running","rollout_detail":"2/2 ready"},
+    {"name":"notification-svc","kind":"Deployment","image":"registry.example.com/notify:v1.8.0","image_tag":"v1.8.0","helm_version":"notify-chart-0.2.0","replicas":1,"desired_replicas":1,"updated_replicas":1,"available_replicas":1,"unavailable_replicas":0,"available":True,"rollout_status":"running","rollout_detail":"1/1 ready"},
+    {"name":"inventory-service","kind":"Deployment","image":"registry.example.com/inventory:v4.1.1","image_tag":"v4.1.1","helm_version":"inventory-chart-1.0.0","replicas":2,"desired_replicas":2,"updated_replicas":2,"available_replicas":2,"unavailable_replicas":0,"available":True,"rollout_status":"running","rollout_detail":"2/2 ready"},
+    {"name":"auth-service","kind":"Deployment","image":"registry.example.com/auth:v2.7.0","image_tag":"v2.7.0","helm_version":"auth-chart-0.8.0","replicas":2,"desired_replicas":2,"updated_replicas":2,"available_replicas":2,"unavailable_replicas":0,"available":True,"rollout_status":"running","rollout_detail":"2/2 ready"},
+    {"name":"search-service","kind":"Deployment","image":"registry.example.com/search:v1.3.5","image_tag":"v1.3.5","helm_version":"search-chart-0.1.2","replicas":1,"desired_replicas":1,"updated_replicas":1,"available_replicas":1,"unavailable_replicas":0,"available":True,"rollout_status":"running","rollout_detail":"1/1 ready"},
+    {"name":"report-engine","kind":"Deployment","image":"registry.example.com/report:v3.0.1","image_tag":"v3.0.1","helm_version":"report-chart-0.6.0","replicas":1,"desired_replicas":1,"updated_replicas":1,"available_replicas":1,"unavailable_replicas":0,"available":True,"rollout_status":"running","rollout_detail":"1/1 ready"},
+    {"name":"config-service","kind":"Deployment","image":"registry.example.com/config:v1.0.4","image_tag":"v1.0.4","helm_version":"config-chart-0.1.0","replicas":1,"desired_replicas":1,"updated_replicas":1,"available_replicas":1,"unavailable_replicas":0,"available":True,"rollout_status":"running","rollout_detail":"1/1 ready"},
+    {"name":"gateway-api","kind":"Deployment","image":"registry.example.com/gateway:v5.2.0","image_tag":"v5.2.0","helm_version":"gateway-chart-2.0.0","replicas":3,"desired_replicas":3,"updated_replicas":3,"available_replicas":3,"unavailable_replicas":0,"available":True,"rollout_status":"running","rollout_detail":"3/3 ready"},
+    {"name":"cache-service","kind":"StatefulSet","image":"registry.example.com/cache:v2.1.0","image_tag":"v2.1.0","helm_version":"cache-chart-0.4.0","replicas":3,"desired_replicas":3,"updated_replicas":3,"available":True,"rollout_status":"running","rollout_detail":"3/3 ready"},
+    {"name":"message-broker","kind":"StatefulSet","image":"registry.example.com/broker:v1.9.2","image_tag":"v1.9.2","helm_version":"broker-chart-0.5.0","replicas":3,"desired_replicas":3,"updated_replicas":3,"available":True,"rollout_status":"running","rollout_detail":"3/3 ready"},
+    {"name":"scheduler-service","kind":"Deployment","image":"registry.example.com/scheduler:v1.2.0","image_tag":"v1.2.0","helm_version":"scheduler-chart-0.2.0","replicas":1,"desired_replicas":1,"updated_replicas":1,"available_replicas":1,"unavailable_replicas":0,"available":True,"rollout_status":"running","rollout_detail":"1/1 ready"},
+    {"name":"analytics-engine","kind":"Deployment","image":"registry.example.com/analytics:latest","image_tag":"latest","helm_version":None,"replicas":2,"desired_replicas":2,"updated_replicas":2,"available_replicas":2,"unavailable_replicas":0,"available":True,"rollout_status":"running","rollout_detail":"2/2 ready"},
+    # Simulate a rolling deployment (new version being deployed)
+    {"name":"data-processor","kind":"Deployment","image":"registry.example.com/processor:v2.1.0","image_tag":"v2.1.0","helm_version":"processor-chart-0.3.0","replicas":1,"desired_replicas":2,"updated_replicas":1,"available_replicas":1,"unavailable_replicas":1,"available":False,"rollout_status":"rolling","rollout_detail":"Rolling update: 1/2 updated, 1/2 ready"},
+    # CronJob
+    {"name":"nightly-report-job","kind":"CronJob","image":"registry.example.com/report-gen:v1.0.2","image_tag":"v1.0.2","helm_version":"report-job-0.1.0","replicas":1,"desired_replicas":1,"available":True,"rollout_status":"running","rollout_detail":"Active (not suspended)"},
+    # Standalone Job
+    {"name":"db-migration-v42","kind":"Job","image":"registry.example.com/migrations:v42.0.0","image_tag":"v42.0.0","helm_version":None,"replicas":1,"desired_replicas":1,"available":True,"rollout_status":"running","rollout_detail":"1/1 succeeded"},
 ]
 
 MOCK_SERVICE_MAP = {s['name']: s for s in MOCK_SERVICES}
@@ -94,7 +100,7 @@ def _get_release_date():
 
 def _get_cutoff():
     cutoff_day = int(os.environ.get('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
-    cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '12'))  # 12:00 (noon) in local TZ
+    cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '16'))  # 16:00 (4 PM) in local TZ
     tz_offset = int(os.environ.get('CUTOFF_TZ_OFFSET', '-4'))
     today = datetime.date.today()
     days = (4 - today.weekday()) % 7

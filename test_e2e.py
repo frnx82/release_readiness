@@ -131,9 +131,9 @@ def test_dates():
              f'got {cutoff_date.strftime("%A")} ({cutoff_date})')
         
         # CRITICAL: Cutoff hour should reflect UTC conversion
-        # CUTOFF_HOUR=12 local, CUTOFF_TZ_OFFSET=-4 → 16:00 UTC
+        # CUTOFF_HOUR=16 local (4 PM), CUTOFF_TZ_OFFSET=-4 → 20:00 UTC
         tz_offset = int(os.environ.get('CUTOFF_TZ_OFFSET', '-4'))
-        cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '12'))
+        cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '16'))
         expected_utc_hour = cutoff_hour - tz_offset
         test(f'Cutoff hour is {expected_utc_hour}:00 UTC (hour {cutoff_hour} + offset {tz_offset} → {expected_utc_hour} UTC)',
              ct.hour == expected_utc_hour,
@@ -744,6 +744,152 @@ def test_edge_cases():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# TEST 17: Rollout Status
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_rollout_status():
+    section('17. Rollout Status')
+
+    r = get('/api/services')
+    test('Services API returns 200', r.status_code == 200)
+    data = r.json()
+    svcs = data.get('services', data if isinstance(data, list) else [])
+
+    # Check that services have rollout_status fields
+    has_rollout = [s for s in svcs if 'rollout_status' in s]
+    test('Services include rollout_status field', len(has_rollout) > 0,
+         f'{len(has_rollout)}/{len(svcs)} have rollout_status')
+
+    has_detail = [s for s in svcs if 'rollout_detail' in s]
+    test('Services include rollout_detail field', len(has_detail) > 0,
+         f'{len(has_detail)}/{len(svcs)} have rollout_detail')
+
+    # Check that a running service has correct status
+    running_svcs = [s for s in svcs if s.get('rollout_status') == 'running']
+    test('At least one service has rollout_status=running', len(running_svcs) > 0,
+         f'found {len(running_svcs)}')
+
+    # Check for rolling deployment (data-processor in mock)
+    rolling_svcs = [s for s in svcs if s.get('rollout_status') == 'rolling']
+    test('Rolling deployment detected (data-processor)', len(rolling_svcs) > 0,
+         f'found {len(rolling_svcs)} rolling services')
+
+    if rolling_svcs:
+        rs = rolling_svcs[0]
+        test('Rolling service has detail with "updated"', 'updated' in rs.get('rollout_detail', ''),
+             f'detail: {rs.get("rollout_detail")}')
+        test('Rolling service replicas < desired', rs.get('replicas', 0) < rs.get('desired_replicas', 0),
+             f'{rs.get("replicas")}/{rs.get("desired_replicas")}')
+
+    # Check valid rollout_status values
+    valid_statuses = {'running', 'rolling', 'failed', 'degraded', 'scaling'}
+    invalid = [s for s in has_rollout if s.get('rollout_status') not in valid_statuses]
+    test('All rollout_status values are valid', len(invalid) == 0,
+         f'{len(invalid)} services have invalid status')
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST 18: CronJob & Job Workloads
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_workload_types():
+    section('18. CronJob & Job Workloads')
+
+    r = get('/api/services')
+    data = r.json()
+    svcs = data.get('services', data if isinstance(data, list) else [])
+
+    # Check kind diversity
+    kinds = set(s.get('kind') for s in svcs)
+    test('Services include Deployment kind', 'Deployment' in kinds, f'kinds: {kinds}')
+    test('Services include StatefulSet kind', 'StatefulSet' in kinds, f'kinds: {kinds}')
+    test('Services include CronJob kind', 'CronJob' in kinds, f'kinds: {kinds}')
+    test('Services include Job kind', 'Job' in kinds, f'kinds: {kinds}')
+
+    # Check CronJob has proper fields
+    cronjobs = [s for s in svcs if s.get('kind') == 'CronJob']
+    if cronjobs:
+        cj = cronjobs[0]
+        test('CronJob has image_tag', bool(cj.get('image_tag')), f'tag: {cj.get("image_tag")}')
+        test('CronJob has name', bool(cj.get('name')), f'name: {cj.get("name")}')
+
+    # Check Job has proper fields
+    jobs = [s for s in svcs if s.get('kind') == 'Job']
+    if jobs:
+        j = jobs[0]
+        test('Job has image_tag', bool(j.get('image_tag')), f'tag: {j.get("image_tag")}')
+        test('Job has name', bool(j.get('name')), f'name: {j.get("name")}')
+
+    # Nominate a CronJob
+    ensure_clean_board()
+    if cronjobs:
+        r = post('/api/release/nominate', {
+            'service_name': cronjobs[0]['name'],
+            'nominated_by': 'e2e-test',
+            'image_tag': cronjobs[0].get('image_tag', 'v1.0.0'),
+            'notes': 'Testing CronJob nomination'
+        })
+        test('Nominate CronJob returns 200', r.status_code == 200, f'status={r.status_code}')
+
+        board = get('/api/release/current').json()
+        test('CronJob appears in board', cronjobs[0]['name'] in board.get('services', {}))
+
+    # Nominate a Job
+    if jobs:
+        r = post('/api/release/nominate', {
+            'service_name': jobs[0]['name'],
+            'nominated_by': 'e2e-test',
+            'image_tag': jobs[0].get('image_tag', 'v1.0.0'),
+            'notes': 'Testing Job nomination'
+        })
+        test('Nominate Job returns 200', r.status_code == 200, f'status={r.status_code}')
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST 19: History Persistence
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_history_persistence():
+    section('19. History Persistence')
+
+    # Create a board, nominate, release it, then check history
+    ensure_clean_board()
+    post('/api/release/nominate', {
+        'service_name': 'billing-service',
+        'nominated_by': 'history-test',
+        'image_tag': 'v99.0.0-history-test'
+    })
+    r = post('/api/release/complete', {'completed_by': 'history-tester'})
+    test('Release for history test returns 200', r.status_code == 200, f'status={r.status_code}')
+
+    # Now check history
+    r = get('/api/release/history')
+    test('History endpoint returns 200', r.status_code == 200)
+    data = r.json()
+    history = data.get('history', [])
+    test('History has at least 1 entry', len(history) > 0, f'count: {len(history)}')
+
+    if history:
+        latest = history[0]  # Most recent first (reversed)
+        test('History entry has release_date', bool(latest.get('release_date')),
+             f'date: {latest.get("release_date")}')
+        test('History entry has status', latest.get('status') == 'released',
+             f'status: {latest.get("status")}')
+        test('History entry has services', latest.get('service_count', 0) > 0,
+             f'service_count: {latest.get("service_count")}')
+        test('History entry has released_by', bool(latest.get('released_by')),
+             f'released_by: {latest.get("released_by")}')
+
+        # Check that services in history have details
+        svc_list = latest.get('services', [])
+        test('History services list is populated', len(svc_list) > 0,
+             f'services: {len(svc_list)}')
+
+    # Start a new cycle to clean up
+    post('/api/release/new_cycle')
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -769,7 +915,8 @@ if __name__ == '__main__':
         test_health, test_dates, test_lifecycle, test_audit,
         test_services, test_jira, test_export, test_history,
         test_ai, test_confluence, test_github, test_deploy,
-        test_qa, test_release_notes, test_artifactory, test_edge_cases
+        test_qa, test_release_notes, test_artifactory, test_edge_cases,
+        test_rollout_status, test_workload_types, test_history_persistence
     ]
     for suite in suites:
         try:
