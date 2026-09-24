@@ -3051,10 +3051,22 @@
             }
         }
 
+        // Helper: parse cutoff string as UTC (server stores UTC without 'Z' suffix)
+        // Without 'Z', JavaScript's Date() treats it as local time → wrong display.
+        // With 'Z', Date() correctly interprets it as UTC and getHours() returns local time.
+        function parseCutoffUTC(cutoffStr) {
+            if (!cutoffStr) return null;
+            // If the string already ends with Z or has timezone offset, leave it
+            if (cutoffStr.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(cutoffStr)) {
+                return new Date(cutoffStr);
+            }
+            return new Date(cutoffStr + 'Z');
+        }
+
         function updateCountdown() {
             if (!_board || !_board.cutoff) return;
             const el = document.getElementById('countdown-display');
-            const cutoff = new Date(_board.cutoff);
+            const cutoff = parseCutoffUTC(_board.cutoff);
             const now = new Date();
             const diff = cutoff - now;
             if (diff <= 0) {
@@ -3072,18 +3084,23 @@
         function updateSidebar() {
             if (!_board) return;
             document.getElementById('info-release-date').textContent = _board.release_date || '--';
-            // Format cutoff as readable: "Wed, May 21 12:00 PM"
+            // Format cutoff as readable: "Wed, Sep 24 4:00 PM EST"
             const cutoffRaw = _board.cutoff || '';
             if (cutoffRaw) {
-                const cd = new Date(cutoffRaw);
-                if (!isNaN(cd)) {
+                const cd = parseCutoffUTC(cutoffRaw);
+                if (cd && !isNaN(cd)) {
                     const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
                     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
                     const h = cd.getHours(); const m = cd.getMinutes();
                     const ampm = h >= 12 ? 'PM' : 'AM';
                     const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
                     const timeStr = `${h12}:${m.toString().padStart(2,'0')} ${ampm}`;
-                    document.getElementById('info-cutoff').textContent = `${days[cd.getDay()]}, ${months[cd.getMonth()]} ${cd.getDate()} ${timeStr}`;
+                    // Show timezone abbreviation (e.g. EST, EDT, PST)
+                    let tzAbbr = '';
+                    try {
+                        tzAbbr = cd.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
+                    } catch(e) { tzAbbr = ''; }
+                    document.getElementById('info-cutoff').textContent = `${days[cd.getDay()]}, ${months[cd.getMonth()]} ${cd.getDate()} ${timeStr} ${tzAbbr}`.trim();
                 } else {
                     document.getElementById('info-cutoff').textContent = cutoffRaw.replace('T', ' ');
                 }

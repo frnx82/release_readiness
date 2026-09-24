@@ -2025,9 +2025,9 @@ def _get_current_release_date():
 def _get_cutoff_datetime():
     """Calculate the cutoff datetime in UTC based on CUTOFF_DAY, CUTOFF_HOUR, and CUTOFF_TZ_OFFSET.
 
-    CUTOFF_HOUR is in the local timezone (e.g. 12 = noon EST).
+    CUTOFF_HOUR is in the local timezone (e.g. 16 = 4 PM EST).
     We convert to UTC for comparison with datetime.utcnow().
-    Example: 12:00 EST (UTC-5) → 17:00 UTC.
+    Example: 16:00 EDT (UTC-4) → 20:00 UTC.
     """
     today = datetime.date.today()
     days_until_friday = (4 - today.weekday()) % 7
@@ -2039,7 +2039,7 @@ def _get_cutoff_datetime():
     release_friday = today + datetime.timedelta(days=days_until_friday)
     cutoff_date = release_friday - datetime.timedelta(days=(4 - CUTOFF_DAY) % 7)
     # Convert local cutoff time to UTC: subtract the TZ offset
-    # e.g. 12:00 EST (offset=-5) → 12:00 - (-5) = 17:00 UTC
+    # e.g. 16:00 EDT (offset=-4) → 16:00 - (-4) = 20:00 UTC
     cutoff_local = datetime.datetime.combine(cutoff_date, datetime.time(CUTOFF_HOUR, 0))
     cutoff_utc = cutoff_local - datetime.timedelta(hours=CUTOFF_TZ_OFFSET)
     return cutoff_utc.isoformat()
