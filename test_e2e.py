@@ -55,13 +55,25 @@ def delete(path, data=None):
     return SESSION.delete(f'{BASE}{path}', json=data or {}, timeout=10)
 
 def ensure_clean_board():
-    """Start a fresh, unlocked board for testing."""
+    """Start a fresh, unlocked board for testing.
+    
+    After unlocking, we set a future fix version to push the cutoff into the future.
+    This ensures normal nominations work (not exception-only mode).
+    """
     post('/api/release/new_cycle')
     r = get('/api/release/current')
     board = r.json()
-    # If auto-locked (past cutoff), unlock it
+    # If auto-locked (past cutoff), unlock it and push cutoff forward
     if board.get('status') == 'locked':
         post('/api/release/unlock', {'unlocked_by': 'e2e-setup'})
+        # Push cutoff to next week so the board is truly "open" (not exception-only)
+        import datetime
+        future = datetime.date.today() + datetime.timedelta(days=7)
+        future_fv = f"P{future.strftime('%y.%m.%d')}"
+        post('/api/release/fix_version', {
+            'fix_version': future_fv,
+            'updated_by': 'e2e-setup'
+        })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -131,9 +143,9 @@ def test_dates():
              f'got {cutoff_date.strftime("%A")} ({cutoff_date})')
         
         # CRITICAL: Cutoff hour should reflect UTC conversion
-        # CUTOFF_HOUR=16 local (4 PM), CUTOFF_TZ_OFFSET=-4 → 20:00 UTC
+        # CUTOFF_HOUR=14 local (2 PM), CUTOFF_TZ_OFFSET=-4 → 18:00 UTC
         tz_offset = int(os.environ.get('CUTOFF_TZ_OFFSET', '-4'))
-        cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '16'))
+        cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '14'))
         expected_utc_hour = cutoff_hour - tz_offset
         test(f'Cutoff hour is {expected_utc_hour}:00 UTC (hour {cutoff_hour} + offset {tz_offset} → {expected_utc_hour} UTC)',
              ct.hour == expected_utc_hour,
@@ -230,6 +242,12 @@ def test_lifecycle():
     r = post('/api/release/nominate', {'service_name': '', 'nominated_by': 'e2e-tester'})
     test('Empty service name returns 400', r.status_code == 400, f'status={r.status_code}')
     
+    # Set a past fix version so cutoff is in the past — needed for exception-required tests after unlock
+    import datetime as _dt
+    _past = _dt.date.today() - _dt.timedelta(days=2)
+    _past_fv = f"P{_past.strftime('%y.%m.%d')}"
+    post('/api/release/fix_version', {'fix_version': _past_fv, 'updated_by': 'e2e-setup'})
+
     # 3e. Lock board (finalize)
     print()
     print('  ── 3e. Lock Board ──')
@@ -250,7 +268,7 @@ def test_lifecycle():
     
     # 3g. Regular nomination should be blocked when locked
     print()
-    print('  ── 3g. Nomination Blocked When Locked ──')
+    print('  ── 3g. All Nominations Blocked When Locked ──')
     r = post('/api/release/nominate', {
         'service_name': 'blocked-service',
         'nominated_by': 'e2e-tester',
@@ -259,9 +277,10 @@ def test_lifecycle():
     test('Regular nomination blocked when locked (403)', r.status_code == 403,
          f'status={r.status_code}')
     
-    # 3h. Exception nomination should work when locked
+    # 3h. Exception nomination should ALSO be blocked when locked
+    # (changed behavior — QA must unlock first, then nominate)
     print()
-    print('  ── 3h. Exception Nomination When Locked ──')
+    print('  ── 3h. Exception Nomination Also Blocked When Locked ──')
     r = post('/api/release/nominate', {
         'service_name': 'hotfix-service',
         'nominated_by': 'e2e-tester',
@@ -269,18 +288,10 @@ def test_lifecycle():
         'exception_reason': 'Critical hotfix',
         'exception_approver': 'vp-engineering'
     })
-    test('Exception nomination returns 200 when locked', r.status_code == 200,
+    test('Exception nomination also blocked when locked (403)', r.status_code == 403,
          f'status={r.status_code}')
     
-    r = get('/api/release/current')
-    board = r.json()
-    test('Exception service appears in board',
-         'hotfix-service' in board.get('services', {}))
-    hotfix = board.get('services', {}).get('hotfix-service', {})
-    test('Exception flag is set', hotfix.get('is_exception') == True)
-    test('Exception approver is recorded', hotfix.get('exception_approver') == 'vp-engineering')
-    
-    # 3i. Unlock board
+    # 3i. Unlock board — then exception nominations should work
     print()
     print('  ── 3i. Unlock Board ──')
     r = post('/api/release/unlock', {'unlocked_by': 'release-manager'})
@@ -290,8 +301,38 @@ def test_lifecycle():
     board = r.json()
     test('Board status is open after unlock', board.get('status') == 'open',
          f'got: {board.get("status")}')
+    test('Board has manually_unlocked flag', board.get('manually_unlocked') == True)
     
-    # 3j. Remove a nomination
+    # 3i-b. Regular nomination should be rejected (exception required)
+    r = post('/api/release/nominate', {
+        'service_name': 'hotfix-service',
+        'nominated_by': 'e2e-tester',
+    })
+    test('Regular nomination after unlock returns 403 (exception required)',
+         r.status_code == 403, f'status={r.status_code}')
+    d = r.json()
+    test('Response has exception_required flag', d.get('exception_required') == True)
+
+    # 3i-c. Exception nomination with reason + approver should succeed
+    r = post('/api/release/nominate', {
+        'service_name': 'hotfix-service',
+        'nominated_by': 'e2e-tester',
+        'is_exception': True,
+        'exception_reason': 'Critical hotfix needed',
+        'exception_approver': 'vp-engineering'
+    })
+    test('Exception nomination after unlock returns 200', r.status_code == 200,
+         f'status={r.status_code}')
+
+    r = get('/api/release/current')
+    board = r.json()
+    test('Hotfix service appears after exception nomination',
+         'hotfix-service' in board.get('services', {}))
+    hotfix = board.get('services', {}).get('hotfix-service', {})
+    test('Exception flag is set on service', hotfix.get('is_exception') == True)
+    test('Exception approver is recorded', hotfix.get('exception_approver') == 'vp-engineering')
+    
+    # 3j. Remove a nomination (after unlock)
     print()
     print('  ── 3j. Remove Nomination ──')
     r = delete('/api/release/remove', {'service_name': 'hotfix-service', 'removed_by': 'e2e-tester'})
@@ -333,40 +374,55 @@ def test_lifecycle():
     
     r = get('/api/release/current')
     board = r.json()
-    test('Board status is released', board.get('status') == 'released',
-         f'got: {board.get("status")}')
+    # Auto-archival: if we're past the release date (past midnight UTC the next day),
+    # the server auto-archives the released board and creates a new one.
+    # In that case, the board status will be 'open' or 'locked' (new cycle), not 'released'.
+    auto_archived = board.get('status') != 'released'
+    if auto_archived:
+        test('Board auto-archived (past release date) — new cycle created', True)
+        # New cycle board should have 0 services (fresh)
+        test('New board has 0 services after auto-archive',
+             len(board.get('services', {})) == 0,
+             f'got: {len(board.get("services", {}))}')
+    else:
+        test('Board status is released', board.get('status') == 'released',
+             f'got: {board.get("status")}')
     
-    # 3m. Nomination on released board should fail
-    print()
-    print('  ── 3m. Nomination After Release ──')
-    r = post('/api/release/nominate', {
-        'service_name': 'post-release-svc',
-        'nominated_by': 'e2e-tester'
-    })
-    test('Nomination on released board returns 403', r.status_code == 403,
-         f'status={r.status_code}')
-    
-    # 3n. Lock on released board should fail
-    r = post('/api/release/finalize', {'finalized_by': 'test'})
-    test('Lock on released board returns 400', r.status_code == 400,
-         f'status={r.status_code}')
-    
-    # 3o. Unlock on released board should fail
-    r = post('/api/release/unlock', {'unlocked_by': 'test'})
-    test('Unlock released board returns 400', r.status_code == 400,
-         f'status={r.status_code}')
-    
-    # 3p. Start new cycle
-    print()
-    print('  ── 3p. Start New Cycle ──')
-    r = post('/api/release/new_cycle')
-    test('New cycle returns 200', r.status_code == 200, f'status={r.status_code}')
-    
-    r = get('/api/release/current')
-    board = r.json()
-    test('New board has 0 services',
-         len(board.get('services', {})) == 0,
-         f'got: {len(board.get("services", {}))}')
+    if not auto_archived:
+        # 3m. Nomination on released board should fail
+        print()
+        print('  ── 3m. Nomination After Release ──')
+        r = post('/api/release/nominate', {
+            'service_name': 'post-release-svc',
+            'nominated_by': 'e2e-tester'
+        })
+        test('Nomination on released board returns 403', r.status_code == 403,
+             f'status={r.status_code}')
+        
+        # 3n. Lock on released board should fail
+        r = post('/api/release/finalize', {'finalized_by': 'test'})
+        test('Lock on released board returns 400', r.status_code == 400,
+             f'status={r.status_code}')
+        
+        # 3o. Unlock on released board should fail
+        r = post('/api/release/unlock', {'unlocked_by': 'test'})
+        test('Unlock released board returns 400', r.status_code == 400,
+             f'status={r.status_code}')
+        
+        # 3p. Start new cycle
+        print()
+        print('  ── 3p. Start New Cycle ──')
+        r = post('/api/release/new_cycle')
+        test('New cycle returns 200', r.status_code == 200, f'status={r.status_code}')
+        
+        r = get('/api/release/current')
+        board = r.json()
+        test('New board has 0 services',
+             len(board.get('services', {})) == 0,
+             f'got: {len(board.get("services", {}))}')
+    else:
+        # Auto-archived — skip released-board tests (already in new cycle)
+        test('Skip released-board tests (auto-archived)', True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

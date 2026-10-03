@@ -100,7 +100,7 @@ def _get_release_date():
 
 def _get_cutoff():
     cutoff_day = int(os.environ.get('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
-    cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '16'))  # 16:00 (4 PM) in local TZ
+    cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '14'))  # 14:00 (2 PM) in local TZ
     tz_offset = int(os.environ.get('CUTOFF_TZ_OFFSET', '-4'))
     today = datetime.date.today()
     days = (4 - today.weekday()) % 7
@@ -125,6 +125,42 @@ def _generate_fix_version(release_date_str):
         return f"P{d.strftime('%y.%m.%d')}"
     except (ValueError, TypeError):
         return ''
+
+def _parse_fix_version_to_date(fix_version):
+    """Reverse-parse a Jira fix version to a release date.
+    P26.10.01 → 2026-10-01"""
+    if not fix_version:
+        return None
+    try:
+        fv = fix_version.strip()
+        if fv.startswith('P') or fv.startswith('p'):
+            fv = fv[1:]
+        parts = fv.split('.')
+        if len(parts) != 3:
+            return None
+        yy, mm, dd = int(parts[0]), int(parts[1]), int(parts[2])
+        d = datetime.date(2000 + yy, mm, dd)
+        return d.isoformat()
+    except (ValueError, TypeError, IndexError):
+        return None
+
+def _get_cutoff_for_release_date(release_date_str):
+    """Calculate cutoff datetime in UTC for a specific release date."""
+    try:
+        release_date = datetime.date.fromisoformat(release_date_str)
+        cutoff_day = int(os.environ.get('CUTOFF_DAY', '2'))
+        cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '14'))
+        tz_offset = int(os.environ.get('CUTOFF_TZ_OFFSET', '-4'))
+        days_before = (release_date.weekday() - cutoff_day) % 7
+        if days_before == 0 and release_date.weekday() != cutoff_day:
+            days_before = 7
+        cutoff_date = release_date - datetime.timedelta(days=days_before)
+        cutoff_local = datetime.datetime.combine(cutoff_date, datetime.time(cutoff_hour, 0))
+        cutoff_utc = cutoff_local - datetime.timedelta(hours=tz_offset)
+        return cutoff_utc.isoformat()
+    except (ValueError, TypeError):
+        return _get_cutoff()
+
 
 def _new_board():
     rd = _get_release_date()
@@ -276,7 +312,9 @@ def get_current():
     # Auto-reflect locked state in UI when past cutoff
     # FIX: Persist the auto-lock so the Export tab buttons update correctly.
     # Old code changed status in-memory only, so each request re-read 'open'.
-    if board['is_past_cutoff'] and board.get('status') == 'open':
+    # IMPORTANT: Skip auto-lock if QA has manually unlocked the board — they
+    # need it open to process exception nominations.
+    if board['is_past_cutoff'] and board.get('status') == 'open' and not board.get('manually_unlocked'):
         board['status'] = 'locked'
         board['auto_locked'] = True
         _write_board(board)  # Persist so Export tab shows "Board Locked" correctly
@@ -286,6 +324,7 @@ def get_current():
     if not board['is_past_cutoff'] and board.get('status') == 'locked' and board.get('auto_locked'):
         board['status'] = 'open'
         board['auto_locked'] = False
+        board.pop('manually_unlocked', None)
         _write_board(board)
 
     return jsonify(board)
@@ -310,20 +349,36 @@ def nominate():
     exception_approver = data.get('exception_approver', '').strip()
 
     # Determine if board is effectively locked:
-    # 1. Manually locked by Release Manager (status == 'locked'), OR
-    # 2. Past the cutoff time (even if nobody clicked Lock Board yet)
-    is_past_cutoff = datetime.datetime.utcnow().isoformat() > board.get('cutoff', '')
-    board_is_locked = board.get('status') in ('locked',) or is_past_cutoff
+    # The board status is the source of truth. When past cutoff, the
+    # /api/release/current endpoint auto-sets status='locked'.
+    # When QA explicitly unlocks (manually_unlocked=True), status='open'
+    # and stays open — we respect that here.
+    board_is_locked = board.get('status') == 'locked'
 
     if board.get('status') == 'released':
         return jsonify({'error': 'This release has already been completed.'}), 403
 
-    if board_is_locked and not is_exception:
-        return jsonify({'error': 'Release board is locked (past cutoff). Use exception nomination.', 'is_locked': True, 'cutoff': board.get('cutoff')}), 403
+    if board_is_locked:
+        return jsonify({
+            'error': 'Release board is locked (past cutoff). Nominations are disabled. '
+                     'Contact the QA team to unlock the board if an exception nomination is needed.',
+            'is_locked': True,
+            'cutoff': board.get('cutoff')
+        }), 403
 
-    if board_is_locked and is_exception:
+    # Board is open but was manually unlocked past cutoff → exception nomination required
+    is_past_cutoff = datetime.datetime.utcnow().isoformat() > board.get('cutoff', '')
+    if is_past_cutoff and board.get('manually_unlocked'):
+        if not is_exception:
+            return jsonify({
+                'error': 'Board was unlocked past cutoff. Exception nomination is required.',
+                'exception_required': True,
+                'cutoff': board.get('cutoff')
+            }), 403
         if not exception_reason or not exception_approver:
-            return jsonify({'error': 'Exception nominations require a reason and approver name.'}), 400
+            return jsonify({
+                'error': 'Exception nominations require a reason and approver name.'
+            }), 400
 
     now = datetime.datetime.utcnow().isoformat()
 
@@ -456,6 +511,8 @@ def finalize():
     board['status'] = 'locked'
     board['finalized_by'] = by
     board['finalized_at'] = now
+    board['manually_unlocked'] = False  # Clear unlock override
+    board['auto_locked'] = False  # This is a manual lock
     board['audit_trail'].append({'action': 'finalize', 'by': by, 'at': now})
     _write_board(board)
     return jsonify({'status': 'locked'})
@@ -475,6 +532,8 @@ def unlock():
         return jsonify({'error': 'Board is not locked.', 'board_status': board.get('status')}), 400
     now = datetime.datetime.utcnow().isoformat()
     board['status'] = 'open'
+    board['auto_locked'] = False
+    board['manually_unlocked'] = True  # Prevent auto-lock from re-locking
     board['audit_trail'].append({'action': 'unlock', 'by': by, 'at': now, 'note': 'Board unlocked for editing'})
     _write_board(board)
     return jsonify({'status': 'open', 'unlocked_by': by})
@@ -644,7 +703,7 @@ def jira_issues():
 
 @app.route('/api/release/fix_version', methods=['POST'])
 def update_fix_version():
-    """Update the fix version on the board."""
+    """Update the fix version on the board. Syncs release_date and cutoff."""
     data = request.json or {}
     fix_version = data.get('fix_version', '').strip()
     if not fix_version:
@@ -652,14 +711,34 @@ def update_fix_version():
     board = _read_board()
     if not board:
         return jsonify({'error': 'No active board'}), 404
+
+    old_release_date = board.get('release_date', '')
     board['fix_version'] = fix_version
+
+    # Sync release_date and cutoff from fix version
+    new_release_date = _parse_fix_version_to_date(fix_version)
+    date_changed = False
+    if new_release_date and new_release_date != old_release_date:
+        board['release_date'] = new_release_date
+        board['cutoff'] = _get_cutoff_for_release_date(new_release_date)
+        date_changed = True
+
+    note_parts = [f'Fix version changed to {fix_version}']
+    if date_changed:
+        note_parts.append(f'Release date updated: {old_release_date} → {new_release_date}')
     board['audit_trail'].append({
         'action': 'update_fix_version', 'by': data.get('updated_by', 'unknown'),
         'at': datetime.datetime.utcnow().isoformat(),
-        'note': f'Fix version changed to {fix_version}'
+        'note': '. '.join(note_parts)
     })
     _write_board(board)
-    return jsonify({'status': 'ok', 'fix_version': fix_version})
+
+    result = {'status': 'ok', 'fix_version': fix_version}
+    if date_changed:
+        result['release_date'] = new_release_date
+        result['cutoff'] = board['cutoff']
+        result['date_synced'] = True
+    return jsonify(result)
 
 
 @app.route('/api/release/jira_by_fix_version', methods=['POST'])

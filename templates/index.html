@@ -828,12 +828,22 @@
 
             <!-- UAT Environment Tab -->
             <div class="tab-content" id="tab-uat">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
                     <div>
                         <h3 style="font-size:16px;margin:0">🖥️ UAT Environment — Live Services</h3>
                         <p style="font-size:12px;color:var(--text2);margin:4px 0 0">All services currently deployed in the UAT Kubernetes namespace</p>
                     </div>
-                    <button class="btn btn-sm" onclick="loadUATServices()">🔄 Refresh</button>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <select id="uat-sort-select" onchange="sortAndRenderUAT()" style="padding:5px 10px;font-size:11px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer">
+                            <option value="board-status">Sort: Board Status</option>
+                            <option value="name">Sort: Service Name</option>
+                            <option value="kind">Sort: Kind</option>
+                            <option value="tag">Sort: Tag</option>
+                            <option value="status">Sort: Rollout Status</option>
+                        </select>
+                        <button class="btn btn-sm" onclick="exportUATCSV()" title="Export all UAT services to CSV">📥 Export CSV</button>
+                        <button class="btn btn-sm" onclick="loadUATServices()">🔄 Refresh</button>
+                    </div>
                 </div>
                 <div id="uat-services-list">
                     <div class="empty-state"><p>Loading UAT services...</p></div>
@@ -3028,6 +3038,9 @@
             const btn = document.getElementById('btn-nominate');
             if (!formEl) return;
 
+            // Detect exception-only mode: board is open but was manually unlocked past cutoff
+            const isExceptionOnly = status === 'open' && _board && _board.is_past_cutoff && _board.manually_unlocked;
+
             if (status === 'released') {
                 // Released — fully disable the form
                 formEl.style.opacity = '0.4';
@@ -3035,12 +3048,18 @@
                 if (titleEl) titleEl.innerHTML = '➕ Nominate Service <span style="font-size:11px;color:#ef4444;margin-left:8px">(Released — read-only)</span>';
                 if (btn) { btn.disabled = true; btn.style.opacity = '0.3'; btn.style.cursor = 'not-allowed'; btn.innerHTML = '🚀 Nominate (Released)'; }
             } else if (status === 'locked') {
-                // Locked — show exception warning but allow form
+                // Locked — fully disable nominations. QA must unlock first.
+                formEl.style.opacity = '0.4';
+                formEl.style.pointerEvents = 'none';
+                if (titleEl) titleEl.innerHTML = '➕ Nominate Service <span style="font-size:11px;color:#ef4444;margin-left:8px">(🔒 Board Locked — contact QA to unlock)</span>';
+                if (btn) { btn.disabled = true; btn.style.opacity = '0.3'; btn.style.cursor = 'not-allowed'; btn.innerHTML = '🔒 Nominations Disabled'; }
+            } else if (isExceptionOnly) {
+                // Open but past cutoff (QA unlocked) — exception nominations only
                 formEl.style.opacity = '1';
                 formEl.style.pointerEvents = '';
-                if (titleEl) titleEl.innerHTML = '➕ Nominate Service <span style="font-size:11px;color:#f59e0b;margin-left:8px">(⚠️ Board Locked — exception only)</span>';
-                if (btn) { btn.innerHTML = '🚀 Nominate (Exception)'; }
-                validateNominateForm();  // re-run validation to set proper state
+                if (titleEl) titleEl.innerHTML = '➕ Nominate Service <span style="font-size:11px;color:#f59e0b;margin-left:8px">(⚠️ Past Cutoff — exception nomination required)</span>';
+                if (btn) { btn.innerHTML = '⚠️ Nominate (Exception)'; }
+                validateNominateForm();
             } else {
                 // Open — fully enable
                 formEl.style.opacity = '1';
@@ -3084,7 +3103,7 @@
         function updateSidebar() {
             if (!_board) return;
             document.getElementById('info-release-date').textContent = _board.release_date || '--';
-            // Format cutoff as readable: "Wed, Sep 24 4:00 PM EST"
+            // Format cutoff as readable: "Wed, Sep 24 2:00 PM EST"
             const cutoffRaw = _board.cutoff || '';
             if (cutoffRaw) {
                 const cd = parseCutoffUTC(cutoffRaw);
@@ -3358,6 +3377,20 @@
                          nominated_by: nominatedBy,
                          jira_ids: jiraIds };
             }
+
+            // Exception-only mode: board is open but past cutoff (QA unlocked)
+            // → open exception modal directly instead of trying a regular nomination
+            const isExceptionOnly = _board && _board.status === 'open' && _board.is_past_cutoff && _board.manually_unlocked;
+            if (isExceptionOnly) {
+                _pendingExceptionBody = body;
+                document.getElementById('exc-service-name').textContent = body.service_name;
+                document.getElementById('exc-service-version').textContent = body.manual_version || '(from cluster)';
+                document.getElementById('exc-reason').value = '';
+                document.getElementById('exc-approver').value = '';
+                document.getElementById('exception-modal').classList.add('open');
+                return;
+            }
+
             try {
                 const r = await fetch('/api/release/nominate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
                 const d = await r.json();
@@ -3365,7 +3398,10 @@
                     const excLabel = d.is_exception ? ' (EXCEPTION)' : '';
                     showToast(`Nominated ${name} (${d.image_tag})${excLabel}`); document.getElementById('nom-notes').value = ''; document.getElementById('nom-jira-ids').value = ''; if (_nomType === 'custom') document.getElementById('nom-custom-version').value = ''; validateNominateForm(); refreshAll();
                 } else if (r.status === 403 && d.is_locked) {
-                    // Board is locked — offer exception nomination
+                    // Board is locked — nominations fully disabled
+                    showToast('🔒 Board is locked. Contact QA team to unlock the board for exception nominations.', 'error');
+                } else if (r.status === 403 && d.exception_required) {
+                    // Backend says exception required (fallback for race conditions)
                     _pendingExceptionBody = body;
                     document.getElementById('exc-service-name').textContent = body.service_name;
                     document.getElementById('exc-service-version').textContent = body.manual_version || '(from cluster)';
@@ -3532,8 +3568,32 @@
                 });
                 const d = await r.json();
                 if (r.ok) {
-                    showToast(`Fix version saved: ${fv}`);
-                    if (_board) _board.fix_version = fv;
+                    if (_board) {
+                        _board.fix_version = fv;
+                        // Sync release_date and cutoff if the backend updated them
+                        if (d.date_synced) {
+                            _board.release_date = d.release_date;
+                            _board.cutoff = d.cutoff;
+                        }
+                    }
+                    // Refresh sidebar to show updated date + cutoff
+                    updateSidebar();
+                    updateCountdown();
+                    // Update header release date (top bar next to timer)
+                    const headerDateEl = document.getElementById('release-date-display');
+                    if (headerDateEl && _board) {
+                        headerDateEl.textContent = 'Release: ' + (_board.release_date || '--');
+                    }
+                    // Update export tab release date (next to fix version)
+                    const fvDateEl = document.getElementById('fix-version-release-date');
+                    if (fvDateEl && _board) {
+                        fvDateEl.textContent = _board.release_date || '—';
+                    }
+                    if (d.date_synced) {
+                        showToast(`Fix version saved: ${fv} — Release date updated to ${d.release_date}`);
+                    } else {
+                        showToast(`Fix version saved: ${fv}`);
+                    }
                 } else {
                     showToast(d.error || 'Failed to save', 'error');
                 }
@@ -4220,6 +4280,12 @@
         }
 
         // ═══ UAT Environment ═════════════════════════════════════════════════════════
+        let _uatData = [];          // Raw service list from API
+        let _uatProdVersionMap = {};
+        let _uatProdHelmMap = {};
+        let _uatProdConnected = false;
+        let _uatNamespace = 'uat';
+
         async function loadUATServices() {
             const container = document.getElementById('uat-services-list');
             container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading UAT services...</div>';
@@ -4231,138 +4297,237 @@
                     return;
                 }
                 const d = await uatResp.json();
-                const svcs = d.services || [];
-                if (!svcs.length) { container.innerHTML = `<div class="empty-state"><p>No services found in UAT namespace</p><p style="font-size:12px;color:var(--text2);margin-top:8px">Namespace: <code>${d.namespace || 'unknown'}</code> | Error: <code>${d.error || 'none'}</code></p></div>`; return; }
+                _uatData = d.services || [];
+                _uatNamespace = d.namespace || 'uat';
+                if (!_uatData.length) { container.innerHTML = `<div class="empty-state"><p>No services found in UAT namespace</p><p style="font-size:12px;color:var(--text2);margin-top:8px">Namespace: <code>${_uatNamespace}</code> | Error: <code>${d.error || 'none'}</code></p></div>`; return; }
 
                 // Fetch prod services for UAT-vs-Prod cross-reference
                 let prodResp = null;
                 try { prodResp = await fetch('/api/prod/services'); } catch(e) { /* ignore */ }
 
                 // Build prod version map for cross-reference
-                let prodVersionMap = {};
-                let prodHelmMap = {};
-                let prodConnected = false;
+                _uatProdVersionMap = {};
+                _uatProdHelmMap = {};
+                _uatProdConnected = false;
                 if (prodResp && prodResp.ok) {
                     try {
                         const prodData = await prodResp.json();
                         if (prodData.connected !== false && prodData.services) {
-                            prodConnected = true;
+                            _uatProdConnected = true;
                             prodData.services.forEach(ps => {
-                                prodVersionMap[ps.name] = ps.image_tag || '';
-                                prodHelmMap[ps.name] = ps.helm_version || '';
+                                _uatProdVersionMap[ps.name] = ps.image_tag || '';
+                                _uatProdHelmMap[ps.name] = ps.helm_version || '';
                             });
                         }
                     } catch(e) { /* ignore prod parse errors */ }
                 }
 
-                // Cross-reference with board nominations (Board vs UAT live)
-                const boardSvcs = (_board && _board.services) ? _board.services : {};
-                let nominatedCount = 0, driftCount = 0, prodMatchCount = 0;
-
-                const rows = svcs.map((s, i) => {
-                    // Rollout-aware status badge
-                    let status;
-                    const rs = s.rollout_status || (s.available ? 'running' : 'degraded');
-                    const rd = s.rollout_detail || `${s.replicas}/${s.desired_replicas} ready`;
-                    if (rs === 'running') {
-                        status = `<span style="color:var(--green)" title="${rd}">● Running</span>`;
-                    } else if (rs === 'rolling') {
-                        status = `<span style="color:var(--warning, #f59e0b);font-weight:600" title="${rd}">◐ Rolling</span>`;
-                    } else if (rs === 'failed') {
-                        status = `<span style="color:var(--red);font-weight:600" title="${rd}">✖ Failed</span>`;
-                    } else if (rs === 'degraded') {
-                        status = `<span style="color:var(--red)" title="${rd}">▲ Degraded</span>`;
-                    } else {
-                        status = `<span style="color:var(--text2)" title="${rd}">○ ${rs}</span>`;
-                    }
-                    const helmBadge = s.helm_version ? `<span style="font-size:11px;padding:2px 8px;background:rgba(99,102,241,.12);color:var(--accent);border-radius:4px">${s.helm_version}</span>` : '<span style="color:var(--text2)">—</span>';
-
-                    // Helm chart prod comparison badge
-                    let helmProdBadge = '';
-                    if (prodConnected && s.helm_version && s.name in prodHelmMap) {
-                        const prodHelm = prodHelmMap[s.name];
-                        if (prodHelm && s.helm_version === prodHelm) {
-                            helmProdBadge = `<span style="font-size:10px;padding:2px 6px;background:rgba(139,92,246,.1);color:#8b5cf6;border:1px solid rgba(139,92,246,.2);border-radius:4px;font-weight:600;margin-left:4px" title="Same helm chart in Production">= PROD</span>`;
-                        } else if (prodHelm) {
-                            helmProdBadge = `<span style="font-size:10px;padding:2px 6px;background:rgba(59,130,246,.08);color:#3b82f6;border:1px solid rgba(59,130,246,.15);border-radius:4px;font-weight:500;margin-left:4px" title="Prod helm: ${prodHelm}">Δ ${prodHelm}</span>`;
-                        }
-                    }
-
-                    // Prod version comparison badge (UAT tag vs Prod tag)
-                    let prodBadgeHtml = '';
-                    if (prodConnected && s.name in prodVersionMap) {
-                        const prodTag = prodVersionMap[s.name];
-                        const uatTag = s.image_tag || '';
-                        if (uatTag && prodTag && uatTag === prodTag) {
-                            prodMatchCount++;
-                            prodBadgeHtml = `<span style="font-size:10px;padding:2px 6px;background:rgba(139,92,246,.1);color:#8b5cf6;border:1px solid rgba(139,92,246,.2);border-radius:4px;font-weight:600;margin-left:4px" title="Same version running in Production">= PROD</span>`;
-                        } else if (uatTag && prodTag) {
-                            prodBadgeHtml = `<span style="font-size:10px;padding:2px 6px;background:rgba(59,130,246,.08);color:#3b82f6;border:1px solid rgba(59,130,246,.15);border-radius:4px;font-weight:500;margin-left:4px" title="Prod: ${prodTag}">Δ ${prodTag.substring(0, 12)}</span>`;
-                        }
-                    }
-
-                    // Check if this service is nominated on the board (Board vs UAT live drift)
-                    const nominated = boardSvcs[s.name];
-                    let boardStatusHtml = '<span style="color:var(--text2)">—</span>';
-                    if (nominated) {
-                        const nomTag = nominated.image_tag || '';
-                        const liveTag = s.image_tag || '';
-                        if (nomTag === liveTag) {
-                            // Nominated and UAT version matches board
-                            nominatedCount++;
-                            boardStatusHtml = `<span style="font-size:11px;padding:3px 8px;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.2);border-radius:6px;font-weight:600">✅ Nominated</span>`;
-                        } else {
-                            // Nominated but UAT live version differs from board
-                            nominatedCount++;
-                            driftCount++;
-                            boardStatusHtml = `<div>
-                                <span style="font-size:11px;padding:3px 8px;background:rgba(245,158,11,.12);color:#f59e0b;border:1px solid rgba(245,158,11,.2);border-radius:6px;font-weight:600">⚠️ Drift</span>
-                                <div style="font-size:10px;color:var(--text2);margin-top:3px">
-                                    Board: <span style="color:var(--accent);font-family:monospace">${nomTag}</span>
-                                    <br>UAT Live: <span style="color:#f59e0b;font-family:monospace">${liveTag}</span>
-                                </div>
-                            </div>`;
-                        }
-                    }
-
-                    return `<tr>
-                        <td style="font-weight:600">${s.name}</td>
-                        <td><span class="type-badge">${s.kind}</span></td>
-                        <td style="font-family:monospace;font-size:11px;color:var(--text2);max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${s.image}">${s.image}</td>
-                        <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span>${prodBadgeHtml}</td>
-                        <td>${helmBadge}${helmProdBadge}</td>
-                        <td style="text-align:center">${s.replicas}/${s.desired_replicas}</td>
-                        <td>${status}${rs !== 'running' ? `<div style="font-size:9px;color:var(--text2);margin-top:2px">${rd}</div>` : ''}</td>
-                        <td>${boardStatusHtml}</td>
-                    </tr>`;
-                }).join('');
-
-                container.innerHTML = `
-                    <div style="display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap">
-                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
-                            📦 <strong>${svcs.length}</strong> services
-                        </div>
-                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
-                            🏷️ Namespace: <strong>${d.namespace || 'uat'}</strong>
-                        </div>
-                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
-                            ✅ Healthy: <strong style="color:var(--green)">${svcs.filter(s => s.available).length}</strong>
-                        </div>
-                        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
-                            📋 Nominated: <strong style="color:var(--accent)">${nominatedCount}</strong>
-                            ${driftCount > 0 ? ` · <span style="color:#f59e0b">⚠️ ${driftCount} drift</span>` : ''}
-                        </div>
-                        ${prodConnected ? `<div style="background:rgba(139,92,246,.06);border:1px solid rgba(139,92,246,.15);border-radius:8px;padding:8px 16px;font-size:12px">
-                            🟣 Prod Match: <strong style="color:#8b5cf6">${prodMatchCount}</strong> / ${Object.keys(prodVersionMap).length}
-                        </div>` : ''}
-                    </div>
-                    <table class="list-view-table">
-                        <thead><tr><th>Service</th><th>Kind</th><th>Image</th><th>Tag</th><th>Helm Chart</th><th>Replicas</th><th>Status</th><th>Board Status</th></tr></thead>
-                        <tbody>${rows}</tbody>
-                    </table>`;
+                sortAndRenderUAT();
             } catch(e) {
                 container.innerHTML = '<div class="empty-state"><p>Failed to load UAT services</p></div>';
             }
+        }
+
+        function _getUATBoardInfo(svc) {
+            // Returns { status: 'nominated'|'drift'|'none', nomTag, liveTag }
+            const boardSvcs = (_board && _board.services) ? _board.services : {};
+            const nominated = boardSvcs[svc.name];
+            if (!nominated) return { status: 'none', nomTag: '', liveTag: svc.image_tag || '' };
+            const nomTag = nominated.image_tag || '';
+            const liveTag = svc.image_tag || '';
+            if (nomTag === liveTag) return { status: 'nominated', nomTag, liveTag };
+            return { status: 'drift', nomTag, liveTag };
+        }
+
+        function sortAndRenderUAT() {
+            if (!_uatData.length) return;
+            const sortBy = document.getElementById('uat-sort-select').value;
+
+            // Sort a copy
+            const sorted = [..._uatData];
+            sorted.sort((a, b) => {
+                if (sortBy === 'board-status') {
+                    // Board status priority: drift (top), nominated, none
+                    const order = { drift: 0, nominated: 1, none: 2 };
+                    const aInfo = _getUATBoardInfo(a);
+                    const bInfo = _getUATBoardInfo(b);
+                    const diff = (order[aInfo.status] ?? 2) - (order[bInfo.status] ?? 2);
+                    if (diff !== 0) return diff;
+                    return (a.name || '').localeCompare(b.name || '');
+                } else if (sortBy === 'name') {
+                    return (a.name || '').localeCompare(b.name || '');
+                } else if (sortBy === 'kind') {
+                    const diff = (a.kind || '').localeCompare(b.kind || '');
+                    if (diff !== 0) return diff;
+                    return (a.name || '').localeCompare(b.name || '');
+                } else if (sortBy === 'tag') {
+                    return (a.image_tag || '').localeCompare(b.image_tag || '');
+                } else if (sortBy === 'status') {
+                    // Sort unhealthy statuses first
+                    const order = { failed: 0, degraded: 1, rolling: 2, running: 3 };
+                    const aStatus = a.rollout_status || (a.available ? 'running' : 'degraded');
+                    const bStatus = b.rollout_status || (b.available ? 'running' : 'degraded');
+                    const diff = (order[aStatus] ?? 3) - (order[bStatus] ?? 3);
+                    if (diff !== 0) return diff;
+                    return (a.name || '').localeCompare(b.name || '');
+                }
+                return 0;
+            });
+
+            renderUATTable(sorted);
+        }
+
+        function renderUATTable(svcs) {
+            const container = document.getElementById('uat-services-list');
+            const boardSvcs = (_board && _board.services) ? _board.services : {};
+            let nominatedCount = 0, driftCount = 0, prodMatchCount = 0;
+
+            const rows = svcs.map((s, i) => {
+                // Rollout-aware status badge
+                let status;
+                const rs = s.rollout_status || (s.available ? 'running' : 'degraded');
+                const rd = s.rollout_detail || `${s.replicas}/${s.desired_replicas} ready`;
+                if (rs === 'running') {
+                    status = `<span style="color:var(--green)" title="${rd}">● Running</span>`;
+                } else if (rs === 'rolling') {
+                    status = `<span style="color:var(--warning, #f59e0b);font-weight:600" title="${rd}">◐ Rolling</span>`;
+                } else if (rs === 'failed') {
+                    status = `<span style="color:var(--red);font-weight:600" title="${rd}">✖ Failed</span>`;
+                } else if (rs === 'degraded') {
+                    status = `<span style="color:var(--red)" title="${rd}">▲ Degraded</span>`;
+                } else {
+                    status = `<span style="color:var(--text2)" title="${rd}">○ ${rs}</span>`;
+                }
+                const helmBadge = s.helm_version ? `<span style="font-size:11px;padding:2px 8px;background:rgba(99,102,241,.12);color:var(--accent);border-radius:4px">${s.helm_version}</span>` : '<span style="color:var(--text2)">—</span>';
+
+                // Helm chart prod comparison badge
+                let helmProdBadge = '';
+                if (_uatProdConnected && s.helm_version && s.name in _uatProdHelmMap) {
+                    const prodHelm = _uatProdHelmMap[s.name];
+                    if (prodHelm && s.helm_version === prodHelm) {
+                        helmProdBadge = `<span style="font-size:10px;padding:2px 6px;background:rgba(139,92,246,.1);color:#8b5cf6;border:1px solid rgba(139,92,246,.2);border-radius:4px;font-weight:600;margin-left:4px" title="Same helm chart in Production">= PROD</span>`;
+                    } else if (prodHelm) {
+                        helmProdBadge = `<span style="font-size:10px;padding:2px 6px;background:rgba(59,130,246,.08);color:#3b82f6;border:1px solid rgba(59,130,246,.15);border-radius:4px;font-weight:500;margin-left:4px" title="Prod helm: ${prodHelm}">Δ ${prodHelm}</span>`;
+                    }
+                }
+
+                // Prod version comparison badge (UAT tag vs Prod tag)
+                let prodBadgeHtml = '';
+                if (_uatProdConnected && s.name in _uatProdVersionMap) {
+                    const prodTag = _uatProdVersionMap[s.name];
+                    const uatTag = s.image_tag || '';
+                    if (uatTag && prodTag && uatTag === prodTag) {
+                        prodMatchCount++;
+                        prodBadgeHtml = `<span style="font-size:10px;padding:2px 6px;background:rgba(139,92,246,.1);color:#8b5cf6;border:1px solid rgba(139,92,246,.2);border-radius:4px;font-weight:600;margin-left:4px" title="Same version running in Production">= PROD</span>`;
+                    } else if (uatTag && prodTag) {
+                        prodBadgeHtml = `<span style="font-size:10px;padding:2px 6px;background:rgba(59,130,246,.08);color:#3b82f6;border:1px solid rgba(59,130,246,.15);border-radius:4px;font-weight:500;margin-left:4px" title="Prod: ${prodTag}">Δ ${prodTag.substring(0, 12)}</span>`;
+                    }
+                }
+
+                // Check if this service is nominated on the board (Board vs UAT live drift)
+                const nominated = boardSvcs[s.name];
+                let boardStatusHtml = '<span style="color:var(--text2)">—</span>';
+                if (nominated) {
+                    const nomTag = nominated.image_tag || '';
+                    const liveTag = s.image_tag || '';
+                    if (nomTag === liveTag) {
+                        // Nominated and UAT version matches board
+                        nominatedCount++;
+                        boardStatusHtml = `<span style="font-size:11px;padding:3px 8px;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.2);border-radius:6px;font-weight:600">✅ Nominated</span>`;
+                    } else {
+                        // Nominated but UAT live version differs from board
+                        nominatedCount++;
+                        driftCount++;
+                        boardStatusHtml = `<div>
+                            <span style="font-size:11px;padding:3px 8px;background:rgba(245,158,11,.12);color:#f59e0b;border:1px solid rgba(245,158,11,.2);border-radius:6px;font-weight:600">⚠️ Drift</span>
+                            <div style="font-size:10px;color:var(--text2);margin-top:3px">
+                                Board: <span style="color:var(--accent);font-family:monospace">${nomTag}</span>
+                                <br>UAT Live: <span style="color:#f59e0b;font-family:monospace">${liveTag}</span>
+                            </div>
+                        </div>`;
+                    }
+                }
+
+                return `<tr>
+                    <td style="font-weight:600">${s.name}</td>
+                    <td><span class="type-badge">${s.kind}</span></td>
+                    <td style="font-family:monospace;font-size:11px;color:var(--text2);max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${s.image}">${s.image}</td>
+                    <td><span class="card-tag" style="font-size:11px">${s.image_tag || '?'}</span>${prodBadgeHtml}</td>
+                    <td>${helmBadge}${helmProdBadge}</td>
+                    <td style="text-align:center">${s.replicas}/${s.desired_replicas}</td>
+                    <td>${status}${rs !== 'running' ? `<div style="font-size:9px;color:var(--text2);margin-top:2px">${rd}</div>` : ''}</td>
+                    <td>${boardStatusHtml}</td>
+                </tr>`;
+            }).join('');
+
+            container.innerHTML = `
+                <div style="display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap">
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
+                        📦 <strong>${svcs.length}</strong> services
+                    </div>
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
+                        🏷️ Namespace: <strong>${_uatNamespace}</strong>
+                    </div>
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
+                        ✅ Healthy: <strong style="color:var(--green)">${svcs.filter(s => s.available).length}</strong>
+                    </div>
+                    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px">
+                        📋 Nominated: <strong style="color:var(--accent)">${nominatedCount}</strong>
+                        ${driftCount > 0 ? ` · <span style="color:#f59e0b">⚠️ ${driftCount} drift</span>` : ''}
+                    </div>
+                    ${_uatProdConnected ? `<div style="background:rgba(139,92,246,.06);border:1px solid rgba(139,92,246,.15);border-radius:8px;padding:8px 16px;font-size:12px">
+                        🟣 Prod Match: <strong style="color:#8b5cf6">${prodMatchCount}</strong> / ${Object.keys(_uatProdVersionMap).length}
+                    </div>` : ''}
+                </div>
+                <table class="list-view-table">
+                    <thead><tr><th>Service</th><th>Kind</th><th>Image</th><th>Tag</th><th>Helm Chart</th><th>Replicas</th><th>Status</th><th>Board Status</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>`;
+        }
+
+        function exportUATCSV() {
+            if (!_uatData.length) { showToast('No UAT data loaded. Refresh first.', 'error'); return; }
+            const boardSvcs = (_board && _board.services) ? _board.services : {};
+            const now = new Date().toISOString().slice(0, 10);
+
+            // CSV header
+            const headers = ['Service', 'Kind', 'Image', 'Tag', 'Helm Chart', 'Replicas', 'Desired', 'Rollout Status', 'Board Status', 'Nominated Tag', 'Prod Tag'];
+            const csvRows = [headers.join(',')];
+
+            _uatData.forEach(s => {
+                const rs = s.rollout_status || (s.available ? 'running' : 'degraded');
+                const nominated = boardSvcs[s.name];
+                let boardStatus = 'Not Nominated';
+                let nomTag = '';
+                if (nominated) {
+                    nomTag = nominated.image_tag || '';
+                    boardStatus = (nomTag === (s.image_tag || '')) ? 'Nominated' : 'Drift';
+                }
+                const prodTag = _uatProdVersionMap[s.name] || '';
+                const row = [
+                    `"${(s.name || '').replace(/"/g, '""')}"`,
+                    `"${s.kind || ''}"`,
+                    `"${(s.image || '').replace(/"/g, '""')}"`,
+                    `"${s.image_tag || ''}"`,
+                    `"${s.helm_version || ''}"`,
+                    s.replicas || 0,
+                    s.desired_replicas || 0,
+                    `"${rs}"`,
+                    `"${boardStatus}"`,
+                    `"${nomTag}"`,
+                    `"${prodTag}"`
+                ];
+                csvRows.push(row.join(','));
+            });
+
+            const csvContent = csvRows.join('\n');
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `uat-environment-${_uatNamespace}-${now}.csv`;
+            link.click();
+            URL.revokeObjectURL(link.href);
+            showToast(`Exported ${_uatData.length} services to CSV`);
         }
 
         function renderAudit() {

@@ -1806,7 +1806,7 @@ NAMESPACE = os.getenv('POD_NAMESPACE', 'default')
 DEPLOY_ENV = os.getenv('DEPLOY_ENV', 'uat').lower()  # 'uat' or 'prod' — determines which cluster is local
 RELEASE_CADENCE = os.getenv('RELEASE_CADENCE', 'friday')  # 'friday' or 'custom'
 CUTOFF_DAY = int(os.getenv('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
-CUTOFF_HOUR = int(os.getenv('CUTOFF_HOUR', '16'))  # 16:00 (4 PM) in CUTOFF_TZ
+CUTOFF_HOUR = int(os.getenv('CUTOFF_HOUR', '14'))  # 14:00 (2 PM) in CUTOFF_TZ
 CUTOFF_TZ_OFFSET = int(os.getenv('CUTOFF_TZ_OFFSET', '-4'))  # UTC offset: -4=EDT, -5=EST
 
 # ── Artifactory (Custom Component Version Detection) ─────────────────────────
@@ -2025,9 +2025,9 @@ def _get_current_release_date():
 def _get_cutoff_datetime():
     """Calculate the cutoff datetime in UTC based on CUTOFF_DAY, CUTOFF_HOUR, and CUTOFF_TZ_OFFSET.
 
-    CUTOFF_HOUR is in the local timezone (e.g. 16 = 4 PM EST).
+    CUTOFF_HOUR is in the local timezone (e.g. 14 = 2 PM EST).
     We convert to UTC for comparison with datetime.utcnow().
-    Example: 16:00 EDT (UTC-4) → 20:00 UTC.
+    Example: 14:00 EDT (UTC-4) → 18:00 UTC.
     """
     today = datetime.date.today()
     days_until_friday = (4 - today.weekday()) % 7
@@ -2039,7 +2039,7 @@ def _get_cutoff_datetime():
     release_friday = today + datetime.timedelta(days=days_until_friday)
     cutoff_date = release_friday - datetime.timedelta(days=(4 - CUTOFF_DAY) % 7)
     # Convert local cutoff time to UTC: subtract the TZ offset
-    # e.g. 16:00 EDT (offset=-4) → 16:00 - (-4) = 20:00 UTC
+    # e.g. 14:00 EDT (offset=-4) → 14:00 - (-4) = 18:00 UTC
     cutoff_local = datetime.datetime.combine(cutoff_date, datetime.time(CUTOFF_HOUR, 0))
     cutoff_utc = cutoff_local - datetime.timedelta(hours=CUTOFF_TZ_OFFSET)
     return cutoff_utc.isoformat()
@@ -2146,6 +2146,55 @@ def _generate_fix_version(release_date_str):
         return f"P{d.strftime('%y.%m.%d')}"
     except (ValueError, TypeError):
         return ''
+
+
+def _parse_fix_version_to_date(fix_version):
+    """Reverse-parse a Jira fix version to a release date.
+    P26.10.01 → 2026-10-01
+    Returns ISO date string or None if format doesn't match."""
+    if not fix_version:
+        return None
+    try:
+        # Strip leading 'P' and split by '.'
+        fv = fix_version.strip()
+        if fv.startswith('P') or fv.startswith('p'):
+            fv = fv[1:]
+        parts = fv.split('.')
+        if len(parts) != 3:
+            return None
+        yy, mm, dd = int(parts[0]), int(parts[1]), int(parts[2])
+        # Assume 2000s century
+        year = 2000 + yy
+        d = datetime.date(year, mm, dd)
+        return d.isoformat()
+    except (ValueError, TypeError, IndexError):
+        return None
+
+
+def _get_cutoff_for_release_date(release_date_str):
+    """Calculate the cutoff datetime in UTC for a specific release date.
+
+    This is used when the release date is manually changed (e.g., via fix version update)
+    rather than auto-calculated from the current date.
+
+    The cutoff is CUTOFF_DAY_OFFSET days before the release date at CUTOFF_HOUR local time.
+    e.g., release=Friday, CUTOFF_DAY=Wed (2 days before), CUTOFF_HOUR=14 (2 PM EDT) → Wed 18:00 UTC.
+    """
+    try:
+        release_date = datetime.date.fromisoformat(release_date_str)
+        # Calculate how many days before the release date the cutoff should be
+        # CUTOFF_DAY: 0=Mon, 2=Wed, 4=Fri (release day). Offset = (release_weekday - CUTOFF_DAY) % 7
+        # For Friday release (weekday=4) and Wed cutoff (CUTOFF_DAY=2): offset = (4-2)%7 = 2 days before
+        days_before = (release_date.weekday() - CUTOFF_DAY) % 7
+        if days_before == 0 and release_date.weekday() != CUTOFF_DAY:
+            days_before = 7  # If same weekday but different intent, use full week
+        cutoff_date = release_date - datetime.timedelta(days=days_before)
+        cutoff_local = datetime.datetime.combine(cutoff_date, datetime.time(CUTOFF_HOUR, 0))
+        cutoff_utc = cutoff_local - datetime.timedelta(hours=CUTOFF_TZ_OFFSET)
+        return cutoff_utc.isoformat()
+    except (ValueError, TypeError):
+        # Fallback to the standard auto-calculated cutoff
+        return _get_cutoff_datetime()
 
 
 def _new_board():
@@ -3866,22 +3915,32 @@ def nominate_service():
     exception_approver = data.get('exception_approver', '').strip()
 
     # Determine if board is effectively locked:
-    # 1. Manually locked by Release Manager (status == 'locked'), OR
-    # 2. Past the cutoff time (even if nobody clicked Lock Board yet)
-    # Use the effective cutoff (recalculated for current release window if board is stale)
+    # The board status is the source of truth. When past cutoff, the
+    # /api/release/current endpoint auto-sets status='locked'.
+    # When QA explicitly unlocks (manual_unlock=True), status='open'
+    # and the auto-lock logic in /api/release/current respects that flag.
+    # So we just check the board status here — no need to re-derive is_past_cutoff.
+    board_is_locked = board.get('status') == 'locked'
+
+    if board_is_locked:
+        return jsonify({
+            'error': 'Release board is locked (past cutoff). Nominations are disabled. '
+                     'Contact the QA team to unlock the board if an exception nomination is needed.',
+            'is_locked': True,
+            'cutoff': board.get('cutoff')
+        }), 403
+
+    # Board is open but was manually unlocked past cutoff → exception nomination required
     current_release = _get_current_release_date()
     effective_cutoff = board.get('cutoff', '') if board.get('release_date') == current_release else _get_cutoff_datetime()
     is_past_cutoff = datetime.datetime.utcnow().isoformat() > effective_cutoff
-    board_is_locked = board.get('status') == 'locked' or is_past_cutoff
-
-    if board_is_locked:
+    if is_past_cutoff and board.get('manual_unlock'):
         if not is_exception:
             return jsonify({
-                'error': 'Release board is locked (past cutoff). Use exception nomination.',
-                'is_locked': True,
+                'error': 'Board was unlocked past cutoff. Exception nomination is required.',
+                'exception_required': True,
                 'cutoff': board.get('cutoff')
             }), 403
-
         if not exception_reason or not exception_approver:
             return jsonify({
                 'error': 'Exception nominations require a reason and approver name.'
@@ -4160,7 +4219,12 @@ def remove_nomination():
 
 @app.route('/api/release/fix_version', methods=['POST'])
 def update_fix_version():
-    """Update the fix version on the board."""
+    """Update the fix version on the board.
+
+    When the fix version changes, the release date and cutoff are automatically
+    synced to match. For example: P26.10.01 → release_date=2026-10-01,
+    cutoff recalculated to the Wednesday before at 2 PM EST.
+    """
     data = request.json or {}
     fix_version = data.get('fix_version', '').strip()
     if not fix_version:
@@ -4168,14 +4232,44 @@ def update_fix_version():
     board = _read_board()
     if not board:
         return jsonify({'error': 'No active board'}), 404
+
+    old_fix_version = board.get('fix_version', '')
+    old_release_date = board.get('release_date', '')
+    old_cutoff = board.get('cutoff', '')
+    now = datetime.datetime.utcnow().isoformat()
+
     board['fix_version'] = fix_version
+
+    # Sync release_date and cutoff from the fix version date
+    new_release_date = _parse_fix_version_to_date(fix_version)
+    date_changed = False
+    if new_release_date and new_release_date != old_release_date:
+        board['release_date'] = new_release_date
+        board['cutoff'] = _get_cutoff_for_release_date(new_release_date)
+        date_changed = True
+        print(f"[release] Fix version {fix_version} → release_date synced: "
+              f"{old_release_date} → {new_release_date}, "
+              f"cutoff: {old_cutoff} → {board['cutoff']}")
+
+    # Build audit note
+    note_parts = [f'Fix version changed to {fix_version}']
+    if date_changed:
+        note_parts.append(f'Release date updated: {old_release_date} → {new_release_date}')
+        note_parts.append(f'Cutoff recalculated: {board["cutoff"]}')
+
     board['audit_trail'].append({
         'action': 'update_fix_version', 'by': data.get('updated_by', 'unknown'),
-        'at': datetime.datetime.utcnow().isoformat(),
-        'note': f'Fix version changed to {fix_version}'
+        'at': now,
+        'note': '. '.join(note_parts)
     })
     _write_board(board)
-    return jsonify({'status': 'ok', 'fix_version': fix_version})
+
+    result = {'status': 'ok', 'fix_version': fix_version}
+    if date_changed:
+        result['release_date'] = new_release_date
+        result['cutoff'] = board['cutoff']
+        result['date_synced'] = True
+    return jsonify(result)
 
 
 @app.route('/api/release/jira_by_fix_version', methods=['POST'])
@@ -5191,7 +5285,15 @@ def login():
         'redirect_uri': _get_callback_url(),
         'scope': 'repo workflow',
         'state': state,
+        # Force GitHub to show the login page instead of auto-authorizing
+        # with an existing browser session (e.g., service account).
+        # This ensures users authenticate with their personal accounts.
+        'prompt': 'consent',
     }
+    # Optional: If user passes ?login=username, pre-fill the GitHub login form
+    login_hint = request.args.get('login', '')
+    if login_hint:
+        params['login'] = login_hint
     github_auth_url = f'{GITHUB_URL}/login/oauth/authorize?{urlencode(params)}'
     return redirect(github_auth_url)
 
