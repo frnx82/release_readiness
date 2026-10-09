@@ -48,6 +48,51 @@ No single existing tool linked **release intent** (what developers nominate) wit
 
 ## 2. Engineering Excellence
 
+### Core Capabilities — From Nomination to Production in One Place
+
+The dashboard covers the **entire release lifecycle**: nominate → validate → document → test → promote to production.
+
+```mermaid
+flowchart LR
+    A["Nominate<br/>K8s UAT + Artifactory"] --> B["Validate<br/>Drift + AI Readiness"]
+    B --> C["Lock Board<br/>Cutoff + Exceptions"]
+    C --> D["Release Notes<br/>Jira MCP + Gemini"]
+    C --> E["QA Tab<br/>Prepare E2E → Test → Drift → Prod"]
+    E --> F["Argo CD<br/>E2E / PreProd / Prod"]
+```
+
+**1. Version Nomination Directly from Source Systems (Kubernetes UAT + Artifactory)**
+- **Kubernetes services:** The nomination dropdown lists services discovered from the **live UAT cluster**. The image tag and Helm chart version are **auto-filled from the Kubernetes API**, so nobody types a version.
+- **Custom / non-K8s components** (Spark, PySpark jobs, etc.): Available versions are **fetched from Artifactory** through its REST API, so developers pick a published artifact version instead of typing one.
+- Both kinds of nomination appear on **one unified release board**, with the nominator, linked Jira IDs, notes, version history and one-click rollback to an earlier nomination.
+
+**2. AI Release Notes Generated via Jira MCP**
+- Each release cycle gets a **Jira Fix Version** automatically, derived from the release date.
+- The dashboard pulls every ticket tagged with that Fix Version through the **Jira MCP server**, with a REST fallback.
+- Tickets are **mapped to nominated services automatically** using the Jira *component* field (case-, dash- and underscore-insensitive matching). Tickets that don't match any service are flagged.
+- **Gemini** reads each ticket's summary, description, type and priority, then writes **consistent release notes**: an executive summary, a service table (image tag + Helm version + Jira tickets), changes grouped by type, an AI risk assessment, and post-cutoff exceptions called out.
+- Notes are generated in **seconds** instead of hours and can be copied as Markdown into Teams or Confluence.
+
+**3. QA Tab — Full, GitOps-Driven Release Execution**
+
+The QA tab unlocks once the board is locked, and walks the release through to production in five guided steps:
+
+| Step | What it does | Why it matters |
+|---|---|---|
+| **1. Prepare E2E** | Builds a complete `version.yaml` (nominated versions + current Prod versions for all other services) and pushes it to the `e2e` branch. Argo CD deploys it to the QA namespace. | A **complete, reproducible, production-like** test environment, with no hand-written version files |
+| **2. QA Namespace Status** | Live view of the QA namespace through the K8s API: image tags, replicas, health | Confirms Argo CD synced correctly and catches crash loops or image-pull errors, without needing `kubectl` |
+| **3. Test Pipelines** | One-click **Smoke / E2E / Regression** suites run as GitHub Actions workflows, with status and run links | Central, visible test execution recorded in the audit trail |
+| **4. Drift Check** | Compares the current board against the `version.yaml` already deployed to E2E and flags **changed / new / removed** services | Guarantees **what was tested is exactly what ships** |
+| **5. Prepare Prod / PreProd** | Requires a **Change Ticket** (e.g. `CHG0012345`), builds a `version.yaml` with **only the nominated services**, and pushes it to the `prod` and `preprod` branches together. Argo CD then syncs. | Enforces change management, deploys only what changed, and links every release to an ITSM ticket |
+
+**4. Continuous Validation — Version Drift + AI Readiness**
+- **Drift detection** compares nominated versions with live UAT and classifies each as 🟢 Match, 🟡 Drift or 🔴 Major Drift.
+- **AI readiness scoring** (Gemini) gives each service a score from 0 to 100 based on pod health, restarts, OOMKills, CrashLoopBackOff, probes and resource configuration, and explains every flag.
+
+**5. Release Governance**
+- Board lifecycle **Open → Locked → Released**, with a configurable cutoff, an **exception nomination** workflow (reason + approver) and a full **audit trail**.
+- **Release history** and JSON/YAML/CSV manifest exports for reporting and archiving.
+
 ### Architecture and Design Quality
 
 - **Reads live data as the source of truth:** Versions come straight from the Kubernetes API (`containers[].image`, `helm.sh/chart` labels), not from user input, so version typos cannot happen.
@@ -121,20 +166,24 @@ No single existing tool linked **release intent** (what developers nominate) wit
 | Build the release board | ~30 min | ~5 min (nominate from live cluster) | **~25 min** |
 | Check version drift | ~45 min | ~0 min (automated) | **~45 min** |
 | Generate release summary / notes | ~30 min – 2 hrs | ~10–30 sec (export / AI notes) | **~30 min – 2 hrs** |
+| Map Jira tickets to services for notes | ~30–60 min (manual Jira search) | ~0 min (Fix Version via Jira MCP) | **~30–60 min** |
+| Prepare E2E / Prod `version.yaml` files | ~30–45 min (hand-edited, error-prone) | ~1 min (generated + pushed via GitOps) | **~30–45 min** |
 | Trigger QA tests + gather results | ~40 min | ~1 min (one-click) | **~39 min** |
 | Answer "are we ready?" (5+ times/cycle) | ~25–50 min | ~0 min (always visible) | **~25–50 min** |
 | Audit / compliance look-up | ~20 min | ~2 min (audit trail) | **~18 min** |
-| **Total per release** | **~3–4 hours** | **~15 minutes** | **~3+ hours** |
+| **Total per release** | **~4–6 hours** | **~20 minutes** | **~4+ hours** |
 
-> 📊 With weekly releases, that is **12+ hours saved per month** (~150+ hours per year) of coordination effort, freed up for feature work.
+> 📊 With weekly releases, that is **16+ hours saved per month** (~200 hours per year) of coordination effort, freed up for feature work.
 
 **Qualitative outcomes:**
-- **Version typos eliminated:** Versions are read from the cluster, never typed.
+- **Version typos eliminated:** K8s versions are read from the UAT cluster and custom-component versions from Artifactory. Nothing is typed by hand.
 - **Stale nominations caught before release:** Drift detection flags mismatches between nominated and deployed versions.
+- **What was tested is what ships:** The QA tab's E2E drift check plus GitOps promotion guarantee that production receives exactly the versions QA validated.
+- **End-to-end release from one screen:** Nominate → test → promote to PreProd/Prod with a mandatory change ticket, all from the dashboard and all deployed by Argo CD.
 - **Fewer expert-only tasks:** AI readiness scoring replaces ~30 min of manual `kubectl` checks per service. Developers, QA and managers can assess readiness without cluster expertise.
-- **Governance:** Formal cutoff, exception workflow with approver and a complete audit trail. Release decisions are traceable and audit-ready.
+- **Governance:** Formal cutoff, exception workflow with approver, change-ticket enforcement for production and a complete audit trail. Release decisions are traceable and audit-ready.
 - **One source of truth:** Dev, QA, DevOps, tech leads and management all see the same real-time view. Fewer Teams polls, spreadsheets and status meetings.
-- **Consistent, richer release notes:** AI-generated notes include Jira ticket context, change summaries and risk assessment in the same format every time.
+- **Consistent, richer release notes:** Jira Fix Version tickets are pulled via MCP and mapped to services automatically, and Gemini writes the notes in the same format every time.
 - **Safer deployments:** GitOps-driven environment changes, UAT-locked deploy triggers and full traceability.
 
 ### Benefits to Be Realized
