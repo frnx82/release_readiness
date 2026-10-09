@@ -451,7 +451,7 @@ The current QA Tab handles core workflow natively (direct GitHub API calls from 
 A planned enhancement where tests automatically trigger when the board locks at cutoff time:
 
 ```
-Board auto-locks at cutoff (e.g., Wednesday 12 PM)
+Board auto-locks at cutoff (e.g., Wednesday 2 PM EST)
        ↓
 Dashboard detects lock event
        ↓

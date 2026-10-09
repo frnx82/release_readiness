@@ -755,7 +755,7 @@ NAMESPACE = os.getenv('POD_NAMESPACE', 'default')
 DEPLOY_ENV = os.getenv('DEPLOY_ENV', 'uat').lower()  # 'uat' or 'prod' — determines which cluster is local
 RELEASE_CADENCE = os.getenv('RELEASE_CADENCE', 'friday')  # 'friday' or 'custom'
 CUTOFF_DAY = int(os.getenv('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
-CUTOFF_HOUR = int(os.getenv('CUTOFF_HOUR', '17'))  # 17:00
+CUTOFF_HOUR = int(os.getenv('CUTOFF_HOUR', '14'))  # 14:00 (2 PM EST)
 
 # ── Artifactory (Custom Component Version Detection) ─────────────────────────
 ARTIFACTORY_URL = os.getenv('ARTIFACTORY_URL', '').rstrip('/')
@@ -829,7 +829,7 @@ def _get_current_release_date():
 
 
 def _get_cutoff_datetime():
-    """Calculate the cutoff datetime (Wednesday 5 PM of the current release week)."""
+    """Calculate the cutoff datetime (Wednesday 2 PM EST of the current release week)."""
     today = datetime.date.today()
     days_until_friday = (4 - today.weekday()) % 7
     if days_until_friday == 0 and datetime.datetime.now().hour >= 18:

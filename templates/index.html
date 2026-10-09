@@ -1357,7 +1357,7 @@
                             </div>
                             <div style="display:flex;gap:10px;align-items:flex-start">
                                 <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">4</span>
-                                <div><strong style="color:var(--text)">Cutoff Time — Board Auto-Locks:</strong> At the configured cutoff time, the board auto-locks. No more regular nominations accepted. <strong style="color:#f59e0b">⚠️ Exception Nominations</strong> are still possible with approver and reason (for late hotfixes).</div>
+                                <div><strong style="color:var(--text)">Cutoff Time — Board Auto-Locks (Wednesday 2:00 PM EST):</strong> At Wednesday 2:00 PM EST, the board auto-locks and all nominations are disabled. For late hotfixes, the QA team can unlock the board to submit an exception nomination with approver and reason.</div>
                             </div>
                             <div style="display:flex;gap:10px;align-items:flex-start">
                                 <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">5</span>
@@ -1438,8 +1438,8 @@
                         <div style="margin-top:12px;font-size:13px;line-height:1.8">
                             <strong style="color:var(--accent2)">Board states:</strong>
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li><span style="color:var(--green)">● Open</span> — Accepting nominations (Monday through Wednesday cutoff)</li>
-                                <li><span style="color:var(--yellow)">🔒 Locked</span> — Past cutoff. Regular nominations blocked. <strong style="color:#f59e0b">Exception nominations</strong> still allowed with reason + approver.</li>
+                                <li><span style="color:var(--green)">● Open</span> — Accepting nominations (Monday through Wednesday 2:00 PM EST cutoff)</li>
+                                <li><span style="color:var(--yellow)">🔒 Locked</span> — Past cutoff (Wednesday 2:00 PM EST). All nominations locked. QA team can unlock the board for exception nominations.</li>
                                 <li><span style="color:var(--text2)">✅ Released</span> — Archived as read-only. A new cycle begins.</li>
                             </ul>
                         </div>
@@ -1805,9 +1805,8 @@
                         <h3 style="font-size:15px;margin-bottom:8px">🔒 Board Lifecycle Controls</h3>
                         <div style="margin-top:8px;font-size:13px;line-height:1.8">
                             <ul style="margin-left:18px;color:var(--text2)">
-                                <li><strong>🔒 Lock Board (Cutoff)</strong> — Freezes nominations. The board auto-locks at the configured cutoff time.
-                                    Can also be manually locked by a Release Manager. All regular nomination buttons are disabled after locking.</li>
-                                <li><strong>🔓 Unlock Board</strong> — Reopens a locked board for editing. Use this if you need to add/modify nominations after cutoff without going through the exception flow.</li>
+                                <li><strong>🔒 Lock Board (Cutoff)</strong> — Freezes nominations. The board auto-locks at Wednesday 2:00 PM EST (or manually locked by Release Manager). All nominations are disabled after locking.</li>
+                                <li><strong>🔓 Unlock Board</strong> — Reopens a locked board for QA team to allow exception nominations after cutoff.</li>
                                 <li><strong>✅ Mark Released</strong> — Archives the board to release history. A new cycle is created for the next Friday.</li>
                             </ul>
                         </div>

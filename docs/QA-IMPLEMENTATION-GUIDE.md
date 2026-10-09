@@ -77,7 +77,7 @@ The new workflow reduces 9 manual steps to a single click:
 | 🎯 **Version accuracy** | Tests always run against the exact versions nominated on the release board — no mismatch |
 | 📡 **Full visibility** | Everyone (QA, dev, management) sees test status on the same dashboard — no asking around |
 | ⚡ **One-click execution** | "Run All" triggers smoke → e2e → regression sequentially, stops on first failure |
-| ⏰ **Auto-trigger after cutoff** | Tests start automatically when the board locks at cutoff (Wed 12 PM) — results ready when QA checks |
+| ⏰ **Auto-trigger after cutoff** | Tests start automatically when the board locks at cutoff (Wed 2 PM EST) — results ready when QA checks |
 | 🚦 **Clear go/no-go** | Quality Gate gives a single answer: "Can we release?" — no guessing |
 | 📝 **Audit trail** | QA sign-off is recorded: who, when, which runs passed — compliance-ready |
 | 📈 **Trend tracking** | See pass rate trends over the last 10 releases — catch regressions early |
@@ -238,13 +238,13 @@ _github_post('/repos/your-org/qa-tests/actions/workflows/test-pipeline.yml/dispa
 │     1. smoke → 2. e2e → 3. regression                       │
 │                                                              │
 │  ⏰ Auto-Trigger: [ON ▼]                                     │
-│  ℹ️ Tests auto-run after board locks at cutoff (Wed 12 PM)   │
-│     Next scheduled: Wed, May 28 12:05 PM                     │
+│  ℹ️ Tests auto-run after board locks at cutoff (Wed 2 PM EST)   │
+│     Next scheduled: Wed, May 28 2:05 PM                      │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 **Auto-Trigger Flow**:
-1. Board auto-locks at cutoff (Wednesday 12 PM) — nominations are frozen
+1. Board auto-locks at cutoff (Wednesday 2 PM EST) — nominations are frozen
 2. Dashboard waits 5 minutes (configurable) for any last-minute changes
 3. Automatically triggers: smoke → e2e → regression
 4. Results appear on the QA tab as each suite completes

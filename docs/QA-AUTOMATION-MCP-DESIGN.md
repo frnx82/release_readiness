@@ -34,7 +34,7 @@
 You have a **single test pipeline** that accepts a `test_type` flag to run different test suites. The dashboard triggers this same workflow:
 
 - **Manually**: QA clicks "▶ Run Tests" on the dashboard
-- **Automatically**: Tests auto-trigger after the board locks at cutoff time (Wednesday 12 PM)
+- **Automatically**: Tests auto-trigger after the board locks at cutoff time (Wednesday 2 PM EST)
 
 ### Auto-Trigger After Cutoff
 

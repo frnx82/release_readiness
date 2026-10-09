@@ -114,7 +114,7 @@ def _get_cutoff():
     # Old code stored local time (e.g., 12:00 EDT) but compared against utcnow(),
     # causing the board to lock 4 hours early (noon local treated as noon UTC).
     cutoff_local = datetime.datetime.combine(cutoff, datetime.time(cutoff_hour, 0))
-    cutoff_utc = cutoff_local - datetime.timedelta(hours=tz_offset)  # e.g., 12:00 - (-4) = 16:00 UTC
+    cutoff_utc = cutoff_local - datetime.timedelta(hours=tz_offset)  # e.g., 14:00 - (-4) = 18:00 UTC (2 PM EST/EDT)
     return cutoff_utc.isoformat()
 
 def _generate_fix_version(release_date_str):

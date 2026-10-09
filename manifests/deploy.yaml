@@ -200,6 +200,16 @@ spec:
           value: "ingestion-pipeline:Spark:Main data ingestion from source systems:spark-releases/ingestion-pipeline,etl-transformer:PySpark:Data transformation and enrichment:pyspark-releases/etl-transformer,data-validator:PySpark:Data quality validation rules:pyspark-releases/data-validator,report-aggregator:Spark:Aggregation jobs for reporting:spark-releases/report-aggregator,mobile-app:Mobile:iOS/Android mobile application"
 
         # ════════════════════════════════════════════════════════════
+        # Release Board — Cutoff Schedule Configuration
+        # ════════════════════════════════════════════════════════════
+        - name: CUTOFF_DAY
+          value: "2"                                        # 0=Mon, 2=Wed
+        - name: CUTOFF_HOUR
+          value: "14"                                       # 14:00 (2 PM EST/EDT)
+        - name: CUTOFF_TZ_OFFSET
+          value: "-4"                                       # UTC offset: -4=EDT, -5=EST
+
+        # ════════════════════════════════════════════════════════════
         # Storage Backend
         # ════════════════════════════════════════════════════════════
         # 'auto' = detect ConfigMap permissions at startup

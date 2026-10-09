@@ -227,7 +227,7 @@ def check_cutoff():
 ### 14. Email Digest
 
 - **Daily summary** at 9 AM: "Release board has 5 services. 3 pending QA. 2 days to cutoff."
-- **Cutoff alert** — 4 hours before cutoff: "2 services still pending QA sign-off. Board locks at 5 PM."
+- **Cutoff alert** — 4 hours before cutoff: "2 services still pending QA sign-off. Board locks at 2 PM EST."
 - **Post-release report** — automated HTML email with full manifest, AI analysis, and readiness scores
 
 ---

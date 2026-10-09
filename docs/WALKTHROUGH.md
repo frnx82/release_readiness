@@ -119,7 +119,7 @@ Every action is logged with who, what, and when:
 | Concept | Description |
 |---------|-------------|
 | **Release Date** | Auto-calculated as the next Friday |
-| **Cutoff** | Wednesday 5:00 PM before the release Friday (configurable) |
+| **Cutoff** | Wednesday 2:00 PM EST before the release Friday (configurable) |
 | **Board Status** | `open` → `locked` → `released` |
 | **ConfigMap Storage** | One ConfigMap per release: `release-board-2026-03-21` |
 | **Version History** | Tracks all version changes per service across re-nominations |
@@ -155,7 +155,7 @@ Every action is logged with who, what, and when:
 | `POD_NAMESPACE` | `default` | K8s namespace to monitor |
 | `RELEASE_CADENCE` | `friday` | Release day |
 | `CUTOFF_DAY` | `2` (Wed) | Cutoff day (0=Mon, 4=Fri) |
-| `CUTOFF_HOUR` | `17` | Cutoff hour (24h format) |
+| `CUTOFF_HOUR` | `14` | Cutoff hour (24h format, 2 PM EST) |
 | `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model to use |
 | `GEMINI_API_KEY` | — | API key for Gemini |
 | `GOOGLE_CLOUD_PROJECT` | — | GCP project (alternative to API key) |

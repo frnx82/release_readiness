@@ -69,7 +69,7 @@ The central nomination board where teams declare what's being released.
 **What it does**:
 - Services are nominated with specific versions (image tags)
 - Supports **platform services** (auto-detected from UAT cluster) and **custom components** (pulled from Artifactory)
-- Board has a **configurable cutoff time** (e.g., Wednesday 12 PM) — after which nominations lock automatically
+- Board has a **configurable cutoff time** (e.g., Wednesday 2 PM EST) — after which nominations lock automatically
 - Status tracking: 🟢 Ready / 🟡 Needs Review / 🔴 At Risk
 - Exception nominations for out-of-cycle releases
 - Live countdown timer to release date
@@ -366,7 +366,7 @@ Also optional. Without Artifactory configured, the dashboard focuses on platform
 Yes. Cutoff day and hour are configurable via environment variables:
 ```bash
 CUTOFF_DAY=2          # 0=Mon, 2=Wed
-CUTOFF_HOUR=12        # 12:00 (noon)
+CUTOFF_HOUR=14        # 14:00 (2 PM EST)
 RELEASE_CADENCE=friday  # Release day
 ```
 

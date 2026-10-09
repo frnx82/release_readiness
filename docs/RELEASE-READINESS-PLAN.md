@@ -18,7 +18,7 @@
 - 30 microservices, trunk-based development, continuous UAT deployments
 - Any subset (1-10+) may be released on a given Friday
 - Only developers know which services are "ready" — this is a human decision
-- Wednesday 5 PM cutoff, Friday release cadence
+- Wednesday 2 PM EST cutoff, Friday release cadence
 
 ---
 
@@ -187,8 +187,8 @@ Once the Release Manager approves, one-click export generates:
 
 ```yaml
 release:
-  name: "Release 2026-03-14"
-  cutoff: "2026-03-12T17:00:00Z"
+  name: "Release 2026-03-13"
+  cutoff: "2026-03-11T18:00:00Z"
   approved_by: "@release-manager"
   services:
     - name: billing-service
