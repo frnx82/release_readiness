@@ -52,21 +52,20 @@ No single existing tool linked **release intent** (what developers nominate) wit
 
 The dashboard covers the **entire release lifecycle**: nominate → validate → document → test → promote to production.
 
-```mermaid
-flowchart LR
-    A["Nominate<br/>K8s UAT + Artifactory"] --> B["Validate<br/>Drift + AI Readiness"]
-    B --> C["Lock Board<br/>Cutoff + Exceptions"]
-    C --> D["Release Notes<br/>Jira MCP + Gemini"]
-    C --> E["QA Tab<br/>Prepare E2E → Test → Drift → Prod"]
-    E --> F["Argo CD<br/>E2E / PreProd / Prod"]
-```
+![End-to-End Release Lifecycle](images/award-release-lifecycle-flow.png)
 
 **1. Version Nomination Directly from Source Systems (Kubernetes UAT + Artifactory)**
+
+![Version Nomination from Source Systems](images/award-nomination-sources.png)
+
 - **Kubernetes services:** The nomination dropdown lists services discovered from the **live UAT cluster**. The image tag and Helm chart version are **auto-filled from the Kubernetes API**, so nobody types a version.
 - **Custom / non-K8s components** (Spark, PySpark jobs, etc.): Available versions are **fetched from Artifactory** through its REST API, so developers pick a published artifact version instead of typing one.
 - Both kinds of nomination appear on **one unified release board**, with the nominator, linked Jira IDs, notes, version history and one-click rollback to an earlier nomination.
 
 **2. AI Release Notes Generated via Jira MCP**
+
+![AI Release Notes via Jira MCP](images/award-jira-mcp-release-notes.png)
+
 - Each release cycle gets a **Jira Fix Version** automatically, derived from the release date.
 - The dashboard pulls every ticket tagged with that Fix Version through the **Jira MCP server**, with a REST fallback.
 - Tickets are **mapped to nominated services automatically** using the Jira *component* field (case-, dash- and underscore-insensitive matching). Tickets that don't match any service are flagged.
@@ -76,6 +75,8 @@ flowchart LR
 **3. QA Tab — Full, GitOps-Driven Release Execution**
 
 The QA tab unlocks once the board is locked, and walks the release through to production in five guided steps:
+
+![QA Tab — GitOps-Driven Release Execution](images/award-qa-tab-release-flow.png)
 
 | Step | What it does | Why it matters |
 |---|---|---|
