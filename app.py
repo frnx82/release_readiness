@@ -4771,6 +4771,86 @@ def export_release():
     return jsonify(manifest)
 
 
+# ── Apps Version Export (board nominations + non-nominated prod) ─────────────
+_HELM_CHART_VERSION_RE = re.compile(r'-(v?\d+\.\d+\.\d+[0-9A-Za-z.+\-]*)$')
+
+
+def _chart_version_only(helm_value):
+    """Return just the chart version from a helm label value.
+
+    `helm.sh/chart` labels are `<chart-name>-<version>` (e.g. `billing-chart-0.5.0`);
+    this returns `0.5.0`. Values that are already a bare version are returned as-is.
+    """
+    if not helm_value:
+        return ''
+    helm_value = str(helm_value).strip()
+    m = _HELM_CHART_VERSION_RE.search(helm_value)
+    return m.group(1) if m else helm_value
+
+
+def _build_apps_versions(board, prod_services):
+    """Merge board nominations with non-nominated prod services.
+
+    Returns {app_name: {'image_version': str, 'helm_version': str}}.
+    Board nominations win over prod. Custom (non-K8s) components are skipped
+    because they have no image/helm chart to deploy.
+    """
+    apps = {}
+    nominated = {name: svc for name, svc in (board.get('services') or {}).items()
+                 if not svc.get('is_custom')}
+
+    for svc in prod_services or []:
+        name = svc.get('name')
+        if not name or name in nominated:
+            continue
+        apps[name] = {
+            'image_version': svc.get('image_tag') or '',
+            'helm_version': _chart_version_only(svc.get('helm_version')),
+        }
+
+    for name, svc in nominated.items():
+        apps[name] = {
+            'image_version': svc.get('image_tag') or svc.get('version') or '',
+            'helm_version': _chart_version_only(svc.get('helm_version')),
+        }
+    return apps
+
+
+def _format_apps_yaml(apps):
+    """Render apps dict as the minimal `apps:` YAML (sorted, values double-quoted)."""
+    lines = ['apps:']
+    for name in sorted(apps):
+        lines.append(f'  {name}:')
+        lines.append(f'    image_version: {json.dumps(apps[name]["image_version"])}')
+        lines.append(f'    helm_version: {json.dumps(apps[name]["helm_version"])}')
+    return '\n'.join(lines) + '\n'
+
+
+@app.route('/api/release/export/apps')
+def export_apps_versions():
+    """Export `apps:` YAML — all board nominations + all non-nominated prod versions."""
+    board = _read_board()
+    if not board:
+        return jsonify({'error': 'No release board found'}), 400
+
+    prod_services = _fetch_prod_services_internal()
+    if not prod_services:
+        # Without prod data the file would silently contain only nominations.
+        return jsonify({'error': 'Could not read production services — check prod cluster connectivity '
+                                 '(PROD_CLUSTER_API / PROD_NAMESPACE).'}), 502
+
+    apps = _build_apps_versions(board, prod_services)
+    if not apps:
+        return jsonify({'error': 'No apps to export'}), 400
+
+    return app.response_class(
+        _format_apps_yaml(apps),
+        mimetype='text/yaml',
+        headers={'Content-Disposition':
+                 f'attachment; filename=apps-version-{board.get("release_date", "unknown")}.yaml'}
+    )
+
+
 @app.route('/api/jira/issues', methods=['POST'])
 def fetch_jira_details():
     """Fetch details for given Jira IDs via MCP server."""

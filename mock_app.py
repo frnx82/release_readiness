@@ -677,6 +677,40 @@ def export():
     return jsonify(manifest)
 
 
+def _mock_chart_version_only(helm_value):
+    """`billing-chart-0.5.0` -> `0.5.0`; bare versions returned as-is."""
+    if not helm_value:
+        return ''
+    m = re.search(r'-(v?\d+\.\d+\.\d+[0-9A-Za-z.+\-]*)$', str(helm_value).strip())
+    return m.group(1) if m else str(helm_value).strip()
+
+
+@app.route('/api/release/export/apps')
+def export_apps_versions():
+    """Mock: board nominations + non-nominated prod versions as minimal `apps:` YAML."""
+    board = _read_board()
+    if not board:
+        return jsonify({'error': 'No release board found'}), 400
+    prod_services = list_prod_services().get_json().get('services', [])
+    nominated = {n: s for n, s in (board.get('services') or {}).items() if not s.get('is_custom')}
+
+    apps = {}
+    for svc in prod_services:
+        if svc.get('name') and svc['name'] not in nominated:
+            apps[svc['name']] = (svc.get('image_tag') or '', _mock_chart_version_only(svc.get('helm_version')))
+    for name, svc in nominated.items():
+        apps[name] = (svc.get('image_tag') or svc.get('version') or '', _mock_chart_version_only(svc.get('helm_version')))
+
+    lines = ['apps:']
+    for name in sorted(apps):
+        lines += [f'  {name}:',
+                  f'    image_version: {json.dumps(apps[name][0])}',
+                  f'    helm_version: {json.dumps(apps[name][1])}']
+    return app.response_class('\n'.join(lines) + '\n', mimetype='text/yaml',
+                              headers={'Content-Disposition':
+                                       f'attachment; filename=apps-version-{board.get("release_date", "unknown")}.yaml'})
+
+
 @app.route('/api/jira/issues', methods=['POST'])
 def jira_issues():
     """Mock: Fetch Jira issue details."""

@@ -818,6 +818,7 @@
                 <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
                     <button class="btn btn-primary" onclick="exportManifest('json')">📋 Export JSON</button>
                     <button class="btn btn-primary" onclick="exportManifest('yaml')">📄 Export YAML</button>
+                    <button class="btn btn-primary" onclick="exportAppsVersions()" title="All nominated versions from the board + all non-nominated versions from production (apps: image_version / helm_version)">🧩 Export Apps Versions</button>
                     <button id="btn-lock-board" class="btn" onclick="finalizeBoard()">🔒 Lock Board (Cutoff)</button>
                     <button id="btn-unlock-board" class="btn" onclick="unlockBoard()" style="display:none">🔓 Unlock Board</button>
                     <button id="btn-mark-released" class="btn btn-danger" onclick="completeRelease()">✅ Mark Released</button>
@@ -3518,6 +3519,30 @@
                 const data = await r.json();
                 document.getElementById('export-output').innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
             } catch (e) { showToast('Export failed', 'error'); }
+        }
+
+        /** Download apps-version YAML: board nominations + non-nominated prod versions. */
+        async function exportAppsVersions() {
+            try {
+                const r = await fetch('/api/release/export/apps');
+                if (!r.ok) {
+                    let msg = `HTTP ${r.status}`;
+                    try { msg = (await r.json()).error || msg; } catch (_) {}
+                    showToast('Apps export failed: ' + msg, 'error');
+                    return;
+                }
+                const text = await r.text();
+                const cd = r.headers.get('Content-Disposition') || '';
+                const m = cd.match(/filename=([^;]+)/);
+                const filename = m ? m[1].trim() : 'apps-version.yaml';
+                const url = URL.createObjectURL(new Blob([text], { type: 'text/yaml' }));
+                const a = document.createElement('a');
+                a.href = url; a.download = filename;
+                document.body.appendChild(a); a.click(); a.remove();
+                URL.revokeObjectURL(url);
+                document.getElementById('export-output').innerHTML = `<pre>${text.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}</pre>`;
+                showToast('Apps versions exported', 'success');
+            } catch (e) { showToast('Apps export failed: ' + e.message, 'error'); }
         }
 
         function simpleMarkdownToHtml(md) {
