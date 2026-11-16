@@ -2083,7 +2083,33 @@ def _write_board_file(board_data, release_date=None):
 
 # ── Board read/write (dual-mode) ─────────────────────────────────────────────
 def _read_board(release_date=None):
-    """Read the release board. Uses ConfigMap or file based on detected storage mode."""
+    """Read the release board. Uses ConfigMap or file based on detected storage mode.
+
+    Boards are stored under the *auto-calculated* release-date key. If a board's
+    release date was pushed later via the fix version (e.g. holiday week), the
+    weekly key rolls over before that board is released. In that case carry the
+    still-active board forward to the new key instead of silently starting a
+    fresh (empty) board and losing all nominations.
+    """
+    board = _read_board_raw(release_date)
+    if board is None and release_date is None:
+        try:
+            current_key = _get_current_release_date()
+            prev_key = (datetime.date.fromisoformat(current_key) - datetime.timedelta(days=7)).isoformat()
+            prev = _read_board_raw(prev_key)
+            if (prev and prev.get('status') != 'released'
+                    and (prev.get('release_date') or '') >= current_key):
+                print(f"[storage] ↪️  Carrying over active board (release_date={prev.get('release_date')}) "
+                      f"from key {prev_key} → {current_key}")
+                _write_board(prev)
+                return prev
+        except Exception as e:
+            print(f"[storage] Carry-over check failed: {e}")
+    return board
+
+
+def _read_board_raw(release_date=None):
+    """Read the board stored under the given (or current) release-date key."""
     if _STORAGE_MODE == 'configmap':
         try:
             v1 = client.CoreV1Api(api_client=_local_api_client)
@@ -2186,8 +2212,6 @@ def _get_cutoff_for_release_date(release_date_str):
         # CUTOFF_DAY: 0=Mon, 2=Wed, 4=Fri (release day). Offset = (release_weekday - CUTOFF_DAY) % 7
         # For Friday release (weekday=4) and Wed cutoff (CUTOFF_DAY=2): offset = (4-2)%7 = 2 days before
         days_before = (release_date.weekday() - CUTOFF_DAY) % 7
-        if days_before == 0 and release_date.weekday() != CUTOFF_DAY:
-            days_before = 7  # If same weekday but different intent, use full week
         cutoff_date = release_date - datetime.timedelta(days=days_before)
         cutoff_local = datetime.datetime.combine(cutoff_date, datetime.time(CUTOFF_HOUR, 0))
         cutoff_utc = cutoff_local - datetime.timedelta(hours=CUTOFF_TZ_OFFSET)
@@ -2195,6 +2219,207 @@ def _get_cutoff_for_release_date(release_date_str):
     except (ValueError, TypeError):
         # Fallback to the standard auto-calculated cutoff
         return _get_cutoff_datetime()
+
+
+def _effective_cutoff(board):
+    """Single source of truth for a board's cutoff (UTC ISO string).
+
+    Always derived from the board's own release_date so that:
+      • a release date moved via fix version keeps its matching cutoff, and
+      • stale/buggy stored cutoffs (old timezone bug) are corrected.
+    For the normal Friday cadence this equals _get_cutoff_datetime().
+    """
+    release_date = (board or {}).get('release_date')
+    if release_date:
+        return _get_cutoff_for_release_date(release_date)
+    return _get_cutoff_datetime()
+
+
+def _apply_auto_lock(board, persist=True):
+    """Recalculate the cutoff and apply auto-lock / auto-unlock rules in place.
+
+    Shared by GET /api/release/current and POST /api/release/nominate so the
+    cutoff is enforced even if nobody has loaded the dashboard since the cutoff
+    passed (previously a past-cutoff board stayed 'open' and accepted regular
+    nominations until someone refreshed the UI).
+
+    Rules:
+      • past cutoff + open + not manually unlocked  → locked (auto_locked=True)
+      • before cutoff + locked + auto_locked         → open
+      • before cutoff + manual_unlock flag           → flag cleared (an unlock
+        before cutoff must not suppress the upcoming auto-lock)
+    A manual lock (finalize) is never auto-unlocked. Released boards untouched.
+    Returns is_past_cutoff (bool).
+    """
+    changed = False
+    effective_cutoff = _effective_cutoff(board)
+    if board.get('cutoff') != effective_cutoff:
+        board['cutoff'] = effective_cutoff
+        changed = True
+
+    is_past_cutoff = datetime.datetime.utcnow().isoformat() > effective_cutoff
+    status = board.get('status', 'open')
+
+    if status != 'released':
+        if not is_past_cutoff and board.get('manual_unlock'):
+            board['manual_unlock'] = False
+            changed = True
+        if is_past_cutoff and status == 'open' and not board.get('manual_unlock'):
+            board['status'] = 'locked'
+            board['auto_locked'] = True
+            changed = True
+            print(f"[release] ✅ Auto-locked board (past cutoff {effective_cutoff})")
+        elif not is_past_cutoff and status == 'locked' and board.get('auto_locked'):
+            board['status'] = 'open'
+            board['auto_locked'] = False
+            changed = True
+            print(f"[release] 🔓 Auto-unlocked board (cutoff {effective_cutoff} hasn't passed yet)")
+
+    if changed and persist:
+        _write_board(board)
+    return is_past_cutoff
+
+
+def _nomination_gate(board, is_exception, exception_reason, exception_approver):
+    """Board-state checks for a nomination. Returns (error_response|None, is_past_cutoff)."""
+    if board.get('status') == 'released':
+        return (jsonify({'error': 'This release has already been completed.'}), 403), False
+
+    # Enforce the cutoff here too (don't rely on the UI having called
+    # /api/release/current since the cutoff passed).
+    is_past_cutoff = _apply_auto_lock(board)
+
+    # Locked (manually or auto) → all nominations disabled; QA must unlock first.
+    if board.get('status') == 'locked':
+        return (jsonify({
+            'error': 'Release board is locked (past cutoff). Nominations are disabled. '
+                     'Contact the QA team to unlock the board if an exception nomination is needed.',
+            'is_locked': True,
+            'cutoff': board.get('cutoff')
+        }), 403), is_past_cutoff
+
+    # Board is open but was manually unlocked past cutoff → exception nomination required
+    if is_past_cutoff and board.get('manual_unlock'):
+        if not is_exception:
+            return (jsonify({
+                'error': 'Board was unlocked past cutoff. Exception nomination is required.',
+                'exception_required': True,
+                'cutoff': board.get('cutoff')
+            }), 403), is_past_cutoff
+        if not exception_reason or not exception_approver:
+            return (jsonify({
+                'error': 'Exception nominations require a reason and approver name.'
+            }), 400), is_past_cutoff
+    return None, is_past_cutoff
+
+
+def _lookup_workload_version(api_client, name, namespace):
+    """Find a workload by name and return its version info.
+
+    Checks every kind that /api/services lists — Deployment, StatefulSet,
+    DaemonSet, CronJob, Job (DaemonSets were listed on the Board tab but could
+    not be resolved, so they were nominated with an EMPTY version).
+
+    Returns (info|None, errors). info = {image, image_tag, helm_version, kind}.
+    A 404 for a kind just means "try the next kind"; other API errors (403…)
+    are collected in `errors`. Connection errors propagate to the caller.
+    """
+    apps_v1 = client.AppsV1Api(api_client=api_client)
+    batch_v1 = client.BatchV1Api(api_client=api_client)
+    lookups = [
+        ('Deployment',  apps_v1.read_namespaced_deployment,  lambda o: o.spec.template.spec.containers),
+        ('StatefulSet', apps_v1.read_namespaced_stateful_set, lambda o: o.spec.template.spec.containers),
+        ('DaemonSet',   apps_v1.read_namespaced_daemon_set,  lambda o: o.spec.template.spec.containers),
+        ('CronJob',     batch_v1.read_namespaced_cron_job,
+         lambda o: o.spec.job_template.spec.template.spec.containers),
+        ('Job',         batch_v1.read_namespaced_job,        lambda o: o.spec.template.spec.containers),
+    ]
+    errors = []
+    for kind, reader, get_containers in lookups:
+        try:
+            obj = _k8s_retry(reader, name, namespace)
+        except client.exceptions.ApiException as e:
+            if e.status != 404:
+                errors.append(f'{kind}: HTTP {e.status} {e.reason}')
+            continue
+        containers = get_containers(obj) or []
+        image = containers[0].image if containers else ''
+        return {
+            'image': image,
+            'image_tag': _extract_image_tag(image) if image else '',
+            'helm_version': _extract_helm_version(obj.metadata.labels),
+            'kind': kind,
+        }, errors
+    return None, errors
+
+
+# ── Board write lock ─────────────────────────────────────────────────────────
+# Serialises read-modify-write of the board across greenlets AND across the
+# gunicorn workers (Dockerfile runs -w 2), which share BOARD_DATA_DIR.
+# threading.Lock is gevent-aware after monkey.patch_all(). The flock is taken
+# non-blocking + polled so a waiting greenlet yields instead of blocking the
+# whole worker's event loop.
+import contextlib as _contextlib
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover (non-POSIX)
+    _fcntl = None
+_board_mutex = threading.Lock()
+
+
+@_contextlib.contextmanager
+def _board_lock(timeout=15.0):
+    with _board_mutex:
+        fh = None
+        if _fcntl is not None:
+            try:
+                os.makedirs(BOARD_DATA_DIR, exist_ok=True)
+                fh = open(os.path.join(BOARD_DATA_DIR, '.board.lock'), 'a+')
+                deadline = time.time() + timeout
+                while True:
+                    try:
+                        _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.time() > deadline:
+                            print('[storage] ⚠️  Board lock timeout — proceeding without cross-worker lock')
+                            break
+                        time.sleep(0.05)
+            except OSError as e:
+                print(f'[storage] ⚠️  Board lock unavailable ({e}) — proceeding')
+        try:
+            yield
+        finally:
+            if fh is not None:
+                try:
+                    _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                fh.close()
+
+def _board_update(mutator):
+    """Re-read the CURRENT board under the lock, apply mutator(board), write it.
+
+    Use this instead of writing back a board object that was read before slow
+    network work (Gemini, GitHub, K8s) — that stale copy would silently drop
+    any nominations made in the meantime.
+    """
+    with _board_lock():
+        board = _read_board()
+        if board:
+            mutator(board)
+            _write_board(board)
+        return board
+
+
+def _with_board_lock(fn):
+    """Run a board-mutating view under _board_lock (prevents lost updates)."""
+    @wraps(fn)
+    def _wrapped(*a, **kw):
+        with _board_lock():
+            return fn(*a, **kw)
+    return _wrapped
+
 
 
 def _new_board():
@@ -2245,13 +2470,18 @@ def _get_deployment_rollout_status(d):
     This solves the problem where a failed deployment shows 1/2 ready + "Running"
     because the old replica is still alive, masking the rollout failure.
     """
-    spec_replicas = d.spec.replicas or 1
+    # NOTE: replicas may legitimately be 0 (scaled down) — don't coerce 0 → 1,
+    # otherwise a scaled-to-zero Deployment is reported as "rolling" forever.
+    spec_replicas = d.spec.replicas if d.spec.replicas is not None else 1
     ready = d.status.ready_replicas or 0
     updated = d.status.updated_replicas or 0
     available = d.status.available_replicas or 0
     unavailable = d.status.unavailable_replicas or 0
     observed_gen = d.status.observed_generation or 0
     generation = d.metadata.generation or 0
+
+    if spec_replicas == 0:
+        return 'scaling', 'Scaled to 0 replicas' if ready == 0 else f'Scaling down ({ready} still ready)'
 
     # Check conditions for ProgressDeadlineExceeded
     conditions = d.status.conditions or []
@@ -2296,12 +2526,14 @@ def _get_deployment_rollout_status(d):
 
 def _get_statefulset_rollout_status(s):
     """Determine rollout status for a StatefulSet."""
-    spec_replicas = s.spec.replicas or 1
+    spec_replicas = s.spec.replicas if s.spec.replicas is not None else 1
     ready = s.status.ready_replicas or 0
     updated = s.status.updated_replicas or 0
-    current = s.status.current_replicas or 0
     observed_gen = s.status.observed_generation or 0
     generation = s.metadata.generation or 0
+
+    if spec_replicas == 0:
+        return 'scaling', 'Scaled to 0 replicas' if ready == 0 else f'Scaling down ({ready} still ready)'
 
     if observed_gen < generation:
         return 'rolling', f'Waiting for controller (gen {observed_gen}/{generation})'
@@ -2313,6 +2545,70 @@ def _get_statefulset_rollout_status(s):
         return 'degraded', f'{ready}/{spec_replicas} ready'
 
     return 'running', f'{ready}/{spec_replicas} ready'
+
+
+def _cronjob_to_service(cj):
+    """Build the service dict for a CronJob (same shape as Deployments)."""
+    containers = cj.spec.job_template.spec.template.spec.containers or []
+    image = containers[0].image if containers else ''
+    suspended = cj.spec.suspend is True
+    if suspended:
+        rollout_status, rollout_detail = 'suspended', f'Suspended (schedule: {cj.spec.schedule})'
+    else:
+        active = len((cj.status.active if cj.status else None) or [])
+        rollout_detail = f'Scheduled: {cj.spec.schedule}' + (f' — {active} active run(s)' if active else '')
+        rollout_status = 'running'
+    return {
+        'name': cj.metadata.name,
+        'kind': 'CronJob',
+        'image': image,
+        'image_tag': _extract_image_tag(image),
+        'helm_version': _extract_helm_version(cj.metadata.labels),
+        'replicas': 0 if suspended else 1,
+        'desired_replicas': 1,
+        'available': not suspended,
+        'rollout_status': rollout_status,
+        'rollout_detail': rollout_detail,
+        'created': cj.metadata.creation_timestamp.isoformat() if cj.metadata.creation_timestamp else None
+    }
+
+
+def _job_to_service(j):
+    """Build the service dict for a standalone Job."""
+    containers = j.spec.template.spec.containers or []
+    image = containers[0].image if containers else ''
+    completions = j.spec.completions or 1
+    succeeded = (j.status.succeeded if j.status else 0) or 0
+    failed = (j.status.failed if j.status else 0) or 0
+    active = (j.status.active if j.status else 0) or 0
+    job_failed = any(c.type == 'Failed' and c.status == 'True'
+                     for c in ((j.status.conditions if j.status else None) or []))
+    if succeeded >= completions:
+        rollout_status, rollout_detail = 'running', f'Completed ({succeeded}/{completions} succeeded)'
+    elif job_failed:
+        rollout_status, rollout_detail = 'failed', f'Job failed ({failed} failed pod(s), {succeeded}/{completions} succeeded)'
+    elif active:
+        rollout_status, rollout_detail = 'rolling', f'Running ({active} active, {succeeded}/{completions} succeeded)'
+    else:
+        rollout_status, rollout_detail = 'degraded', f'{succeeded}/{completions} succeeded, {failed} failed'
+    return {
+        'name': j.metadata.name,
+        'kind': 'Job',
+        'image': image,
+        'image_tag': _extract_image_tag(image),
+        'helm_version': _extract_helm_version(j.metadata.labels),
+        'replicas': succeeded,
+        'desired_replicas': completions,
+        'available': succeeded >= completions,
+        'rollout_status': rollout_status,
+        'rollout_detail': rollout_detail,
+        'created': j.metadata.creation_timestamp.isoformat() if j.metadata.creation_timestamp else None
+    }
+
+
+def _is_standalone_job(j):
+    """True if the Job is not owned by a CronJob (those are represented by the CronJob)."""
+    return not any(ref.kind == 'CronJob' for ref in (j.metadata.owner_references or []))
 
 
 # ── Custom components (non-K8s: Spark/PySpark on Linux servers) ───────────────
@@ -3074,24 +3370,12 @@ def list_services():
             print(f"[services] ❌ {err_msg}")
 
         # CronJobs
+        batch_v1 = client.BatchV1Api(api_client=_local_api_client)
         try:
-            batch_v1 = client.BatchV1Api(api_client=_local_api_client)
             cron_jobs = _k8s_retry(batch_v1.list_namespaced_cron_job, namespace).items
             print(f'[services] ✅ CronJobs: {len(cron_jobs)} found')
             for cj in cron_jobs:
-                containers = cj.spec.job_template.spec.template.spec.containers or []
-                image = containers[0].image if containers else ''
-                services.append({
-                    'name': cj.metadata.name,
-                    'kind': 'CronJob',
-                    'image': image,
-                    'image_tag': _extract_image_tag(image),
-                    'helm_version': _extract_helm_version(cj.metadata.labels),
-                    'replicas': 1 if cj.spec.suspend is not True else 0,
-                    'desired_replicas': 1,
-                    'available': cj.spec.suspend is not True,
-                    'created': cj.metadata.creation_timestamp.isoformat() if cj.metadata.creation_timestamp else None
-                })
+                services.append(_cronjob_to_service(cj))
         except Exception as e:
             err_msg = f'CronJobs: {type(e).__name__}: {str(e)[:200]}'
             errors.append(err_msg)
@@ -3099,28 +3383,12 @@ def list_services():
 
         # Jobs (standalone, not owned by a CronJob)
         try:
-            if not batch_v1:
-                batch_v1 = client.BatchV1Api(api_client=_local_api_client)
             jobs = _k8s_retry(batch_v1.list_namespaced_job, namespace).items
             # Filter out Jobs owned by CronJobs (they're already listed above)
-            standalone_jobs = [j for j in jobs if not any(
-                ref.kind == 'CronJob' for ref in (j.metadata.owner_references or [])
-            )]
+            standalone_jobs = [j for j in jobs if _is_standalone_job(j)]
             print(f'[services] ✅ Jobs: {len(jobs)} total, {len(standalone_jobs)} standalone')
             for j in standalone_jobs:
-                containers = j.spec.template.spec.containers or []
-                image = containers[0].image if containers else ''
-                services.append({
-                    'name': j.metadata.name,
-                    'kind': 'Job',
-                    'image': image,
-                    'image_tag': _extract_image_tag(image),
-                    'helm_version': _extract_helm_version(j.metadata.labels),
-                    'replicas': j.status.succeeded or 0,
-                    'desired_replicas': j.spec.completions or 1,
-                    'available': (j.status.succeeded or 0) >= (j.spec.completions or 1),
-                    'created': j.metadata.creation_timestamp.isoformat() if j.metadata.creation_timestamp else None
-                })
+                services.append(_job_to_service(j))
         except Exception as e:
             err_msg = f'Jobs: {type(e).__name__}: {str(e)[:200]}'
             errors.append(err_msg)
@@ -3632,48 +3900,20 @@ def _list_services_from_api(api_client, namespace, log_prefix='[remote]'):
         print(f"{log_prefix} DaemonSets error: {e}")
 
     # CronJobs
+    batch_v1 = client.BatchV1Api(api_client)
     try:
-        batch_v1 = client.BatchV1Api(api_client)
         cron_jobs = batch_v1.list_namespaced_cron_job(namespace, _request_timeout=_timeout_seconds).items
         for cj in cron_jobs:
-            containers = cj.spec.job_template.spec.template.spec.containers or []
-            image = containers[0].image if containers else ''
-            services.append({
-                'name': cj.metadata.name,
-                'kind': 'CronJob',
-                'image': image,
-                'image_tag': _extract_image_tag(image),
-                'helm_version': _extract_helm_version(cj.metadata.labels),
-                'replicas': 1 if cj.spec.suspend is not True else 0,
-                'desired_replicas': 1,
-                'available': cj.spec.suspend is not True,
-                'created': cj.metadata.creation_timestamp.isoformat() if cj.metadata.creation_timestamp else None
-            })
+            services.append(_cronjob_to_service(cj))
     except Exception as e:
         print(f"{log_prefix} CronJobs error: {e}")
 
     # Jobs (standalone, not owned by a CronJob)
     try:
-        if not batch_v1:
-            batch_v1 = client.BatchV1Api(api_client)
         jobs = batch_v1.list_namespaced_job(namespace, _request_timeout=_timeout_seconds).items
-        standalone_jobs = [j for j in jobs if not any(
-            ref.kind == 'CronJob' for ref in (j.metadata.owner_references or [])
-        )]
-        for j in standalone_jobs:
-            containers = j.spec.template.spec.containers or []
-            image = containers[0].image if containers else ''
-            services.append({
-                'name': j.metadata.name,
-                'kind': 'Job',
-                'image': image,
-                'image_tag': _extract_image_tag(image),
-                'helm_version': _extract_helm_version(j.metadata.labels),
-                'replicas': j.status.succeeded or 0,
-                'desired_replicas': j.spec.completions or 1,
-                'available': (j.status.succeeded or 0) >= (j.spec.completions or 1),
-                'created': j.metadata.creation_timestamp.isoformat() if j.metadata.creation_timestamp else None
-            })
+        for j in jobs:
+            if _is_standalone_job(j):
+                services.append(_job_to_service(j))
     except Exception as e:
         print(f"{log_prefix} Jobs error: {e}")
 
@@ -3699,7 +3939,7 @@ def list_prod_services():
     if DEPLOY_ENV == 'prod':
         print(f'[prod] DEPLOY_ENV=prod → reading LOCAL cluster, namespace={prod_ns}')
         try:
-            services = _list_services_from_api(client.ApiClient(), prod_ns, '[prod-local]')
+            services = _list_services_from_api(_local_api_client or client.ApiClient(), prod_ns, '[prod-local]')
             result = {
                 'services': services, 'namespace': prod_ns,
                 'cluster': 'local (production)', 'count': len(services),
@@ -3839,24 +4079,21 @@ def get_current_release():
             print(f"[release] Auto-archive date parse error: {e}")
 
     # Enrich with live metadata
-    # ── ALWAYS use the LIVE cutoff, not the stored cutoff.
-    # Reason 1: The stored cutoff can become stale if the board rolls over weeks.
-    # Reason 2: The stored cutoff may have been calculated by pre-fix code that
+    # ── ALWAYS recalculate the cutoff, never trust the stored value blindly.
+    # Reason 1: The stored cutoff may have been calculated by pre-fix code that
     #            had a timezone bug (stored local time instead of UTC).
-    # The live cutoff is always correct because _get_cutoff_datetime() now
-    # properly converts to UTC.
-    live_cutoff = _get_cutoff_datetime()
+    # Reason 2: Keep it consistent with CUTOFF_* env changes.
+    # The cutoff is derived from the board's OWN release_date (not "this Friday"),
+    # so a release date moved via fix version keeps its matching cutoff instead
+    # of being reset to this week's Wednesday on the next page load.
+    effective_cutoff = _effective_cutoff(board)
     stored_cutoff = board.get('cutoff', '')
-    effective_cutoff = live_cutoff
-
-    # Update the board's stored cutoff to match the live one
     if effective_cutoff != stored_cutoff:
-        board['cutoff'] = effective_cutoff
-        _write_board(board)  # Persist the corrected cutoff
         print(f"[release] Updated cutoff {stored_cutoff} → {effective_cutoff}")
 
+    is_past_cutoff = _apply_auto_lock(board)
     now_iso = datetime.datetime.utcnow().isoformat()
-    board['is_past_cutoff'] = now_iso > effective_cutoff
+    board['is_past_cutoff'] = is_past_cutoff
     board['nominated_count'] = len(board.get('services', {}))
     board['exception_count'] = len(board.get('exception_nominations', []))
 
@@ -3864,324 +4101,288 @@ def get_current_release():
     print(f"[release] Board state: status={board.get('status')}, is_past_cutoff={board['is_past_cutoff']}, "
           f"manual_unlock={board.get('manual_unlock')}, cutoff={effective_cutoff}, now={now_iso}")
 
-    # Auto-reflect locked state in UI when past cutoff
-    # The nomination endpoint already blocks regular nominations past cutoff,
-    # but the UI needs status='locked' to show the correct buttons (Board Locked + Unlock).
-    # IMPORTANT: Do NOT re-lock if the board was manually unlocked (manual_unlock flag).
-    # This prevents the auto-lock from overriding a release manager's explicit unlock.
-    if board['is_past_cutoff'] and board.get('status') == 'open' and not board.get('manual_unlock'):
-        board['status'] = 'locked'
-        board['auto_locked'] = True  # Flag so UI can distinguish manual vs auto lock
-        _write_board(board)  # Persist so the lock state survives pod restarts
-        print(f"[release] ✅ Auto-locked board (past cutoff {effective_cutoff})")
-
-    # Auto-UNLOCK: If the board was auto-locked (not manually locked/finalized)
-    # but we're NOT past cutoff anymore, restore it to 'open'.
-    # This handles:
-    #   1. Stale lock from pre-fix code that calculated cutoff incorrectly (timezone bug)
-    #   2. Board that rolled over to a new release cycle but kept the old 'locked' status
-    # IMPORTANT: Only auto-unlock if auto_locked=True. If a release manager manually
-    # locked the board (via finalize), we must NOT override that.
-    if not board['is_past_cutoff'] and board.get('status') == 'locked' and board.get('auto_locked'):
-        board['status'] = 'open'
-        board['auto_locked'] = False
-        _write_board(board)
-        print(f"[release] 🔓 Auto-unlocked board (cutoff {effective_cutoff} hasn't passed yet, was auto-locked)")
-
+    # Alias for the UI (index.html checks `manually_unlocked`; mock uses that name)
+    board['manually_unlocked'] = bool(board.get('manual_unlock'))
     return jsonify(board)
 
 
 @app.route('/api/release/nominate', methods=['POST'])
 def nominate_service():
-    """Nominate a service for the current release."""
+    """Nominate a service for the current release.
+
+    Flow:
+      1. Validate input + fail fast on board state (locked / released / exception).
+      2. Resolve the version from the live UAT cluster (OUTSIDE the board lock —
+         this is slow network I/O).
+      3. Under the board lock: re-read the board, re-check state, upsert, write.
+         (Prevents concurrent nominations from overwriting each other — the old
+         code read the board, did K8s calls, then wrote a stale copy back.)
+    """
     data = request.json or {}
-    service_name = data.get('service_name', '').strip()
-    notes = data.get('notes', '').strip()
-    nominated_by = data.get('nominated_by', 'anonymous').strip()
-    is_custom = data.get('is_custom', False)
-    manual_version = data.get('manual_version', '').strip()
-    jira_ids = data.get('jira_ids', '').strip()
+    service_name = (data.get('service_name') or '').strip()
+    notes = (data.get('notes') or '').strip()
+    nominated_by = (data.get('nominated_by') or '').strip() or 'anonymous'
+    is_custom = bool(data.get('is_custom', False))
+    manual_version = (data.get('manual_version') or '').strip()
+    jira_ids = (data.get('jira_ids') or '').strip()
+
+    # Exception nomination fields
+    is_exception = bool(data.get('is_exception', False))
+    exception_reason = (data.get('exception_reason') or '').strip()
+    exception_approver = (data.get('exception_approver') or '').strip()
 
     if not service_name:
         return jsonify({'error': 'service_name is required'}), 400
+    if is_custom and not manual_version:
+        # Previously stored as 'unknown' — a release entry without a version
+        return jsonify({'error': 'A version is required for custom components.'}), 400
 
-    board = _read_board()
-    if not board:
-        board = _new_board()
+    # ── 1. Fail fast on board state (re-checked under the lock below) ──
+    board = _read_board() or _new_board()
+    gate_error, _ = _nomination_gate(board, is_exception, exception_reason, exception_approver)
+    if gate_error:
+        return gate_error
 
-    # Exception nomination fields
-    is_exception = data.get('is_exception', False)
-    exception_reason = data.get('exception_reason', '').strip()
-    exception_approver = data.get('exception_approver', '').strip()
-
-    # Determine if board is effectively locked:
-    # The board status is the source of truth. When past cutoff, the
-    # /api/release/current endpoint auto-sets status='locked'.
-    # When QA explicitly unlocks (manual_unlock=True), status='open'
-    # and the auto-lock logic in /api/release/current respects that flag.
-    # So we just check the board status here — no need to re-derive is_past_cutoff.
-    board_is_locked = board.get('status') == 'locked'
-
-    if board_is_locked:
-        return jsonify({
-            'error': 'Release board is locked (past cutoff). Nominations are disabled. '
-                     'Contact the QA team to unlock the board if an exception nomination is needed.',
-            'is_locked': True,
-            'cutoff': board.get('cutoff')
-        }), 403
-
-    # Board is open but was manually unlocked past cutoff → exception nomination required
-    current_release = _get_current_release_date()
-    effective_cutoff = board.get('cutoff', '') if board.get('release_date') == current_release else _get_cutoff_datetime()
-    is_past_cutoff = datetime.datetime.utcnow().isoformat() > effective_cutoff
-    if is_past_cutoff and board.get('manual_unlock'):
-        if not is_exception:
-            return jsonify({
-                'error': 'Board was unlocked past cutoff. Exception nomination is required.',
-                'exception_required': True,
-                'cutoff': board.get('cutoff')
-            }), 403
-        if not exception_reason or not exception_approver:
-            return jsonify({
-                'error': 'Exception nominations require a reason and approver name.'
-            }), 400
-
-    if board.get('status') == 'released':
-        return jsonify({'error': 'This release has already been completed.'}), 403
-
-    now = datetime.datetime.utcnow().isoformat()
-
+    # ── 2. Resolve version ──
     if is_custom:
         # Custom component — version entered manually by developer
         comp = CUSTOM_COMPONENTS_MAP.get(service_name, {})
-        image = ''
-        image_tag = manual_version or 'unknown'
-        helm_version = None
-        kind = comp.get('type', 'Custom')
+        resolved = {'image': '', 'image_tag': manual_version, 'helm_version': None,
+                    'kind': comp.get('type', 'Custom')}
     else:
         # K8s service — auto-fill version from live UAT cluster
         # IMPORTANT: The Board tab lists services from the UAT cluster (via /api/services),
         # so we must read the version from the same source.
         # When DEPLOY_ENV=prod, local cluster IS production — must use remote UAT client.
         # When DEPLOY_ENV=uat, local cluster IS UAT — use default in-cluster client.
-        namespace = data.get('namespace', NAMESPACE)
-        image = ''
-        image_tag = ''
-        helm_version = None
-        kind = 'Deployment'
+        namespace = data.get('namespace') or NAMESPACE
+        if DEPLOY_ENV == 'prod':
+            uat_api_client, uat_err = _get_uat_api_client()
+            if uat_err:
+                print(f"[nominate] Cannot reach UAT cluster for version lookup: {uat_err}")
+                return jsonify({'error': f'Cannot reach the UAT cluster to read the version of '
+                                         f'{service_name}: {uat_err}'}), 502
+            namespace = os.environ.get('UAT_NAMESPACE', NAMESPACE)
+            print(f"[nominate] DEPLOY_ENV=prod → reading version from REMOTE UAT cluster, ns={namespace}")
+        else:
+            uat_api_client = _local_api_client
+            print(f"[nominate] DEPLOY_ENV=uat → reading version from LOCAL cluster, ns={namespace}")
 
         try:
-            apps_v1 = None
-            if DEPLOY_ENV == 'prod':
-                # Deployed in prod → read version from remote UAT cluster
-                uat_api_client, uat_err = _get_uat_api_client()
-                if uat_err:
-                    print(f"[nominate] Cannot reach UAT cluster for version lookup: {uat_err}")
-                    # Fall through with empty version — user can re-nominate later
-                else:
-                    uat_ns = os.environ.get('UAT_NAMESPACE', NAMESPACE)
-                    apps_v1 = client.AppsV1Api(uat_api_client)
-                    namespace = uat_ns
-                    print(f"[nominate] DEPLOY_ENV=prod → reading version from REMOTE UAT cluster, ns={uat_ns}")
-            else:
-                # Deployed in UAT → read version from local cluster
-                apps_v1 = client.AppsV1Api(api_client=_local_api_client)
-                print(f"[nominate] DEPLOY_ENV=uat → reading version from LOCAL cluster, ns={namespace}")
-
-            if apps_v1:
-                try:
-                    d = _k8s_retry(apps_v1.read_namespaced_deployment, service_name, namespace)
-                    containers = d.spec.template.spec.containers or []
-                    image = containers[0].image if containers else ''
-                    image_tag = _extract_image_tag(image)
-                    helm_version = _extract_helm_version(d.metadata.labels)
-                    kind = 'Deployment'
-                except client.exceptions.ApiException:
-                    try:
-                        s = _k8s_retry(apps_v1.read_namespaced_stateful_set, service_name, namespace)
-                        containers = s.spec.template.spec.containers or []
-                        image = containers[0].image if containers else ''
-                        image_tag = _extract_image_tag(image)
-                        helm_version = _extract_helm_version(s.metadata.labels)
-                        kind = 'StatefulSet'
-                    except client.exceptions.ApiException:
-                        try:
-                            batch_v1 = client.BatchV1Api(api_client=apps_v1.api_client)
-                            cj = _k8s_retry(batch_v1.read_namespaced_cron_job, service_name, namespace)
-                            containers = cj.spec.job_template.spec.template.spec.containers or []
-                            image = containers[0].image if containers else ''
-                            image_tag = _extract_image_tag(image)
-                            helm_version = _extract_helm_version(cj.metadata.labels)
-                            kind = 'CronJob'
-                        except client.exceptions.ApiException:
-                            try:
-                                if not batch_v1:
-                                    batch_v1 = client.BatchV1Api(api_client=apps_v1.api_client)
-                                j = _k8s_retry(batch_v1.read_namespaced_job, service_name, namespace)
-                                containers = j.spec.template.spec.containers or []
-                                image = containers[0].image if containers else ''
-                                image_tag = _extract_image_tag(image)
-                                helm_version = _extract_helm_version(j.metadata.labels)
-                                kind = 'Job'
-                            except client.exceptions.ApiException:
-                                pass
+            resolved, lookup_errors = _lookup_workload_version(uat_api_client, service_name, namespace)
         except Exception as e:
             print(f"[nominate] K8s lookup error: {e}")
+            return jsonify({'error': f'Could not read the version of {service_name} from the UAT '
+                                     f'cluster: {type(e).__name__}. Please retry.'}), 502
+        if not resolved:
+            if lookup_errors:
+                return jsonify({'error': f'Could not read {service_name} from UAT namespace '
+                                         f'{namespace}: {"; ".join(lookup_errors)}'}), 502
+            return jsonify({'error': f'{service_name} was not found in UAT namespace {namespace} '
+                                     f'(Deployment/StatefulSet/DaemonSet/CronJob/Job).'}), 404
+        if not resolved.get('image_tag'):
+            return jsonify({'error': f'Could not determine an image tag for {service_name}.'}), 422
 
-    # Check if re-nomination
-    existing = board.get('services', {}).get(service_name)
-    action_type = 're-nominate' if existing else 'nominate'
+    image = resolved['image']
+    image_tag = resolved['image_tag']
+    helm_version = resolved['helm_version']
+    kind = resolved['kind']
 
-    if existing:
-        old_tag = existing.get('image_tag', '')
-        existing['image'] = image
-        existing['image_tag'] = image_tag
-        existing['helm_version'] = helm_version
-        existing['notes'] = notes
-        existing['jira_ids'] = jira_ids or existing.get('jira_ids', '')
-        existing['updated_at'] = now
-        existing['updated_by'] = nominated_by
-        existing['version_history'].append({
-            'from_tag': old_tag,
-            'to_tag': image_tag,
-            'changed_by': nominated_by,
-            'changed_at': now,
-            'reason': notes or 'Version update',
-            'is_exception': is_exception,
-            **(({'exception_approver': exception_approver, 'exception_reason': exception_reason})
-               if is_exception else {})
-        })
+    # ── 3. Read-modify-write under the board lock ──
+    with _board_lock():
+        board = _read_board() or _new_board()
+        gate_error, _ = _nomination_gate(board, is_exception, exception_reason, exception_approver)
+        if gate_error:
+            return gate_error
 
-        # Exception metadata on re-nomination
-        if is_exception:
-            existing['is_exception'] = True
-            existing['exception_reason'] = exception_reason
-            existing['exception_approver'] = exception_approver
-            existing['exception_at'] = now
+        now = datetime.datetime.utcnow().isoformat()
+        exc_meta = ({'exception_approver': exception_approver, 'exception_reason': exception_reason}
+                    if is_exception else {})
+        existing = board.setdefault('services', {}).get(service_name)
+        action_type = 're-nominate' if existing else 'nominate'
 
-        board['audit_trail'].append({
-            'action': f'exception-{action_type}' if is_exception else action_type,
-            'service': service_name,
-            'from_version': old_tag,
-            'to_version': image_tag,
-            'by': nominated_by,
-            'at': now,
-            **(({'approver': exception_approver, 'reason': exception_reason})
-               if is_exception else {})
-        })
-    else:
-        svc_record = {
-            'name': service_name,
-            'kind': kind,
-            'is_custom': is_custom,
-            'image': image,
-            'image_tag': image_tag,
-            'helm_version': helm_version,
-            'nominated_by': nominated_by,
-            'nominated_at': now,
-            'updated_at': now,
-            'updated_by': nominated_by,
-            'notes': notes,
-            'jira_ids': jira_ids,
-            'readiness': None,
-            'readiness_details': None,
-            'is_exception': is_exception,
-            'version_history': [{
-                'from_tag': None,
-                'to_tag': image_tag,
-                'changed_by': nominated_by,
-                'changed_at': now,
-                'reason': 'Exception nomination' if is_exception else 'Initial nomination',
-                'is_exception': is_exception,
-                **(({'exception_approver': exception_approver, 'exception_reason': exception_reason})
+        if existing:
+            old_tag = existing.get('image_tag', '')
+            existing['image'] = image
+            existing['image_tag'] = image_tag
+            existing['helm_version'] = helm_version
+            existing['kind'] = kind
+            existing['is_custom'] = is_custom
+            existing['notes'] = notes
+            existing['jira_ids'] = jira_ids or existing.get('jira_ids', '')
+            existing['updated_at'] = now
+            existing['updated_by'] = nominated_by
+            # Only record a version change in the history (re-nominating the same
+            # version to update notes/Jira IDs shouldn't pollute the history).
+            if old_tag != image_tag or is_exception:
+                existing.setdefault('version_history', []).append({
+                    'from_tag': old_tag,
+                    'to_tag': image_tag,
+                    'changed_by': nominated_by,
+                    'changed_at': now,
+                    'reason': notes or 'Version update',
+                    'is_exception': is_exception,
+                    **exc_meta
+                })
+
+            # Exception metadata on re-nomination
+            if is_exception:
+                existing['is_exception'] = True
+                existing['exception_reason'] = exception_reason
+                existing['exception_approver'] = exception_approver
+                existing['exception_at'] = now
+
+            board.setdefault('audit_trail', []).append({
+                'action': f'exception-{action_type}' if is_exception else action_type,
+                'service': service_name,
+                'from_version': old_tag,
+                'to_version': image_tag,
+                'by': nominated_by,
+                'at': now,
+                **(({'approver': exception_approver, 'reason': exception_reason})
                    if is_exception else {})
-            }]
-        }
+            })
+        else:
+            svc_record = {
+                'name': service_name,
+                'kind': kind,
+                'is_custom': is_custom,
+                'image': image,
+                'image_tag': image_tag,
+                'helm_version': helm_version,
+                'nominated_by': nominated_by,
+                'nominated_at': now,
+                'updated_at': now,
+                'updated_by': nominated_by,
+                'notes': notes,
+                'jira_ids': jira_ids,
+                'readiness': None,
+                'readiness_details': None,
+                'is_exception': is_exception,
+                'version_history': [{
+                    'from_tag': None,
+                    'to_tag': image_tag,
+                    'changed_by': nominated_by,
+                    'changed_at': now,
+                    'reason': 'Exception nomination' if is_exception else 'Initial nomination',
+                    'is_exception': is_exception,
+                    **exc_meta
+                }]
+            }
 
-        # Exception metadata on new nomination
+            # Exception metadata on new nomination
+            if is_exception:
+                svc_record['exception_reason'] = exception_reason
+                svc_record['exception_approver'] = exception_approver
+                svc_record['exception_at'] = now
+
+            board['services'][service_name] = svc_record
+
+            board.setdefault('audit_trail', []).append({
+                'action': f'exception-{action_type}' if is_exception else action_type,
+                'service': service_name,
+                'version': image_tag,
+                'by': nominated_by,
+                'at': now,
+                **(({'approver': exception_approver, 'reason': exception_reason})
+                   if is_exception else {})
+            })
+
+        # Track exception nominations separately for reporting
         if is_exception:
-            svc_record['exception_reason'] = exception_reason
-            svc_record['exception_approver'] = exception_approver
-            svc_record['exception_at'] = now
+            board.setdefault('exception_nominations', []).append({
+                'service': service_name,
+                'requested_by': nominated_by,
+                'approver': exception_approver,
+                'reason': exception_reason,
+                'image_tag': image_tag,
+                'at': now,
+                'action': action_type
+            })
 
-        board.setdefault('services', {})[service_name] = svc_record
+        _write_board(board)
 
-        board['audit_trail'].append({
-            'action': f'exception-{action_type}' if is_exception else action_type,
-            'service': service_name,
-            'version': image_tag,
-            'by': nominated_by,
-            'at': now,
-            **(({'approver': exception_approver, 'reason': exception_reason})
-               if is_exception else {})
-        })
-
-    # Track exception nominations separately for reporting
-    if is_exception:
-        board.setdefault('exception_nominations', []).append({
-            'service': service_name,
-            'requested_by': nominated_by,
-            'approver': exception_approver,
-            'reason': exception_reason,
-            'image_tag': image_tag,
-            'at': now,
-            'action': action_type
-        })
-
-    _write_board(board)
     return jsonify({
         'status': 'ok',
         'service': service_name,
         'image_tag': image_tag,
+        'helm_version': helm_version,
+        'kind': kind,
+        'action': action_type,
         'is_exception': is_exception
     })
+
+
+def _edit_gate(board):
+    """Common checks for remove/rollback. Returns an error response or None."""
+    if not board:
+        return jsonify({'error': 'No active release board'}), 404
+    if board.get('status') == 'released':
+        return jsonify({'error': 'This release has already been completed.'}), 403
+    # Enforce cutoff even if the UI hasn't refreshed since it passed
+    _apply_auto_lock(board)
+    if board.get('status') == 'locked':
+        return jsonify({'error': 'Release board is locked.', 'is_locked': True}), 403
+    return None
 
 
 @app.route('/api/release/rollback', methods=['POST'])
 def rollback_version():
     """Rollback a nominated service to a previously nominated version."""
     data = request.json or {}
-    service_name = data.get('service_name', '').strip()
-    target_tag = data.get('target_tag', '').strip()
-    rolled_back_by = data.get('rolled_back_by', 'anonymous').strip()
+    service_name = (data.get('service_name') or '').strip()
+    target_tag = (data.get('target_tag') or '').strip()
+    rolled_back_by = (data.get('rolled_back_by') or '').strip() or 'anonymous'
 
     if not service_name or not target_tag:
         return jsonify({'error': 'service_name and target_tag required'}), 400
 
-    board = _read_board()
-    if not board:
-        return jsonify({'error': 'No active release board'}), 404
-    if board.get('status') in ('locked', 'released'):
-        return jsonify({'error': 'Release board is locked.'}), 403
-    if service_name not in board.get('services', {}):
-        return jsonify({'error': f'{service_name} is not nominated'}), 404
+    with _board_lock():
+        board = _read_board()
+        gate_error = _edit_gate(board)
+        if gate_error:
+            return gate_error
+        if service_name not in board.get('services', {}):
+            return jsonify({'error': f'{service_name} is not nominated'}), 404
 
-    svc = board['services'][service_name]
-    old_tag = svc.get('image_tag', '')
-    if old_tag == target_tag:
-        return jsonify({'status': 'ok', 'message': 'Already at that version'}), 200
+        svc = board['services'][service_name]
+        old_tag = svc.get('image_tag', '')
+        if old_tag == target_tag:
+            return jsonify({'status': 'ok', 'message': 'Already at that version'}), 200
 
-    now = datetime.datetime.utcnow().isoformat()
+        # Only allow rolling back to a version that was actually nominated before
+        # (previously ANY string was accepted, e.g. a tag that doesn't exist).
+        known_tags = set()
+        for h in svc.get('version_history', []):
+            known_tags.update(t for t in (h.get('from_tag'), h.get('to_tag')) if t)
+        if target_tag not in known_tags:
+            return jsonify({'error': f'{target_tag} was never nominated for {service_name}. '
+                                     f'Re-nominate to pick up a new version.',
+                            'known_versions': sorted(known_tags)}), 400
 
-    # Update the image tag (and image path if it's a K8s service)
-    if not svc.get('is_custom'):
-        base_image = svc.get('image', '').rsplit(':', 1)[0] if ':' in svc.get('image', '') else svc.get('image', '')
-        svc['image'] = f'{base_image}:{target_tag}'
-    svc['image_tag'] = target_tag
-    svc['updated_at'] = now
-    svc['updated_by'] = rolled_back_by
+        now = datetime.datetime.utcnow().isoformat()
 
-    svc.setdefault('version_history', []).append({
-        'from_tag': old_tag, 'to_tag': target_tag,
-        'changed_by': rolled_back_by, 'changed_at': now,
-        'reason': f'Rollback from {old_tag}'
-    })
-    board['audit_trail'].append({
-        'action': 'rollback', 'service': service_name,
-        'from_version': old_tag, 'to_version': target_tag,
-        'by': rolled_back_by, 'at': now
-    })
-    _write_board(board)
+        # Update the image tag (and image path if it's a K8s service)
+        if not svc.get('is_custom'):
+            image = svc.get('image', '')
+            # Only strip a real tag — not a registry port (e.g. registry:5000/app)
+            base_image = image.rsplit(':', 1)[0] if ':' in image.rsplit('/', 1)[-1] else image
+            svc['image'] = f'{base_image}:{target_tag}' if base_image else ''
+        svc['image_tag'] = target_tag
+        svc['updated_at'] = now
+        svc['updated_by'] = rolled_back_by
+
+        svc.setdefault('version_history', []).append({
+            'from_tag': old_tag, 'to_tag': target_tag,
+            'changed_by': rolled_back_by, 'changed_at': now,
+            'reason': f'Rollback from {old_tag}'
+        })
+        board.setdefault('audit_trail', []).append({
+            'action': 'rollback', 'service': service_name,
+            'from_version': old_tag, 'to_version': target_tag,
+            'by': rolled_back_by, 'at': now
+        })
+        _write_board(board)
     return jsonify({'status': 'ok', 'service': service_name, 'image_tag': target_tag})
 
 
@@ -4189,35 +4390,36 @@ def rollback_version():
 def remove_nomination():
     """Remove a service nomination."""
     data = request.json or {}
-    service_name = data.get('service_name', '').strip()
-    removed_by = data.get('removed_by', 'anonymous').strip()
+    service_name = (data.get('service_name') or '').strip()
+    removed_by = (data.get('removed_by') or '').strip() or 'anonymous'
 
     if not service_name:
         return jsonify({'error': 'service_name is required'}), 400
 
-    board = _read_board()
-    if not board:
-        return jsonify({'error': 'No active release board'}), 404
+    with _board_lock():
+        board = _read_board()
+        gate_error = _edit_gate(board)
+        if gate_error:
+            return gate_error
 
-    if board.get('status') in ('locked', 'released'):
-        return jsonify({'error': 'Release board is locked.'}), 403
+        if service_name not in board.get('services', {}):
+            return jsonify({'error': f'{service_name} is not nominated'}), 404
 
-    if service_name not in board.get('services', {}):
-        return jsonify({'error': f'{service_name} is not nominated'}), 404
+        removed = board['services'].pop(service_name)
+        board.setdefault('audit_trail', []).append({
+            'action': 'remove',
+            'service': service_name,
+            'version': removed.get('image_tag', ''),
+            'by': removed_by,
+            'at': datetime.datetime.utcnow().isoformat()
+        })
 
-    del board['services'][service_name]
-    board['audit_trail'].append({
-        'action': 'remove',
-        'service': service_name,
-        'by': removed_by,
-        'at': datetime.datetime.utcnow().isoformat()
-    })
-
-    _write_board(board)
+        _write_board(board)
     return jsonify({'status': 'ok', 'removed': service_name})
 
 
 @app.route('/api/release/fix_version', methods=['POST'])
+@_with_board_lock
 def update_fix_version():
     """Update the fix version on the board.
 
@@ -4240,35 +4442,51 @@ def update_fix_version():
 
     board['fix_version'] = fix_version
 
-    # Sync release_date and cutoff from the fix version date
+    # Sync release_date and cutoff from the fix version date.
+    # Guard: never move the active board's release date into the PAST. A past
+    # release date makes /api/release/current immediately auto-release and
+    # archive the in-progress board (a typo like P26.11.13 would wipe the
+    # current cycle). In that case keep the fix version but leave dates alone.
     new_release_date = _parse_fix_version_to_date(fix_version)
     date_changed = False
+    date_warning = None
     if new_release_date and new_release_date != old_release_date:
-        board['release_date'] = new_release_date
-        board['cutoff'] = _get_cutoff_for_release_date(new_release_date)
-        date_changed = True
-        print(f"[release] Fix version {fix_version} → release_date synced: "
-              f"{old_release_date} → {new_release_date}, "
-              f"cutoff: {old_cutoff} → {board['cutoff']}")
+        if new_release_date < datetime.date.today().isoformat():
+            date_warning = (f'Fix version date {new_release_date} is in the past — release date '
+                            f'kept at {old_release_date}.')
+            print(f"[release] ⚠️  {date_warning}")
+        else:
+            board['release_date'] = new_release_date
+            board['cutoff'] = _get_cutoff_for_release_date(new_release_date)
+            date_changed = True
+            print(f"[release] Fix version {fix_version} → release_date synced: "
+                  f"{old_release_date} → {new_release_date}, "
+                  f"cutoff: {old_cutoff} → {board['cutoff']}")
 
     # Build audit note
     note_parts = [f'Fix version changed to {fix_version}']
     if date_changed:
         note_parts.append(f'Release date updated: {old_release_date} → {new_release_date}')
         note_parts.append(f'Cutoff recalculated: {board["cutoff"]}')
+    if date_warning:
+        note_parts.append(date_warning)
 
-    board['audit_trail'].append({
+    board.setdefault('audit_trail', []).append({
         'action': 'update_fix_version', 'by': data.get('updated_by', 'unknown'),
         'at': now,
         'note': '. '.join(note_parts)
     })
+    # Re-evaluate lock state against the (possibly) new cutoff and persist
+    _apply_auto_lock(board, persist=False)
     _write_board(board)
 
-    result = {'status': 'ok', 'fix_version': fix_version}
+    result = {'status': 'ok', 'fix_version': fix_version,
+              'release_date': board.get('release_date'), 'cutoff': board.get('cutoff'),
+              'board_status': board.get('status')}
     if date_changed:
-        result['release_date'] = new_release_date
-        result['cutoff'] = board['cutoff']
         result['date_synced'] = True
+    if date_warning:
+        result['warning'] = date_warning
     return jsonify(result)
 
 
@@ -4293,6 +4511,7 @@ def jira_by_fix_version():
 
 
 @app.route('/api/release/finalize', methods=['POST'])
+@_with_board_lock
 def finalize_release():
     """Lock the release board (cutoff)."""
     data = request.json or {}
@@ -4313,6 +4532,7 @@ def finalize_release():
     board['finalized_by'] = finalized_by
     board['finalized_at'] = now
     board['manual_unlock'] = False  # Clear: explicit lock overrides prior unlock
+    board['auto_locked'] = False    # Manual lock — must never be auto-unlocked
     board['audit_trail'].append({
         'action': 'finalize',
         'by': finalized_by,
@@ -4324,6 +4544,7 @@ def finalize_release():
 
 
 @app.route('/api/release/unlock', methods=['POST'])
+@_with_board_lock
 def unlock_release():
     """Unlock a locked board so QA/RM can edit nominations."""
     data = request.json or {}
@@ -4355,6 +4576,7 @@ def unlock_release():
 
 
 @app.route('/api/release/complete', methods=['POST'])
+@_with_board_lock
 def complete_release():
     """Mark the release as completed and archive it."""
     data = request.json or {}
@@ -4387,6 +4609,7 @@ def complete_release():
 
 
 @app.route('/api/release/new_cycle', methods=['POST'])
+@_with_board_lock
 def start_new_cycle():
     """Start a new release cycle (creates a fresh board)."""
     board = _read_board()
@@ -4515,6 +4738,10 @@ def check_drift():
                 s = _k8s_retry(apps_v1.read_namespaced_stateful_set, svc_name, namespace)
                 containers = s.spec.template.spec.containers or []
                 live_image = containers[0].image if containers else ''
+            elif kind == 'DaemonSet':
+                ds = _k8s_retry(apps_v1.read_namespaced_daemon_set, svc_name, namespace)
+                containers = ds.spec.template.spec.containers or []
+                live_image = containers[0].image if containers else ''
             elif kind == 'CronJob':
                 batch_v1 = client.BatchV1Api(api_client=apps_v1.api_client)
                 cj = _k8s_retry(batch_v1.read_namespaced_cron_job, svc_name, namespace)
@@ -4624,6 +4851,9 @@ def ai_release_readiness():
             elif svc_kind == 'StatefulSet':
                 s = _k8s_retry(apps_v1.read_namespaced_stateful_set, svc_name, namespace)
                 containers_spec = s.spec.template.spec.containers or []
+            elif svc_kind == 'DaemonSet':
+                ds = _k8s_retry(apps_v1.read_namespaced_daemon_set, svc_name, namespace)
+                containers_spec = ds.spec.template.spec.containers or []
             elif svc_kind == 'CronJob':
                 batch_v1 = client.BatchV1Api(api_client=_local_api_client)
                 cj = _k8s_retry(batch_v1.read_namespaced_cron_job, svc_name, namespace)
@@ -4713,13 +4943,12 @@ Return ONLY valid JSON. No markdown fences.
         _cache_set(cache_key, result)
 
         # Write readiness back to the board
-        board = _read_board()
-        if board:
+        def _set_readiness(b):
             for svc_name, svc_check in result.get('services', {}).items():
-                if svc_name in board.get('services', {}):
-                    board['services'][svc_name]['readiness'] = svc_check.get('readiness')
-                    board['services'][svc_name]['readiness_details'] = svc_check
-            _write_board(board)
+                if svc_name in b.get('services', {}):
+                    b['services'][svc_name]['readiness'] = svc_check.get('readiness')
+                    b['services'][svc_name]['readiness_details'] = svc_check
+        _board_update(_set_readiness)
 
         return jsonify(result)
     except Exception as e:
@@ -5365,10 +5594,11 @@ def login():
         'redirect_uri': _get_callback_url(),
         'scope': 'repo workflow',
         'state': state,
-        # Force GitHub to show the login page instead of auto-authorizing
-        # with an existing browser session (e.g., service account).
-        # This ensures users authenticate with their personal accounts.
-        'prompt': 'consent',
+        # Force GitHub to show the account picker instead of silently
+        # auto-authorizing with an existing browser session (e.g. a service
+        # account). GitHub only supports prompt=select_account — 'consent' is
+        # not a valid value and is ignored.
+        'prompt': 'select_account',
     }
     # Optional: If user passes ?login=username, pre-fill the GitHub login form
     login_hint = request.args.get('login', '')
@@ -5750,18 +5980,15 @@ def deploy_trigger():
                 print(f"[Deploy] Could not fetch run ID: {e}")
 
             # Add to board audit trail
-            board = _read_board()
-            if board:
-                board['audit_trail'].append({
-                    'action': 'deploy_triggered',
-                    'service': inputs.get('service', ''),
-                    'version': inputs.get('version', ''),
-                    'environment': 'uat',
-                    'workflow_id': workflow_id,
-                    'run_id': run_info.get('run_id'),
-                    'by': triggered_by, 'at': now
-                })
-                _write_board(board)
+            _board_update(lambda b: b.setdefault('audit_trail', []).append({
+                'action': 'deploy_triggered',
+                'service': inputs.get('service', ''),
+                'version': inputs.get('version', ''),
+                'environment': 'uat',
+                'workflow_id': workflow_id,
+                'run_id': run_info.get('run_id'),
+                'by': triggered_by, 'at': now
+            }))
 
             return jsonify({
                 'status': 'ok',
@@ -5914,9 +6141,11 @@ def _fetch_prod_services_internal():
     prod_ns = os.environ.get('PROD_NAMESPACE', NAMESPACE)
 
     if DEPLOY_ENV == 'prod':
-        # We ARE in prod — read local cluster
+        # We ARE in prod — read local cluster. Use _local_api_client (SA token
+        # injected as a default header); a bare client.ApiClient() hits the
+        # broken api_key path under gevent and gets 403 system:anonymous.
         try:
-            return _list_services_from_api(client.ApiClient(), prod_ns, '[qa-prod-local]')
+            return _list_services_from_api(_local_api_client or client.ApiClient(), prod_ns, '[qa-prod-local]')
         except Exception as e:
             print(f'[qa] Error reading local prod: {e}')
             return []
@@ -6131,7 +6360,7 @@ def qa_prepare():
     if not board:
         return jsonify({'error': 'No release board found'}), 404
 
-    is_past_cutoff = datetime.datetime.utcnow().isoformat() > (board.get('cutoff') or '')
+    is_past_cutoff = datetime.datetime.utcnow().isoformat() > _effective_cutoff(board)
     board_is_locked = board.get('status') == 'locked' or is_past_cutoff
 
     if not board_is_locked:
@@ -6208,19 +6437,16 @@ def qa_prepare():
 
             # Audit trail
             try:
-                board_now = _read_board()
-                if board_now:
-                    board_now['audit_trail'].append({
-                        'action': 'qa_e2e_prepared',
-                        'branch': 'e2e',
-                        'services_count': len(version_manifest.get('services', {})),
-                        'nominated': nom_count,
-                        'from_prod': prod_count,
-                        'commit_url': push_result.get('commit_url'),
-                        'by': gh_user,
-                        'at': now
-                    })
-                    _write_board(board_now)
+                _board_update(lambda b: b.setdefault('audit_trail', []).append({
+                    'action': 'qa_e2e_prepared',
+                    'branch': 'e2e',
+                    'services_count': len(version_manifest.get('services', {})),
+                    'nominated': nom_count,
+                    'from_prod': prod_count,
+                    'commit_url': push_result.get('commit_url'),
+                    'by': gh_user,
+                    'at': now
+                }))
             except Exception as audit_err:
                 print(f'[qa] Audit trail update failed (non-fatal): {audit_err}')
 
@@ -6333,14 +6559,14 @@ def qa_drift_check():
         has_drift = len(drifts) > 0
 
         # Audit trail
-        board['audit_trail'].append({
+        _drift_audit = {
             'action': 'qa_drift_check',
             'drift_count': len(drifts),
             'total_services': len(all_services),
             'by': session.get('github_user', {}).get('login', 'unknown'),
             'at': datetime.datetime.utcnow().isoformat()
-        })
-        _write_board(board)
+        }
+        _board_update(lambda b: b.setdefault('audit_trail', []).append(_drift_audit))
 
         return jsonify({
             'status': 'drift' if has_drift else 'match',
@@ -6437,7 +6663,7 @@ def qa_prepare_prod():
         })
 
         # Audit trail
-        board['audit_trail'].append({
+        _prod_audit = {
             'action': 'qa_prod_prepared',
             'change_ticket': change_ticket,
             'branches': ['prod', 'preprod'],
@@ -6447,8 +6673,8 @@ def qa_prepare_prod():
             'preprod_commit_url': preprod_result.get('commit_url'),
             'by': gh_user,
             'at': now
-        })
-        _write_board(board)
+        }
+        _board_update(lambda b: b.setdefault('audit_trail', []).append(_prod_audit))
 
         return jsonify({
             'status': 'pushed',
@@ -6711,6 +6937,10 @@ def _tool_check_drift() -> str:
                     s = _k8s_retry(apps_v1.read_namespaced_stateful_set, svc_name, namespace)
                     containers = s.spec.template.spec.containers or []
                     live_tag = _extract_image_tag(containers[0].image) if containers else '?'
+                elif kind == 'DaemonSet':
+                    ds = _k8s_retry(apps_v1.read_namespaced_daemon_set, svc_name, namespace)
+                    containers = ds.spec.template.spec.containers or []
+                    live_tag = _extract_image_tag(containers[0].image) if containers else '?'
                 elif kind == 'CronJob':
                     batch_v1 = client.BatchV1Api(api_client=apps_v1.api_client)
                     cj = _k8s_retry(batch_v1.read_namespaced_cron_job, svc_name, namespace)
@@ -6903,6 +7133,10 @@ def ai_converse():
                                   'Set GCP_PROJECT_ID or GEMINI_API_KEY to enable the chatbot.'}), 200
 
     try:
+        try:
+            _chat_board = _read_board() or {}
+        except Exception:
+            _chat_board = {}
         system_instruction = (
             f"You are an expert Release Readiness Assistant embedded in the Release Readiness Dashboard. "
             f"You help developers, QA engineers, and release managers with questions about the current release.\n\n"
@@ -6916,8 +7150,8 @@ def ai_converse():
             f"7. If asked about readiness/health, use release_get_readiness\n"
             f"8. For general release questions, use release_get_board\n\n"
             f"Current namespace: {NAMESPACE}\n"
-            f"Current release date: {_get_current_release_date()}\n"
-            f"Cutoff: {_get_cutoff_datetime()}"
+            f"Current release date: {_chat_board.get('release_date') or _get_current_release_date()}\n"
+            f"Cutoff (UTC): {_effective_cutoff(_chat_board)}"
         )
 
         # Session history management

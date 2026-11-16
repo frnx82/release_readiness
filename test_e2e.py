@@ -218,6 +218,24 @@ def test_lifecycle():
          'ingestion-pipeline' in board.get('services', {}))
     test('nominated_count is 2', board.get('nominated_count') == 2,
          f'got: {board.get("nominated_count")}')
+
+    # 3b-2. Re-nominate the custom component with a NEW version (used by rollback test)
+    r = post('/api/release/nominate', {
+        'service_name': 'ingestion-pipeline', 'nominated_by': 'e2e-tester',
+        'is_custom': True, 'manual_version': 'v3.2.2'
+    })
+    test('Re-nominate custom component with new version returns 200', r.status_code == 200,
+         f'status={r.status_code}')
+    ing = get('/api/release/current').json().get('services', {}).get('ingestion-pipeline', {})
+    test('Custom component version updated', ing.get('image_tag') == 'v3.2.2', f'got: {ing.get("image_tag")}')
+    test('Version history has 2 entries', len(ing.get('version_history', [])) == 2,
+         f'got: {len(ing.get("version_history", []))}')
+
+    # 3b-3. Custom component without a version must be rejected (was stored as 'unknown')
+    r = post('/api/release/nominate', {
+        'service_name': 'etl-transformer', 'nominated_by': 'e2e-tester', 'is_custom': True
+    })
+    test('Custom component without version returns 400', r.status_code == 400, f'status={r.status_code}')
     
     # 3c. Duplicate nomination should UPSERT (returns 200 — designed behavior)
     print()
@@ -242,11 +260,27 @@ def test_lifecycle():
     r = post('/api/release/nominate', {'service_name': '', 'nominated_by': 'e2e-tester'})
     test('Empty service name returns 400', r.status_code == 400, f'status={r.status_code}')
     
-    # Set a past fix version so cutoff is in the past — needed for exception-required tests after unlock
+    # 3d-b. Fix version with a PAST date must NOT move the release date
+    # (regression: a past release_date made the real app auto-release & archive
+    # the in-progress board on the next /api/release/current call)
+    print()
+    print('  ── 3d-b. Past Fix Version Does Not Move Release Date ──')
     import datetime as _dt
+    before = get('/api/release/current').json()
     _past = _dt.date.today() - _dt.timedelta(days=2)
     _past_fv = f"P{_past.strftime('%y.%m.%d')}"
-    post('/api/release/fix_version', {'fix_version': _past_fv, 'updated_by': 'e2e-setup'})
+    r = post('/api/release/fix_version', {'fix_version': _past_fv, 'updated_by': 'e2e-setup'})
+    d = r.json()
+    test('Past fix version returns 200', r.status_code == 200, f'status={r.status_code}')
+    test('Past fix version returns a warning', bool(d.get('warning')), f'resp={d}')
+    test('Past fix version not date-synced', not d.get('date_synced'), f'resp={d}')
+    after = get('/api/release/current').json()
+    test('Release date unchanged after past fix version',
+         after.get('release_date') == before.get('release_date'),
+         f"{before.get('release_date')} → {after.get('release_date')}")
+    test('Board NOT auto-released by past fix version', after.get('status') != 'released'
+         and after.get('nominated_count') == before.get('nominated_count'),
+         f"status={after.get('status')}, count={after.get('nominated_count')}")
 
     # 3e. Lock board (finalize)
     print()
@@ -254,11 +288,21 @@ def test_lifecycle():
     r = post('/api/release/finalize', {'finalized_by': 'release-manager'})
     test('Lock board returns 200', r.status_code == 200,
          f'status={r.status_code}, body={r.text[:100]}')
-    
+
+    # Move the release date to TODAY so the cutoff is in the past (but the
+    # release day hasn't ended) — needed for exception-required tests after unlock.
+    _today_fv = f"P{_dt.date.today().strftime('%y.%m.%d')}"
+    r = post('/api/release/fix_version', {'fix_version': _today_fv, 'updated_by': 'e2e-setup'})
+    d = r.json()
+    cutoff_passed = _dt.datetime.utcnow().isoformat() > (d.get('cutoff') or '')
+    test('Fix version for today syncs release date', d.get('release_date') == _dt.date.today().isoformat(),
+         f'resp={d}')
+
     r = get('/api/release/current')
     board = r.json()
     test('Board status is locked', board.get('status') == 'locked',
          f'got: {board.get("status")}')
+    test('Manual lock is not flagged auto_locked', not board.get('auto_locked'))
     
     # 3f. Double-lock should fail
     print()
@@ -301,17 +345,28 @@ def test_lifecycle():
     board = r.json()
     test('Board status is open after unlock', board.get('status') == 'open',
          f'got: {board.get("status")}')
-    test('Board has manually_unlocked flag', board.get('manually_unlocked') == True)
-    
-    # 3i-b. Regular nomination should be rejected (exception required)
-    r = post('/api/release/nominate', {
-        'service_name': 'hotfix-service',
-        'nominated_by': 'e2e-tester',
-    })
-    test('Regular nomination after unlock returns 403 (exception required)',
-         r.status_code == 403, f'status={r.status_code}')
-    d = r.json()
-    test('Response has exception_required flag', d.get('exception_required') == True)
+    if cutoff_passed:
+        test('Board has manually_unlocked flag', board.get('manually_unlocked') == True)
+
+        # 3i-b. Regular nomination should be rejected (exception required)
+        r = post('/api/release/nominate', {
+            'service_name': 'hotfix-service',
+            'nominated_by': 'e2e-tester',
+        })
+        test('Regular nomination after unlock returns 403 (exception required)',
+             r.status_code == 403, f'status={r.status_code}')
+        d = r.json()
+        test('Response has exception_required flag', d.get('exception_required') == True)
+
+        # 3i-b2. Exception without reason/approver → 400
+        r = post('/api/release/nominate', {
+            'service_name': 'hotfix-service', 'nominated_by': 'e2e-tester', 'is_exception': True,
+        })
+        test('Exception nomination without reason/approver returns 400', r.status_code == 400,
+             f'status={r.status_code}')
+    else:
+        warn('Skipping exception-required checks',
+             'cutoff for a release dated today has not passed yet (cutoff-day morning)')
 
     # 3i-c. Exception nomination with reason + approver should succeed
     r = post('/api/release/nominate', {
@@ -343,27 +398,32 @@ def test_lifecycle():
     test('Removed service no longer in board',
          'hotfix-service' not in board.get('services', {}))
     
-    # 3k. Rollback a nomination (correct param: target_tag)
+    # 3k. Rollback a nomination to a previously nominated version
     print()
     print('  ── 3k. Rollback Nomination ──')
-    # First get current tag
-    auth = board.get('services', {}).get('auth-service', {})
-    current_tag = auth.get('image_tag', '')
-    rollback_tag = 'v1.0.0-rollback'
     r = post('/api/release/rollback', {
-        'service_name': 'auth-service',
+        'service_name': 'ingestion-pipeline',
+        'target_tag': 'v9.9.9-never-nominated',
+        'rolled_back_by': 'e2e-tester'
+    })
+    test('Rollback to a never-nominated version returns 400', r.status_code == 400,
+         f'status={r.status_code}')
+
+    rollback_tag = 'v3.2.1'
+    r = post('/api/release/rollback', {
+        'service_name': 'ingestion-pipeline',
         'target_tag': rollback_tag,
         'rolled_back_by': 'e2e-tester'
     })
     test('Rollback returns 200', r.status_code == 200, f'status={r.status_code}')
-    
+
     r = get('/api/release/current')
     board = r.json()
-    auth_svc = board.get('services', {}).get('auth-service', {})
+    auth_svc = board.get('services', {}).get('ingestion-pipeline', {})
     test('Rollback updates image_tag', auth_svc.get('image_tag') == rollback_tag,
          f'got: {auth_svc.get("image_tag")}')
     test('Version history records rollback',
-         len(auth_svc.get('version_history', [])) >= 2,
+         len(auth_svc.get('version_history', [])) >= 3,
          f'history count: {len(auth_svc.get("version_history", []))}')
     
     # 3l. Mark Released
@@ -838,7 +898,7 @@ def test_rollout_status():
              f'{rs.get("replicas")}/{rs.get("desired_replicas")}')
 
     # Check valid rollout_status values
-    valid_statuses = {'running', 'rolling', 'failed', 'degraded', 'scaling'}
+    valid_statuses = {'running', 'rolling', 'failed', 'degraded', 'scaling', 'suspended'}
     invalid = [s for s in has_rollout if s.get('rollout_status') not in valid_statuses]
     test('All rollout_status values are valid', len(invalid) == 0,
          f'{len(invalid)} services have invalid status')

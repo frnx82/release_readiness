@@ -152,8 +152,6 @@ def _get_cutoff_for_release_date(release_date_str):
         cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '14'))
         tz_offset = int(os.environ.get('CUTOFF_TZ_OFFSET', '-4'))
         days_before = (release_date.weekday() - cutoff_day) % 7
-        if days_before == 0 and release_date.weekday() != cutoff_day:
-            days_before = 7
         cutoff_date = release_date - datetime.timedelta(days=days_before)
         cutoff_local = datetime.datetime.combine(cutoff_date, datetime.time(cutoff_hour, 0))
         cutoff_utc = cutoff_local - datetime.timedelta(hours=tz_offset)
@@ -305,29 +303,39 @@ def get_current():
         except (ValueError, TypeError) as e:
             print(f"[mock] Auto-archive date parse error: {e}")
 
-    board['is_past_cutoff'] = datetime.datetime.utcnow().isoformat() > board.get('cutoff', '')
+    board['is_past_cutoff'] = _apply_auto_lock(board)
     board['nominated_count'] = len(board.get('services', {}))
     board['exception_count'] = len(board.get('exception_nominations', []))
 
-    # Auto-reflect locked state in UI when past cutoff
-    # FIX: Persist the auto-lock so the Export tab buttons update correctly.
-    # Old code changed status in-memory only, so each request re-read 'open'.
-    # IMPORTANT: Skip auto-lock if QA has manually unlocked the board — they
-    # need it open to process exception nominations.
-    if board['is_past_cutoff'] and board.get('status') == 'open' and not board.get('manually_unlocked'):
-        board['status'] = 'locked'
-        board['auto_locked'] = True
-        _write_board(board)  # Persist so Export tab shows "Board Locked" correctly
-
-    # Auto-UNLOCK: If the board was auto-locked but we're NOT past cutoff anymore
-    # (e.g. after a timezone fix or new release cycle), restore to 'open'.
-    if not board['is_past_cutoff'] and board.get('status') == 'locked' and board.get('auto_locked'):
-        board['status'] = 'open'
-        board['auto_locked'] = False
-        board.pop('manually_unlocked', None)
-        _write_board(board)
-
     return jsonify(board)
+
+
+def _apply_auto_lock(board, persist=True):
+    """Apply auto-lock / auto-unlock rules in place (shared by get_current + nominate).
+
+    • past cutoff + open + not manually unlocked → locked (auto_locked)
+    • before cutoff + locked + auto_locked       → open
+    • before cutoff + manually_unlocked flag     → flag cleared
+    Returns is_past_cutoff.
+    """
+    changed = False
+    is_past_cutoff = datetime.datetime.utcnow().isoformat() > board.get('cutoff', '')
+    status = board.get('status', 'open')
+    if status != 'released':
+        if not is_past_cutoff and board.get('manually_unlocked'):
+            board['manually_unlocked'] = False
+            changed = True
+        if is_past_cutoff and status == 'open' and not board.get('manually_unlocked'):
+            board['status'] = 'locked'
+            board['auto_locked'] = True
+            changed = True
+        elif not is_past_cutoff and status == 'locked' and board.get('auto_locked'):
+            board['status'] = 'open'
+            board['auto_locked'] = False
+            changed = True
+    if changed and persist:
+        _write_board(board)
+    return is_past_cutoff
 
 @app.route('/api/release/nominate', methods=['POST'])
 def nominate():
@@ -340,6 +348,8 @@ def nominate():
     jira_ids = data.get('jira_ids', '').strip()
     if not name:
         return jsonify({'error': 'service_name required'}), 400
+    if is_custom and not manual_version:
+        return jsonify({'error': 'A version is required for custom components.'}), 400
     board = _read_board()
     if not board:
         board = _new_board()
@@ -348,17 +358,13 @@ def nominate():
     exception_reason = data.get('exception_reason', '').strip()
     exception_approver = data.get('exception_approver', '').strip()
 
-    # Determine if board is effectively locked:
-    # The board status is the source of truth. When past cutoff, the
-    # /api/release/current endpoint auto-sets status='locked'.
-    # When QA explicitly unlocks (manually_unlocked=True), status='open'
-    # and stays open — we respect that here.
-    board_is_locked = board.get('status') == 'locked'
-
     if board.get('status') == 'released':
         return jsonify({'error': 'This release has already been completed.'}), 403
 
-    if board_is_locked:
+    # Enforce cutoff even if /api/release/current hasn't been called since it passed
+    is_past_cutoff = _apply_auto_lock(board)
+
+    if board.get('status') == 'locked':
         return jsonify({
             'error': 'Release board is locked (past cutoff). Nominations are disabled. '
                      'Contact the QA team to unlock the board if an exception nomination is needed.',
@@ -367,7 +373,6 @@ def nominate():
         }), 403
 
     # Board is open but was manually unlocked past cutoff → exception nomination required
-    is_past_cutoff = datetime.datetime.utcnow().isoformat() > board.get('cutoff', '')
     if is_past_cutoff and board.get('manually_unlocked'):
         if not is_exception:
             return jsonify({
@@ -384,7 +389,7 @@ def nominate():
 
     if is_custom:
         comp = MOCK_CUSTOM_MAP.get(name, {})
-        tag = manual_version or 'unknown'
+        tag = manual_version
         image = ''
         helm = None
         kind = comp.get('type', 'Custom')
@@ -400,14 +405,17 @@ def nominate():
     if existing:
         old_tag = existing.get('image_tag', '')
         existing.update({'image': image, 'image_tag': tag, 'helm_version': helm,
-                         'notes': notes, 'jira_ids': jira_ids or existing.get('jira_ids', ''),
+                         'kind': kind, 'is_custom': is_custom, 'notes': notes, 'jira_ids': jira_ids or existing.get('jira_ids', ''),
                          'updated_at': now, 'updated_by': by})
         if is_exception:
             existing['is_exception'] = True
             existing['exception_reason'] = exception_reason
             existing['exception_approver'] = exception_approver
-        existing['version_history'].append({'from_tag': old_tag, 'to_tag': tag,
-                                            'changed_by': by, 'changed_at': now, 'reason': notes or 'Update'})
+        if old_tag != tag or is_exception:
+            existing.setdefault('version_history', []).append({'from_tag': old_tag, 'to_tag': tag,
+                                                               'changed_by': by, 'changed_at': now,
+                                                               'reason': notes or 'Update',
+                                                               'is_exception': is_exception})
         board['audit_trail'].append({'action': f'{action_prefix}re-nominate', 'service': name,
                                       'from_version': old_tag, 'to_version': tag, 'by': by, 'at': now})
     else:
@@ -450,13 +458,20 @@ def rollback_version():
     board = _read_board()
     if not board or name not in board.get('services', {}):
         return jsonify({'error': 'Service not found on board'}), 404
+    if board.get('status') != 'released':
+        _apply_auto_lock(board)
     if board.get('status') in ('locked', 'released'):
-        return jsonify({'error': 'Board is locked'}), 403
+        return jsonify({'error': 'Board is locked', 'is_locked': True}), 403
 
     svc = board['services'][name]
     old_tag = svc.get('image_tag', '')
     if old_tag == target_tag:
         return jsonify({'status': 'ok', 'message': 'Already at that version'}), 200
+    known = {t for h in svc.get('version_history', []) for t in (h.get('from_tag'), h.get('to_tag')) if t}
+    if target_tag not in known:
+        return jsonify({'error': f'{target_tag} was never nominated for {name}. '
+                                 f'Re-nominate to pick up a new version.',
+                        'known_versions': sorted(known)}), 400
 
     now = datetime.datetime.utcnow().isoformat()
 
@@ -469,7 +484,7 @@ def rollback_version():
     svc['updated_at'] = now
     svc['updated_by'] = by
 
-    svc['version_history'].append({
+    svc.setdefault('version_history', []).append({
         'from_tag': old_tag, 'to_tag': target_tag,
         'changed_by': by, 'changed_at': now, 'reason': f'Rollback from {old_tag}'
     })
@@ -488,8 +503,10 @@ def remove():
     board = _read_board()
     if not board or name not in board.get('services', {}):
         return jsonify({'error': 'Not found'}), 404
+    if board.get('status') != 'released':
+        _apply_auto_lock(board)
     if board.get('status') in ('locked', 'released'):
-        return jsonify({'error': 'Board locked'}), 403
+        return jsonify({'error': 'Board locked', 'is_locked': True}), 403
     del board['services'][name]
     board['audit_trail'].append({'action': 'remove', 'service': name, 'by': by,
                                   'at': datetime.datetime.utcnow().isoformat()})
@@ -749,29 +766,40 @@ def update_fix_version():
     old_release_date = board.get('release_date', '')
     board['fix_version'] = fix_version
 
-    # Sync release_date and cutoff from fix version
+    # Sync release_date and cutoff from fix version (never into the past —
+    # that would auto-release/archive the active board in the real app)
     new_release_date = _parse_fix_version_to_date(fix_version)
     date_changed = False
+    date_warning = None
     if new_release_date and new_release_date != old_release_date:
-        board['release_date'] = new_release_date
-        board['cutoff'] = _get_cutoff_for_release_date(new_release_date)
-        date_changed = True
+        if new_release_date < datetime.date.today().isoformat():
+            date_warning = (f'Fix version date {new_release_date} is in the past — release date '
+                            f'kept at {old_release_date}.')
+        else:
+            board['release_date'] = new_release_date
+            board['cutoff'] = _get_cutoff_for_release_date(new_release_date)
+            date_changed = True
 
     note_parts = [f'Fix version changed to {fix_version}']
     if date_changed:
         note_parts.append(f'Release date updated: {old_release_date} → {new_release_date}')
-    board['audit_trail'].append({
+    if date_warning:
+        note_parts.append(date_warning)
+    board.setdefault('audit_trail', []).append({
         'action': 'update_fix_version', 'by': data.get('updated_by', 'unknown'),
         'at': datetime.datetime.utcnow().isoformat(),
         'note': '. '.join(note_parts)
     })
+    _apply_auto_lock(board, persist=False)
     _write_board(board)
 
-    result = {'status': 'ok', 'fix_version': fix_version}
+    result = {'status': 'ok', 'fix_version': fix_version,
+              'release_date': board.get('release_date'), 'cutoff': board.get('cutoff'),
+              'board_status': board.get('status')}
     if date_changed:
-        result['release_date'] = new_release_date
-        result['cutoff'] = board['cutoff']
         result['date_synced'] = True
+    if date_warning:
+        result['warning'] = date_warning
     return jsonify(result)
 
 

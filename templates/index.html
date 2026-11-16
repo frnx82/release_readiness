@@ -3039,7 +3039,7 @@
             if (!formEl) return;
 
             // Detect exception-only mode: board is open but was manually unlocked past cutoff
-            const isExceptionOnly = status === 'open' && _board && _board.is_past_cutoff && _board.manually_unlocked;
+            const isExceptionOnly = status === 'open' && _board && _board.is_past_cutoff && (_board.manually_unlocked || _board.manual_unlock);
 
             if (status === 'released') {
                 // Released — fully disable the form
@@ -3380,7 +3380,7 @@
 
             // Exception-only mode: board is open but past cutoff (QA unlocked)
             // → open exception modal directly instead of trying a regular nomination
-            const isExceptionOnly = _board && _board.status === 'open' && _board.is_past_cutoff && _board.manually_unlocked;
+            const isExceptionOnly = _board && _board.status === 'open' && _board.is_past_cutoff && (_board.manually_unlocked || _board.manual_unlock);
             if (isExceptionOnly) {
                 _pendingExceptionBody = body;
                 document.getElementById('exc-service-name').textContent = body.service_name;
@@ -3539,7 +3539,7 @@
                 const a = document.createElement('a');
                 a.href = url; a.download = filename;
                 document.body.appendChild(a); a.click(); a.remove();
-                URL.revokeObjectURL(url);
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
                 document.getElementById('export-output').innerHTML = `<pre>${text.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}</pre>`;
                 showToast('Apps versions exported', 'success');
             } catch (e) { showToast('Apps export failed: ' + e.message, 'error'); }
@@ -3594,11 +3594,10 @@
                 if (r.ok) {
                     if (_board) {
                         _board.fix_version = fv;
-                        // Sync release_date and cutoff if the backend updated them
-                        if (d.date_synced) {
-                            _board.release_date = d.release_date;
-                            _board.cutoff = d.cutoff;
-                        }
+                        // Sync release_date / cutoff / status from the backend response
+                        if (d.release_date) _board.release_date = d.release_date;
+                        if (d.cutoff) _board.cutoff = d.cutoff;
+                        if (d.board_status) _board.status = d.board_status;
                     }
                     // Refresh sidebar to show updated date + cutoff
                     updateSidebar();
@@ -3613,11 +3612,16 @@
                     if (fvDateEl && _board) {
                         fvDateEl.textContent = _board.release_date || '—';
                     }
-                    if (d.date_synced) {
+                    if (d.warning) {
+                        showToast(`Fix version saved: ${fv} — ⚠️ ${d.warning}`, 'warn');
+                    } else if (d.date_synced) {
                         showToast(`Fix version saved: ${fv} — Release date updated to ${d.release_date}`);
                     } else {
                         showToast(`Fix version saved: ${fv}`);
                     }
+                    // New cutoff may lock/unlock the board — reload full state so
+                    // nomination form, lock buttons and countdown are consistent.
+                    if (d.date_synced && typeof refreshAll === 'function') refreshAll();
                 } else {
                     showToast(d.error || 'Failed to save', 'error');
                 }
@@ -3961,6 +3965,8 @@
                         status = `<span style="color:var(--red);font-weight:600" title="${rd}">✖ Failed</span>`;
                     } else if (rs === 'degraded') {
                         status = `<span style="color:var(--red)" title="${rd}">▲ Degraded</span>`;
+                    } else if (rs === 'suspended' || rs === 'scaling') {
+                        status = `<span style="color:var(--text2)" title="${rd}">⏸ ${rs.charAt(0).toUpperCase() + rs.slice(1)}</span>`;
                     } else {
                         status = `<span style="color:var(--text2)" title="${rd}">○ ${rs}</span>`;
                     }
@@ -4388,7 +4394,7 @@
                     return (a.image_tag || '').localeCompare(b.image_tag || '');
                 } else if (sortBy === 'status') {
                     // Sort unhealthy statuses first
-                    const order = { failed: 0, degraded: 1, rolling: 2, running: 3 };
+                    const order = { failed: 0, degraded: 1, rolling: 2, suspended: 3, scaling: 3, running: 4 };
                     const aStatus = a.rollout_status || (a.available ? 'running' : 'degraded');
                     const bStatus = b.rollout_status || (b.available ? 'running' : 'degraded');
                     const diff = (order[aStatus] ?? 3) - (order[bStatus] ?? 3);
@@ -4419,6 +4425,8 @@
                     status = `<span style="color:var(--red);font-weight:600" title="${rd}">✖ Failed</span>`;
                 } else if (rs === 'degraded') {
                     status = `<span style="color:var(--red)" title="${rd}">▲ Degraded</span>`;
+                } else if (rs === 'suspended' || rs === 'scaling') {
+                    status = `<span style="color:var(--text2)" title="${rd}">⏸ ${rs.charAt(0).toUpperCase() + rs.slice(1)}</span>`;
                 } else {
                     status = `<span style="color:var(--text2)" title="${rd}">○ ${rs}</span>`;
                 }
@@ -4549,8 +4557,11 @@
             const link = document.createElement('a');
             link.href = URL.createObjectURL(blob);
             link.download = `uat-environment-${_uatNamespace}-${now}.csv`;
+            document.body.appendChild(link);
             link.click();
-            URL.revokeObjectURL(link.href);
+            link.remove();
+            // Revoke after the click has been processed (immediate revoke can cancel the download in Firefox/Safari)
+            setTimeout(() => URL.revokeObjectURL(link.href), 1000);
             showToast(`Exported ${_uatData.length} services to CSV`);
         }
 
