@@ -736,6 +736,7 @@
                 <div class="tab" onclick="switchTab('export')">📦 Export</div>
                 <div class="tab" onclick="switchTab('uat')">🖥️ UAT Env</div>
                 <div class="tab" onclick="switchTab('prod')">🏭 Prod Env</div>
+                <div class="tab" onclick="switchTab('preprod')">🧬 PreProd Env</div>
                 <div class="tab" onclick="switchTab('history')">📚 History</div>
                 <div class="tab" onclick="switchTab('deploy')">🚀 Deploy</div>
                 <div class="tab" onclick="switchTab('qa')">🧪 QA</div>
@@ -862,6 +863,31 @@
                 </div>
                 <div id="prod-services-list">
                     <div class="empty-state"><p>Click the tab or Refresh to load prod services</p></div>
+                </div>
+            </div>
+
+            <!-- PreProd Environment Tab -->
+            <div class="tab-content" id="tab-preprod">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+                    <div>
+                        <h3 style="font-size:16px;margin:0">🧬 PreProd Environment — Live Services</h3>
+                        <p style="font-size:12px;color:var(--text2);margin:4px 0 0">All versions running in the PreProd namespace on the Production cluster, compared with Prod and the release board</p>
+                    </div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <input id="preprod-filter" type="text" placeholder="Filter services..." oninput="renderPreprodTable()" style="padding:5px 10px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:170px">
+                        <select id="preprod-sort-select" onchange="renderPreprodTable()" style="padding:5px 10px;font-size:11px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer">
+                            <option value="name">Sort: Service Name</option>
+                            <option value="board">Sort: Release Board</option>
+                            <option value="prod">Sort: Differs from Prod</option>
+                            <option value="status">Sort: Rollout Status</option>
+                            <option value="kind">Sort: Kind</option>
+                        </select>
+                        <button class="btn btn-sm" onclick="exportPreprodCSV()" title="Export all PreProd versions to CSV">📥 Export CSV</button>
+                        <button class="btn btn-sm" onclick="loadPreprodServices(true)">🔄 Refresh</button>
+                    </div>
+                </div>
+                <div id="preprod-services-list">
+                    <div class="empty-state"><p>Click the tab or Refresh to load PreProd services</p></div>
                 </div>
             </div>
 
@@ -2840,7 +2866,7 @@
             document.getElementById('modal-overlay').classList.add('active');
         }
         function switchTab(name) {
-            const tabs = ['board', 'drift', 'readiness', 'audit', 'export', 'uat', 'prod', 'history', 'deploy', 'qa', 'confluence', 'chat', 'help'];
+            const tabs = ['board', 'drift', 'readiness', 'audit', 'export', 'uat', 'prod', 'preprod', 'history', 'deploy', 'qa', 'confluence', 'chat', 'help'];
             document.querySelectorAll('.tab').forEach((t, i) => {
                 t.classList.toggle('active', tabs[i] === name);
             });
@@ -2849,6 +2875,7 @@
             if (history.replaceState) { history.replaceState(null, '', '#' + name); }
             if (name === 'uat') loadUATServices();
             if (name === 'prod') loadProdServices();
+            if (name === 'preprod') loadPreprodServices();
             if (name === 'history') loadReleaseHistory();
             if (name === 'deploy') loadDeployWorkflows();
             if (name === 'qa') qaCheckBoardStatus();
@@ -4322,6 +4349,204 @@
             });
         }
 
+        // ═══ PreProd Environment ═════════════════════════════════════════════════════
+        let _preprodData = [];            // services from /api/preprod/services
+        let _preprodMeta = {};            // namespace / cluster
+        let _preprodProdMap = {};         // name -> {image_tag, helm_version}
+        let _preprodProdConnected = false;
+
+        function _ppEsc(v) {
+            return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+
+        function _preprodRowInfo(s) {
+            /** Comparison of one PreProd service vs the release board and Production. */
+            const boardSvcs = (_board && _board.services) ? _board.services : {};
+            const nom = boardSvcs[s.name];
+            let board = 'none';                      // none | deployed | pending
+            if (nom && !nom.is_custom) board = (nom.image_tag || '') === (s.image_tag || '') ? 'deployed' : 'pending';
+            const prod = _preprodProdMap[s.name];
+            let prodCmp = 'unknown';                 // unknown | same | differs | missing
+            if (_preprodProdConnected) {
+                if (!prod) prodCmp = 'missing';
+                else prodCmp = (prod.image_tag || '') === (s.image_tag || '') ? 'same' : 'differs';
+            }
+            return { board, nomTag: nom ? (nom.image_tag || '') : '', prodCmp, prodTag: prod ? (prod.image_tag || '') : '' };
+        }
+
+        async function loadPreprodServices(forceRefresh = false) {
+            const container = document.getElementById('preprod-services-list');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Connecting to PreProd environment...</div>';
+            try {
+                const [ppResp, prodResp] = await Promise.all([
+                    fetch('/api/preprod/services' + (forceRefresh ? '?refresh=1' : '')),
+                    fetch('/api/prod/services').catch(() => null),
+                ]);
+                const d = await ppResp.json();
+                if (d.connected === false) {
+                    _preprodData = [];
+                    container.innerHTML = `
+                        <div class="empty-state" style="text-align:left;padding:24px">
+                            <h4 style="color:#f59e0b;margin-bottom:12px">⚠️ PreProd Environment Not Connected</h4>
+                            <p style="color:var(--text2);margin-bottom:16px">${_ppEsc(d.error || 'Connection failed')}</p>
+                            <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:16px;font-size:12px;line-height:1.8">
+                                <strong style="color:var(--text)">PreProd runs on the Production cluster in its own namespace.</strong><br>
+                                <code style="color:var(--accent)">PREPROD_NAMESPACE</code> — the PreProd namespace (key <code>preprod-namespace</code> in the <code>release-readiness-prod</code> secret)<br>
+                                <span style="color:var(--text2)">The Prod cluster connection (<code>PROD_CLUSTER_API</code> / <code>PROD_CLUSTER_TOKEN</code>) is reused.</span><br><br>
+                                <strong style="color:var(--text)">Access:</strong> the same ServiceAccount needs <code>view</code> on the PreProd namespace —
+                                apply <code>manifests/preprod-viewer-rolebinding.yaml</code> on the Prod cluster.
+                            </div>
+                        </div>`;
+                    return;
+                }
+                _preprodData = d.services || [];
+                _preprodMeta = { namespace: d.namespace, cluster: d.cluster };
+
+                _preprodProdMap = {};
+                _preprodProdConnected = false;
+                if (prodResp && prodResp.ok) {
+                    try {
+                        const pd = await prodResp.json();
+                        if (pd.connected !== false && pd.services) {
+                            _preprodProdConnected = true;
+                            pd.services.forEach(p => { _preprodProdMap[p.name] = { image_tag: p.image_tag, helm_version: p.helm_version }; });
+                        }
+                    } catch (_) { /* prod comparison is optional */ }
+                }
+
+                if (!_preprodData.length) {
+                    container.innerHTML = `<div class="empty-state"><p>No services found in PreProd namespace <code>${_ppEsc(d.namespace || '')}</code></p></div>`;
+                    return;
+                }
+                renderPreprodTable();
+            } catch (e) {
+                container.innerHTML = '<div class="empty-state"><p>Failed to load PreProd services</p></div>';
+            }
+        }
+
+        function renderPreprodTable() {
+            const container = document.getElementById('preprod-services-list');
+            if (!_preprodData.length) return;
+            const q = (document.getElementById('preprod-filter').value || '').trim().toLowerCase();
+            const sortBy = document.getElementById('preprod-sort-select').value;
+
+            let svcs = _preprodData.filter(s => !q || (s.name || '').toLowerCase().includes(q)
+                || (s.image || '').toLowerCase().includes(q) || (s.image_tag || '').toLowerCase().includes(q));
+
+            const boardOrder = { pending: 0, deployed: 1, none: 2 };
+            const prodOrder = { differs: 0, missing: 1, same: 2, unknown: 3 };
+            const statusOrder = { failed: 0, degraded: 1, rolling: 2, suspended: 3, scaling: 3, running: 4 };
+            svcs = [...svcs].sort((a, b) => {
+                const byName = (a.name || '').localeCompare(b.name || '');
+                if (sortBy === 'board') return (boardOrder[_preprodRowInfo(a).board] - boardOrder[_preprodRowInfo(b).board]) || byName;
+                if (sortBy === 'prod') return (prodOrder[_preprodRowInfo(a).prodCmp] - prodOrder[_preprodRowInfo(b).prodCmp]) || byName;
+                if (sortBy === 'status') {
+                    const sa = a.rollout_status || (a.available ? 'running' : 'degraded');
+                    const sb = b.rollout_status || (b.available ? 'running' : 'degraded');
+                    return ((statusOrder[sa] ?? 4) - (statusOrder[sb] ?? 4)) || byName;
+                }
+                if (sortBy === 'kind') return (a.kind || '').localeCompare(b.kind || '') || byName;
+                return byName;
+            });
+
+            // Summary counts over ALL preprod services (not just the filtered view)
+            let healthy = 0, deployed = 0, pending = 0, differs = 0;
+            _preprodData.forEach(s => {
+                const info = _preprodRowInfo(s);
+                if ((s.rollout_status || (s.available ? 'running' : 'degraded')) === 'running') healthy++;
+                if (info.board === 'deployed') deployed++;
+                if (info.board === 'pending') pending++;
+                if (info.prodCmp === 'differs' || info.prodCmp === 'missing') differs++;
+            });
+
+            const rows = svcs.map(s => {
+                const info = _preprodRowInfo(s);
+                const rs = s.rollout_status || (s.available ? 'running' : 'degraded');
+                const rd = s.rollout_detail || `${s.replicas}/${s.desired_replicas} ready`;
+                const statusMap = {
+                    running: ['var(--green)', '● Running'], rolling: ['#f59e0b', '◐ Rolling'],
+                    failed: ['var(--red)', '✖ Failed'], degraded: ['var(--red)', '▲ Degraded'],
+                    suspended: ['var(--text2)', '⏸ Suspended'], scaling: ['var(--text2)', '⏸ Scaling'],
+                };
+                const [sc, sl] = statusMap[rs] || ['var(--text2)', `○ ${rs}`];
+                const status = `<span style="color:${sc};font-weight:${rs === 'running' ? 400 : 600}" title="${_ppEsc(rd)}">${sl}</span>`;
+
+                let prodBadge = '';
+                if (info.prodCmp === 'same') {
+                    prodBadge = `<span style="font-size:10px;padding:2px 6px;background:rgba(139,92,246,.1);color:#8b5cf6;border:1px solid rgba(139,92,246,.2);border-radius:4px;font-weight:600;margin-left:4px" title="Same version in Production">= PROD</span>`;
+                } else if (info.prodCmp === 'differs') {
+                    prodBadge = `<span style="font-size:10px;padding:2px 6px;background:rgba(59,130,246,.08);color:#3b82f6;border:1px solid rgba(59,130,246,.15);border-radius:4px;font-weight:500;margin-left:4px" title="Prod: ${_ppEsc(info.prodTag)}">Δ prod ${_ppEsc(info.prodTag.substring(0, 14))}</span>`;
+                } else if (info.prodCmp === 'missing') {
+                    prodBadge = `<span style="font-size:10px;padding:2px 6px;background:rgba(16,185,129,.08);color:#10b981;border:1px solid rgba(16,185,129,.2);border-radius:4px;margin-left:4px" title="Not deployed in Production">🆕 not in prod</span>`;
+                }
+
+                let boardHtml = '<span style="color:var(--text2)">—</span>';
+                if (info.board === 'deployed') {
+                    boardHtml = `<span style="font-size:11px;padding:3px 8px;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.2);border-radius:6px;font-weight:600">✅ Nominated · deployed</span>`;
+                } else if (info.board === 'pending') {
+                    boardHtml = `<div><span style="font-size:11px;padding:3px 8px;background:rgba(245,158,11,.12);color:#f59e0b;border:1px solid rgba(245,158,11,.2);border-radius:6px;font-weight:600">⏳ Nominated · not yet</span>
+                        <div style="font-size:10px;color:var(--text2);margin-top:3px">Board: <span style="font-family:monospace;color:var(--accent)">${_ppEsc(info.nomTag)}</span></div></div>`;
+                }
+                const helmBadge = s.helm_version
+                    ? `<span style="font-size:11px;padding:2px 8px;background:rgba(99,102,241,.12);color:var(--accent);border-radius:4px">${_ppEsc(s.helm_version)}</span>`
+                    : '<span style="color:var(--text2)">—</span>';
+
+                return `<tr>
+                    <td style="font-weight:600">${_ppEsc(s.name)}</td>
+                    <td><span class="type-badge">${_ppEsc(s.kind)}</span></td>
+                    <td style="font-family:monospace;font-size:11px;color:var(--text2);max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_ppEsc(s.image)}">${_ppEsc(s.image)}</td>
+                    <td><span class="card-tag" style="font-size:11px">${_ppEsc(s.image_tag || '?')}</span>${prodBadge}</td>
+                    <td>${helmBadge}</td>
+                    <td style="text-align:center">${s.replicas}/${s.desired_replicas}</td>
+                    <td>${status}${rs !== 'running' ? `<div style="font-size:9px;color:var(--text2);margin-top:2px">${_ppEsc(rd)}</div>` : ''}</td>
+                    <td>${boardHtml}</td>
+                </tr>`;
+            }).join('');
+
+            const chip = (html, extra = '') => `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:12px;${extra}">${html}</div>`;
+            const clusterLabel = (_preprodMeta.cluster || '').replace('https://', '').split('/')[0] || 'cluster';
+            const nominatedK8s = Object.values((_board && _board.services) || {}).filter(x => !x.is_custom).length;
+            container.innerHTML = `
+                <div style="display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap">
+                    ${chip(`📦 <strong>${_preprodData.length}</strong> services${q ? ` · showing ${svcs.length}` : ''}`)}
+                    ${chip(`🏷️ Namespace: <strong>${_ppEsc(_preprodMeta.namespace || 'preprod')}</strong>`)}
+                    ${chip(`🌐 Cluster: <strong style="font-size:11px">${_ppEsc(clusterLabel)}</strong>`)}
+                    ${chip(`✅ Healthy: <strong style="color:var(--green)">${healthy}</strong>`)}
+                    ${chip(`📋 Board in PreProd: <strong style="color:var(--accent)">${deployed}</strong> / ${nominatedK8s}${pending ? ` · <span style="color:#f59e0b">⏳ ${pending} not yet</span>` : ''}`)}
+                    ${_preprodProdConnected
+                        ? chip(`🔀 Differs from Prod: <strong style="color:#3b82f6">${differs}</strong>`, 'background:rgba(59,130,246,.05)')
+                        : chip('<span style="color:var(--text2)">Prod comparison unavailable</span>')}
+                </div>
+                <table class="list-view-table">
+                    <thead><tr><th>Service</th><th>Kind</th><th>Image</th><th>Tag</th><th>Helm Chart</th><th>Replicas</th><th>Status</th><th>Release Board</th></tr></thead>
+                    <tbody>${rows || '<tr><td colspan="8" style="text-align:center;color:var(--text2)">No services match the filter</td></tr>'}</tbody>
+                </table>`;
+        }
+
+        function exportPreprodCSV() {
+            if (!_preprodData.length) { showToast('No PreProd data loaded. Refresh first.', 'error'); return; }
+            const q = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+            const header = ['Service', 'Kind', 'Image', 'Tag', 'Helm Chart', 'Replicas', 'Desired', 'Rollout Status',
+                            'Rollout Detail', 'Release Board', 'Nominated Tag', 'Prod Tag', 'Vs Prod'];
+            const rows = _preprodData.map(s => {
+                const info = _preprodRowInfo(s);
+                const boardLbl = { deployed: 'Nominated - deployed', pending: 'Nominated - not yet deployed', none: 'Not nominated' }[info.board];
+                // Leading apostrophe keeps Excel from mangling version strings (e.g. 1.10 → 1.1)
+                return [q(s.name), q(s.kind), q(s.image), q(`'${s.image_tag || ''}`), q(`'${s.helm_version || ''}`),
+                        s.replicas || 0, s.desired_replicas || 0, q(s.rollout_status || (s.available ? 'running' : 'degraded')),
+                        q(s.rollout_detail || ''), q(boardLbl), q(info.nomTag ? `'${info.nomTag}` : ''),
+                        q(info.prodTag ? `'${info.prodTag}` : ''), q(info.prodCmp)].join(',');
+            });
+            const blob = new Blob([[header.join(','), ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `preprod-environment-${_preprodMeta.namespace || 'preprod'}-${new Date().toISOString().slice(0, 10)}.csv`;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            showToast(`Exported ${_preprodData.length} PreProd services to CSV`);
+        }
+
         // ═══ UAT Environment ═════════════════════════════════════════════════════════
         let _uatData = [];          // Raw service list from API
         let _uatProdVersionMap = {};
@@ -4598,7 +4823,7 @@
         if (_boardView === 'list') { toggleBoardView('list'); }
         // Restore active tab from URL hash (persists across browser refresh)
         const _hashTab = window.location.hash.replace('#', '');
-        const _validTabs = ['board', 'drift', 'readiness', 'audit', 'export', 'uat', 'prod', 'history', 'deploy', 'qa', 'confluence', 'chat', 'help'];
+        const _validTabs = ['board', 'drift', 'readiness', 'audit', 'export', 'uat', 'prod', 'preprod', 'history', 'deploy', 'qa', 'confluence', 'chat', 'help'];
         if (_hashTab && _validTabs.includes(_hashTab)) { switchTab(_hashTab); }
         refreshAll();
         checkGitHubStatus();

@@ -205,9 +205,9 @@ spec:
         - name: CUTOFF_DAY
           value: "2"                                        # 0=Mon, 2=Wed
         - name: CUTOFF_HOUR
-          value: "14"                                       # 14:00 (2 PM EST/EDT)
-        - name: CUTOFF_TZ_OFFSET
-          value: "-4"                                       # UTC offset: -4=EDT, -5=EST
+          value: "14"                                       # 14:00 local time in CUTOFF_TZ (2 PM ET)
+        - name: CUTOFF_TZ
+          value: "America/New_York"                         # DST-aware: 2 PM ET all year (EST and EDT)
 
         # ════════════════════════════════════════════════════════════
         # Storage Backend
@@ -300,6 +300,7 @@ spec:
         #     --from-literal=api-url=https://api.openshift-prod.example.com:6443 \
         #     --from-literal=token=eyJhbGciOiJSUzI1NiIs... \
         #     --from-literal=namespace=prod-namespace \
+        #     --from-literal=preprod-namespace=preprod-namespace \
         #     -n YOUR_NAMESPACE
         - name: PROD_CLUSTER_API
           valueFrom:
@@ -321,6 +322,19 @@ spec:
               optional: true
         - name: PROD_CLUSTER_VERIFY_SSL
           value: "false"                                      # ← Set to 'true' in production with proper CA certs
+
+        # ═══ PreProd Environment (PreProd Env tab) ════════════════
+        # PreProd is a namespace on the PRODUCTION cluster — the prod
+        # connection above is reused; only the namespace differs.
+        # Add it to the prod secret:  --from-literal=preprod-namespace=<ns>
+        # The prod viewer ServiceAccount also needs read access there:
+        #   manifests/preprod-viewer-rolebinding.yaml
+        - name: PREPROD_NAMESPACE
+          valueFrom:
+            secretKeyRef:
+              name: release-readiness-prod
+              key: preprod-namespace
+              optional: true
 
         # ═══ Proxy — Corporate Proxy for Outbound HTTPS ═══════════
         # Required in UAT/Prod if the cluster routes outbound traffic

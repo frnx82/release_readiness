@@ -1812,7 +1812,33 @@ DEPLOY_ENV = os.getenv('DEPLOY_ENV', 'uat').lower()  # 'uat' or 'prod' — deter
 RELEASE_CADENCE = os.getenv('RELEASE_CADENCE', 'friday')  # 'friday' or 'custom'
 CUTOFF_DAY = int(os.getenv('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
 CUTOFF_HOUR = int(os.getenv('CUTOFF_HOUR', '14'))  # 14:00 (2 PM) in CUTOFF_TZ
-CUTOFF_TZ_OFFSET = int(os.getenv('CUTOFF_TZ_OFFSET', '-4'))  # UTC offset: -4=EDT, -5=EST
+CUTOFF_TZ_OFFSET = int(os.getenv('CUTOFF_TZ_OFFSET', '-4'))  # Fallback ONLY if CUTOFF_TZ is unusable
+# Release time zone (IANA name). DST-aware: 14:00 America/New_York is 2 PM all
+# year — 18:00 UTC in summer (EDT) and 19:00 UTC in winter (EST). The old fixed
+# CUTOFF_TZ_OFFSET=-4 made the cutoff 1 PM EST every winter.
+CUTOFF_TZ = os.getenv('CUTOFF_TZ', 'America/New_York')
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    _RELEASE_TZ = _ZoneInfo(CUTOFF_TZ) if CUTOFF_TZ else None
+except Exception as _tz_err:  # missing tzdata / bad name → fixed-offset fallback
+    print(f"[release] ⚠️  Time zone '{CUTOFF_TZ}' unavailable ({_tz_err}) — "
+          f"falling back to fixed UTC offset {CUTOFF_TZ_OFFSET}")
+    _RELEASE_TZ = None
+if _RELEASE_TZ is None:
+    _RELEASE_TZ = datetime.timezone(datetime.timedelta(hours=CUTOFF_TZ_OFFSET))
+RELEASE_ROLLOVER_HOUR = 18  # after 6 PM local on release day, the next cycle starts
+
+
+def _now_local():
+    """Current time in the release time zone (aware)."""
+    return datetime.datetime.now(datetime.timezone.utc).astimezone(_RELEASE_TZ)
+
+
+def _local_to_utc_iso(date_obj, hour, minute=0):
+    """Local wall-clock time on `date_obj` → naive UTC ISO string (the format the
+    board stores and compares against datetime.utcnow().isoformat())."""
+    local = datetime.datetime.combine(date_obj, datetime.time(hour, minute), tzinfo=_RELEASE_TZ)
+    return local.astimezone(datetime.timezone.utc).replace(tzinfo=None).isoformat()
 
 # ── Artifactory (Custom Component Version Detection) ─────────────────────────
 ARTIFACTORY_URL = os.getenv('ARTIFACTORY_URL', '').rstrip('/')
@@ -2014,40 +2040,24 @@ else:
 
 
 def _get_current_release_date():
-    """Calculate the next release Friday (or whatever cadence)."""
-    today = datetime.date.today()
+    """Calculate the next release Friday in the release time zone.
+    On release day, after 6 PM local the next Friday becomes current."""
+    now = _now_local()
+    today = now.date()
     days_until_friday = (4 - today.weekday()) % 7
-    # FIX: Convert 6pm local to UTC using CUTOFF_TZ_OFFSET.
-    # e.g. 18:00 EDT (offset=-4) → 18 - (-4) = 22:00 UTC
-    # Old code used datetime.now().hour >= 18 which breaks on UTC servers
-    # because now() returns UTC hour, not local hour.
-    rollover_hour_utc = 18 - CUTOFF_TZ_OFFSET
-    if days_until_friday == 0 and datetime.datetime.utcnow().hour >= rollover_hour_utc:
+    if days_until_friday == 0 and now.hour >= RELEASE_ROLLOVER_HOUR:
         days_until_friday = 7
     return (today + datetime.timedelta(days=days_until_friday)).isoformat()
 
 
 def _get_cutoff_datetime():
-    """Calculate the cutoff datetime in UTC based on CUTOFF_DAY, CUTOFF_HOUR, and CUTOFF_TZ_OFFSET.
+    """Cutoff for the current release, as naive UTC ISO.
 
-    CUTOFF_HOUR is in the local timezone (e.g. 14 = 2 PM EST).
-    We convert to UTC for comparison with datetime.utcnow().
-    Example: 14:00 EDT (UTC-4) → 18:00 UTC.
+    CUTOFF_DAY / CUTOFF_HOUR are local wall-clock values in CUTOFF_TZ
+    (e.g. Wed 14:00 America/New_York = 2 PM ET), converted to UTC with the
+    correct DST offset for that date.
     """
-    today = datetime.date.today()
-    days_until_friday = (4 - today.weekday()) % 7
-    # FIX: Use dynamic rollover threshold instead of hardcoded 22.
-    # 18:00 local → (18 - TZ_OFFSET) UTC. e.g. EDT(-4): 18-(-4)=22, EST(-5): 18-(-5)=23
-    rollover_hour_utc = 18 - CUTOFF_TZ_OFFSET
-    if days_until_friday == 0 and datetime.datetime.utcnow().hour >= rollover_hour_utc:
-        days_until_friday = 7
-    release_friday = today + datetime.timedelta(days=days_until_friday)
-    cutoff_date = release_friday - datetime.timedelta(days=(4 - CUTOFF_DAY) % 7)
-    # Convert local cutoff time to UTC: subtract the TZ offset
-    # e.g. 14:00 EDT (offset=-4) → 14:00 - (-4) = 18:00 UTC
-    cutoff_local = datetime.datetime.combine(cutoff_date, datetime.time(CUTOFF_HOUR, 0))
-    cutoff_utc = cutoff_local - datetime.timedelta(hours=CUTOFF_TZ_OFFSET)
-    return cutoff_utc.isoformat()
+    return _get_cutoff_for_release_date(_get_current_release_date())
 
 
 def _board_configmap_name(release_date=None):
@@ -2203,27 +2213,18 @@ def _parse_fix_version_to_date(fix_version):
 
 
 def _get_cutoff_for_release_date(release_date_str):
-    """Calculate the cutoff datetime in UTC for a specific release date.
-
-    This is used when the release date is manually changed (e.g., via fix version update)
-    rather than auto-calculated from the current date.
-
-    The cutoff is CUTOFF_DAY_OFFSET days before the release date at CUTOFF_HOUR local time.
-    e.g., release=Friday, CUTOFF_DAY=Wed (2 days before), CUTOFF_HOUR=14 (2 PM EDT) → Wed 18:00 UTC.
+    """Cutoff (naive UTC ISO) for a specific release date: the most recent
+    CUTOFF_DAY on/before the release date, at CUTOFF_HOUR local time (DST-aware).
+    e.g. release Fri, CUTOFF_DAY=Wed, CUTOFF_HOUR=14 → Wed 2 PM ET
+         (18:00 UTC in EDT, 19:00 UTC in EST).
     """
     try:
         release_date = datetime.date.fromisoformat(release_date_str)
-        # Calculate how many days before the release date the cutoff should be
-        # CUTOFF_DAY: 0=Mon, 2=Wed, 4=Fri (release day). Offset = (release_weekday - CUTOFF_DAY) % 7
-        # For Friday release (weekday=4) and Wed cutoff (CUTOFF_DAY=2): offset = (4-2)%7 = 2 days before
-        days_before = (release_date.weekday() - CUTOFF_DAY) % 7
-        cutoff_date = release_date - datetime.timedelta(days=days_before)
-        cutoff_local = datetime.datetime.combine(cutoff_date, datetime.time(CUTOFF_HOUR, 0))
-        cutoff_utc = cutoff_local - datetime.timedelta(hours=CUTOFF_TZ_OFFSET)
-        return cutoff_utc.isoformat()
     except (ValueError, TypeError):
-        # Fallback to the standard auto-calculated cutoff
-        return _get_cutoff_datetime()
+        release_date = datetime.date.fromisoformat(_get_current_release_date())
+    days_before = (release_date.weekday() - CUTOFF_DAY) % 7
+    cutoff_date = release_date - datetime.timedelta(days=days_before)
+    return _local_to_utc_iso(cutoff_date, CUTOFF_HOUR)
 
 
 def _effective_cutoff(board):
@@ -3760,7 +3761,11 @@ def _get_prod_api_client():
 
     prod_config = client.Configuration()
     prod_config.host = prod_api
-    prod_config.api_key = {"authorization": f"Bearer {prod_token}"}
+    # ── Token via default_headers, NOT prod_config.api_key ──
+    # The kubernetes client's api_key mechanism is broken under gevent
+    # monkey.patch_all() (token never sent → 403 system:anonymous) — the same
+    # fix already used for the local and UAT clients. This connection is also
+    # reused by the PreProd Env tab (PreProd namespace on the prod cluster).
     # Connection timeout to prevent pod hang/OOM on unreachable clusters
     prod_config.connection_pool_maxsize = 4
     prod_config.retries = 1
@@ -3783,7 +3788,9 @@ def _get_prod_api_client():
     else:
         prod_config.verify_ssl = True
 
-    return client.ApiClient(prod_config), None
+    prod_client = client.ApiClient(prod_config)
+    prod_client.default_headers['Authorization'] = f'Bearer {prod_token}'
+    return prod_client, None
 
 
 # ── UAT Cluster (Remote) ─────────────────────────────────────────────────────
@@ -4027,6 +4034,134 @@ def list_prod_services():
         'cluster': prod_api_url, 'count': len(services),
         'connected': True, 'deploy_env': DEPLOY_ENV
     }
+    _cache_set(cache_key, result)
+    return jsonify(result)
+
+
+# ── PreProd Environment ───────────────────────────────────────────────────────
+# PreProd runs on the PRODUCTION cluster, in its own namespace.
+#   PREPROD_NAMESPACE  - the PreProd namespace on the prod cluster (required)
+# The prod cluster connection is reused:
+#   • DEPLOY_ENV=prod → local cluster (this app's own ServiceAccount)
+#   • DEPLOY_ENV=uat  → remote via PROD_CLUSTER_API / PROD_CLUSTER_TOKEN
+# ⚠️ The identity used must have read ('view') access to the PreProd namespace
+#    too — see manifests/preprod-viewer-rolebinding.yaml.
+# (Fallback, rarely needed: a separate PreProd cluster via PREPROD_CLUSTER_API /
+#  PREPROD_CLUSTER_TOKEN / PREPROD_CLUSTER_CA_CERT / PREPROD_CLUSTER_VERIFY_SSL.)
+
+def _build_remote_api_client(prefix, log_prefix):
+    """Create a K8s ApiClient from <prefix>_CLUSTER_API / _TOKEN / _CA_CERT / _VERIFY_SSL.
+
+    Returns (api_client, error). The bearer token is injected via
+    default_headers — the kubernetes client's api_key mechanism is broken under
+    gevent monkey.patch_all() (sends no token → 403 system:anonymous).
+    """
+    api_url = os.environ.get(f'{prefix}_CLUSTER_API', '')
+    token = os.environ.get(f'{prefix}_CLUSTER_TOKEN', '')
+    if not api_url or not token:
+        return None, (f'{prefix}_CLUSTER_API {"✅" if api_url else "❌ EMPTY"} and '
+                      f'{prefix}_CLUSTER_TOKEN {"✅" if token else "❌ EMPTY"} — both are required')
+    cfg = client.Configuration()
+    cfg.host = api_url
+    cfg.connection_pool_maxsize = 4
+    cfg.retries = 1
+    cfg.connect_timeout = 10   # never hang a worker on an unreachable cluster
+    cfg.read_timeout = 15
+    ca_cert = os.environ.get(f'{prefix}_CLUSTER_CA_CERT', '')
+    if ca_cert:
+        cfg.ssl_ca_cert = ca_cert
+        cfg.verify_ssl = True
+    elif os.environ.get(f'{prefix}_CLUSTER_VERIFY_SSL', 'true').lower() == 'false':
+        cfg.verify_ssl = False
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    else:
+        cfg.verify_ssl = True
+    api_client_obj = client.ApiClient(cfg)
+    api_client_obj.default_headers['Authorization'] = f'Bearer {token}'
+    print(f'{log_prefix} ✅ Client for {api_url[:40]} (token {len(token)} chars)')
+    return api_client_obj, None
+
+
+def _get_preprod_target():
+    """Resolve where PreProd lives. Returns (api_client, namespace, cluster_label, error)."""
+    namespace = os.environ.get('PREPROD_NAMESPACE', '').strip()
+    preprod_api = os.environ.get('PREPROD_CLUSTER_API', '')
+    if preprod_api:
+        # Fallback — dedicated PreProd cluster
+        if not namespace:
+            return None, '', preprod_api, 'PREPROD_NAMESPACE is required.'
+        api_client_obj, err = _build_remote_api_client('PREPROD', '[preprod]')
+        return api_client_obj, namespace, preprod_api, err
+    if not namespace:
+        return None, '', '', ('PreProd is not configured. Set PREPROD_NAMESPACE to the PreProd namespace '
+                              'on the production cluster.')
+    prod_ns = os.environ.get('PROD_NAMESPACE', NAMESPACE)
+    if namespace == prod_ns:
+        return None, namespace, '', (f'PREPROD_NAMESPACE ({namespace}) is the same as the Prod namespace — '
+                                     f'set it to the PreProd namespace.')
+    # Default — PreProd namespace on the production cluster (reuse the prod connection)
+    if DEPLOY_ENV == 'prod':
+        return _local_api_client or client.ApiClient(), namespace, 'local (production cluster)', None
+    api_client_obj, err = _get_prod_api_client()
+    if err:
+        err = f'PreProd uses the production cluster connection — {err}'
+    return api_client_obj, namespace, os.environ.get('PROD_CLUSTER_API', ''), err
+
+
+def _preprod_forbidden_hint(namespace):
+    who = ("this app's ServiceAccount" if DEPLOY_ENV == 'prod'
+           else 'the PROD_CLUSTER_TOKEN ServiceAccount')
+    return (f' — {who} has no read access to namespace "{namespace}". '
+            f'Apply manifests/preprod-viewer-rolebinding.yaml in that namespace.')
+
+
+@app.route('/api/preprod/services')
+def list_preprod_services():
+    """List all workloads (and their versions) running in the PreProd environment."""
+    try:
+        api_client_obj, preprod_ns, cluster, error = _get_preprod_target()
+    except Exception as e:
+        print(f'[preprod] ❌ Fatal error creating API client: {e}')
+        return jsonify({'services': [], 'namespace': '', 'cluster': '', 'count': 0, 'connected': False,
+                        'error': f'Failed to create API client: {type(e).__name__}: {str(e)[:200]}'})
+    if error:
+        print(f'[preprod] Client creation failed: {error}')
+        return jsonify({'services': [], 'namespace': preprod_ns, 'cluster': cluster,
+                        'count': 0, 'connected': False, 'error': error})
+
+    cache_key = ('preprod_services', cluster, preprod_ns)
+    if not request.args.get('refresh'):
+        cached = _cache_get(cache_key)
+        if cached:
+            return jsonify(cached)
+
+    print(f'[preprod] Listing workloads on {cluster}, namespace={preprod_ns}')
+    try:
+        # _list_services_from_api swallows per-kind errors, so probe access first
+        # to surface RBAC problems (403) instead of showing an empty namespace.
+        try:
+            client.AppsV1Api(api_client_obj).list_namespaced_deployment(
+                preprod_ns, limit=1, _request_timeout=15)
+        except client.exceptions.ApiException as e:
+            if e.status == 403:
+                return jsonify({'error': f'HTTP 403 Forbidden{_preprod_forbidden_hint(preprod_ns)}',
+                                'services': [], 'namespace': preprod_ns, 'cluster': cluster,
+                                'connected': False})
+            if e.status == 404:
+                return jsonify({'error': f'Namespace "{preprod_ns}" not found on {cluster}.',
+                                'services': [], 'namespace': preprod_ns, 'cluster': cluster,
+                                'connected': False})
+            raise
+        services = _list_services_from_api(api_client_obj, preprod_ns, '[preprod]')
+    except Exception as e:
+        detail = f' (HTTP {e.status})' if hasattr(e, 'status') else ''
+        print(f'[preprod] ❌ Connection FAILED: {type(e).__name__}: {e}{detail}')
+        return jsonify({'error': f'{type(e).__name__}: {str(e)[:300]}{detail}', 'services': [],
+                        'namespace': preprod_ns, 'cluster': cluster, 'connected': False})
+
+    result = {'services': services, 'namespace': preprod_ns, 'cluster': cluster,
+              'count': len(services), 'connected': True, 'deploy_env': DEPLOY_ENV}
     _cache_set(cache_key, result)
     return jsonify(result)
 
@@ -7725,6 +7860,10 @@ if __name__ == '__main__':
         'UAT_CLUSTER_TOKEN': os.environ.get('UAT_CLUSTER_TOKEN', ''),
         'UAT_NAMESPACE': os.environ.get('UAT_NAMESPACE', ''),
         'UAT_CLUSTER_VERIFY_SSL': os.environ.get('UAT_CLUSTER_VERIFY_SSL', 'true'),
+        'PREPROD_CLUSTER_API': os.environ.get('PREPROD_CLUSTER_API', ''),
+        'PREPROD_CLUSTER_TOKEN': os.environ.get('PREPROD_CLUSTER_TOKEN', ''),
+        'PREPROD_NAMESPACE': os.environ.get('PREPROD_NAMESPACE', ''),
+        'PREPROD_CLUSTER_VERIFY_SSL': os.environ.get('PREPROD_CLUSTER_VERIFY_SSL', 'true'),
         'QA_DEPLOY_REPO': QA_DEPLOY_REPO,
         'QA_NAMESPACE': QA_NAMESPACE,
         'QA_TEST_REPO': QA_TEST_REPO,

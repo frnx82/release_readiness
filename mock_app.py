@@ -87,35 +87,34 @@ MOCK_JIRA_ISSUES = {
 _board_store = {}
 _release_history = []  # archived boards from previous release cycles
 
+def _release_tz():
+    """Release time zone (DST-aware). 14:00 America/New_York = 2 PM ET all year."""
+    try:
+        from zoneinfo import ZoneInfo
+        name = os.environ.get('CUTOFF_TZ', 'America/New_York')
+        if name:
+            return ZoneInfo(name)
+    except Exception:
+        pass
+    return datetime.timezone(datetime.timedelta(hours=int(os.environ.get('CUTOFF_TZ_OFFSET', '-4'))))
+
+
+def _local_to_utc_iso(date_obj, hour):
+    local = datetime.datetime.combine(date_obj, datetime.time(hour, 0), tzinfo=_release_tz())
+    return local.astimezone(datetime.timezone.utc).replace(tzinfo=None).isoformat()
+
+
 def _get_release_date():
-    today = datetime.date.today()
-    days = (4 - today.weekday()) % 7
-    # FIX: Convert 6pm local to UTC. 18:00 EDT (offset=-4) → 22:00 UTC
-    # Old code used datetime.now().hour >= 18 which breaks on UTC servers.
-    tz_offset = int(os.environ.get('CUTOFF_TZ_OFFSET', '-4'))
-    rollover_hour_utc = 18 - tz_offset
-    if days == 0 and datetime.datetime.utcnow().hour >= rollover_hour_utc:
+    now = datetime.datetime.now(datetime.timezone.utc).astimezone(_release_tz())
+    days = (4 - now.weekday()) % 7
+    if days == 0 and now.hour >= 18:  # after 6 PM local on release day → next cycle
         days = 7
-    return (today + datetime.timedelta(days=days)).isoformat()
+    return (now.date() + datetime.timedelta(days=days)).isoformat()
+
 
 def _get_cutoff():
-    cutoff_day = int(os.environ.get('CUTOFF_DAY', '2'))  # 0=Mon, 2=Wed
-    cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '14'))  # 14:00 (2 PM) in local TZ
-    tz_offset = int(os.environ.get('CUTOFF_TZ_OFFSET', '-4'))
-    today = datetime.date.today()
-    days = (4 - today.weekday()) % 7
-    # FIX: Use UTC-aware rollover check (same fix as _get_release_date)
-    rollover_hour_utc = 18 - tz_offset
-    if days == 0 and datetime.datetime.utcnow().hour >= rollover_hour_utc:
-        days = 7
-    friday = today + datetime.timedelta(days=days)
-    cutoff = friday - datetime.timedelta(days=(4 - cutoff_day) % 7)
-    # FIX: Convert local cutoff time to UTC for consistent server-side comparison.
-    # Old code stored local time (e.g., 12:00 EDT) but compared against utcnow(),
-    # causing the board to lock 4 hours early (noon local treated as noon UTC).
-    cutoff_local = datetime.datetime.combine(cutoff, datetime.time(cutoff_hour, 0))
-    cutoff_utc = cutoff_local - datetime.timedelta(hours=tz_offset)  # e.g., 14:00 - (-4) = 18:00 UTC (2 PM EST/EDT)
-    return cutoff_utc.isoformat()
+    return _get_cutoff_for_release_date(_get_release_date())
+
 
 def _generate_fix_version(release_date_str):
     """Generate Jira fix version from release date.
@@ -145,19 +144,15 @@ def _parse_fix_version_to_date(fix_version):
         return None
 
 def _get_cutoff_for_release_date(release_date_str):
-    """Calculate cutoff datetime in UTC for a specific release date."""
+    """Calculate cutoff datetime (naive UTC ISO) for a specific release date — DST-aware."""
     try:
         release_date = datetime.date.fromisoformat(release_date_str)
-        cutoff_day = int(os.environ.get('CUTOFF_DAY', '2'))
-        cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '14'))
-        tz_offset = int(os.environ.get('CUTOFF_TZ_OFFSET', '-4'))
-        days_before = (release_date.weekday() - cutoff_day) % 7
-        cutoff_date = release_date - datetime.timedelta(days=days_before)
-        cutoff_local = datetime.datetime.combine(cutoff_date, datetime.time(cutoff_hour, 0))
-        cutoff_utc = cutoff_local - datetime.timedelta(hours=tz_offset)
-        return cutoff_utc.isoformat()
     except (ValueError, TypeError):
-        return _get_cutoff()
+        release_date = datetime.date.fromisoformat(_get_release_date())
+    cutoff_day = int(os.environ.get('CUTOFF_DAY', '2'))
+    cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '14'))
+    days_before = (release_date.weekday() - cutoff_day) % 7
+    return _local_to_utc_iso(release_date - datetime.timedelta(days=days_before), cutoff_hour)
 
 
 def _new_board():
@@ -270,6 +265,36 @@ def list_prod_services():
         'connected': True
     })
 
+
+@app.route('/api/preprod/services')
+def list_preprod_services():
+    """Mock: List PreProd services (a separate namespace on the PROD cluster).
+
+    Simulates PreProd as "Prod + the release candidates already staged":
+      • billing-service, notification-svc → newer (UAT) versions, i.e. differ from Prod
+      • auth-service                      → same as Prod (candidate not staged yet)
+      • feature-flags-svc                 → only exists in PreProd (not in Prod)
+    """
+    preprod_ns = os.environ.get('PREPROD_NAMESPACE', 'preprod-namespace')
+    prod = {s['name']: s for s in list_prod_services().get_json()['services']}
+    staged = {'billing-service', 'notification-svc'}
+    services = []
+    for svc in MOCK_SERVICES:
+        services.append(dict(svc) if svc['name'] in staged else dict(prod.get(svc['name'], svc)))
+    services.append({
+        "name": "feature-flags-svc", "kind": "Deployment",
+        "image": "registry.example.com/feature-flags:v0.9.0", "image_tag": "v0.9.0",
+        "helm_version": "feature-flags-chart-0.1.0", "replicas": 1, "desired_replicas": 1,
+        "updated_replicas": 1, "available_replicas": 1, "unavailable_replicas": 0, "available": True,
+        "rollout_status": "running", "rollout_detail": "1/1 ready"})
+    return jsonify({
+        'services': services,
+        'namespace': preprod_ns,
+        'cluster': os.environ.get('PROD_CLUSTER_API', '') or 'mock-prod-cluster',  # same cluster as Prod
+        'count': len(services),
+        'connected': True
+    })
+
 @app.route('/api/custom_components')
 def list_custom_components():
     return jsonify({'components': MOCK_CUSTOM_COMPONENTS, 'count': len(MOCK_CUSTOM_COMPONENTS)})
@@ -319,6 +344,13 @@ def _apply_auto_lock(board, persist=True):
     Returns is_past_cutoff.
     """
     changed = False
+    # Always recompute from the release date (fixes boards stored with an old,
+    # non-DST-aware cutoff, e.g. 1 PM EST instead of 2 PM)
+    if board.get('release_date'):
+        cutoff = _get_cutoff_for_release_date(board['release_date'])
+        if board.get('cutoff') != cutoff:
+            board['cutoff'] = cutoff
+            changed = True
     is_past_cutoff = datetime.datetime.utcnow().isoformat() > board.get('cutoff', '')
     status = board.get('status', 'open')
     if status != 'released':
@@ -1732,7 +1764,7 @@ def _mock_build_e2e_apps(board):
     nominated = {n: s for n, s in (board.get('services') or {}).items() if not s.get('is_custom')}
     nominated_apps = {_mock_image_app_name(s.get('image'), n) for n, s in nominated.items()}
     apps, details = {}, {}
-    for svc in MOCK_SERVICES:
+    for svc in list_prod_services().get_json()['services']:  # production versions
         name = svc['name']
         app_name = _mock_image_app_name(svc.get('image'), name)
         if name in nominated or app_name in nominated_apps or app_name in apps:

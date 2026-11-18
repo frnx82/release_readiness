@@ -66,9 +66,12 @@ def ensure_clean_board():
     # If auto-locked (past cutoff), unlock it and push cutoff forward
     if board.get('status') == 'locked':
         post('/api/release/unlock', {'unlocked_by': 'e2e-setup'})
-        # Push cutoff to next week so the board is truly "open" (not exception-only)
+        # Push cutoff to next week so the board is truly "open" (not exception-only).
+        # Use a FRIDAY (the release cadence) — today+7 is only a Friday on Fridays,
+        # and other tests assert release day == Friday / cutoff before release.
         import datetime
-        future = datetime.date.today() + datetime.timedelta(days=7)
+        today = datetime.date.today()
+        future = today + datetime.timedelta(days=((4 - today.weekday()) % 7) + 7)
         future_fv = f"P{future.strftime('%y.%m.%d')}"
         post('/api/release/fix_version', {
             'fix_version': future_fv,
@@ -146,10 +149,14 @@ def test_dates():
         # CUTOFF_HOUR=14 local (2 PM), CUTOFF_TZ_OFFSET=-4 → 18:00 UTC
         tz_offset = int(os.environ.get('CUTOFF_TZ_OFFSET', '-4'))
         cutoff_hour = int(os.environ.get('CUTOFF_HOUR', '14'))
-        expected_utc_hour = cutoff_hour - tz_offset
-        test(f'Cutoff hour is {expected_utc_hour}:00 UTC (hour {cutoff_hour} + offset {tz_offset} → {expected_utc_hour} UTC)',
+        # DST-aware: 14:00 America/New_York is 18:00 UTC (EDT) or 19:00 UTC (EST)
+        from zoneinfo import ZoneInfo
+        _tz = ZoneInfo(os.environ.get('CUTOFF_TZ', 'America/New_York'))
+        _local = datetime.datetime.combine(ct.date(), datetime.time(cutoff_hour, 0), tzinfo=_tz)
+        expected_utc_hour = _local.astimezone(datetime.timezone.utc).hour
+        test(f'Cutoff is {cutoff_hour}:00 {_tz.key} = {expected_utc_hour}:00 UTC on {ct.date()} (DST-aware)',
              ct.hour == expected_utc_hour,
-             f'got {ct.hour}:00 — TIMEZONE BUG if this fails!')
+             f'got {ct.hour}:00 UTC — TIMEZONE/DST BUG if this fails!')
         
     except ValueError:
         test('cutoff is valid ISO datetime', False, f'got: {cutoff}')
@@ -532,6 +539,19 @@ def test_services():
     # Prod services
     r = get('/api/prod/services')
     test('GET /api/prod/services returns 200', r.status_code == 200)
+
+    # PreProd services (PreProd Env tab)
+    r = get('/api/preprod/services')
+    test('GET /api/preprod/services returns 200', r.status_code == 200)
+    pp = r.json()
+    if pp.get('connected') is False:
+        warn('PreProd not configured — skipping PreProd content checks', pp.get('error', ''))
+    else:
+        pp_svcs = pp.get('services', [])
+        test('PreProd has services', len(pp_svcs) > 0, f'count={len(pp_svcs)}')
+        test('PreProd response has namespace + cluster', bool(pp.get('namespace')) and bool(pp.get('cluster')))
+        test('PreProd services have version fields',
+             all('image_tag' in s and 'helm_version' in s and 'kind' in s for s in pp_svcs))
     
     # Custom components
     r = get('/api/custom_components')

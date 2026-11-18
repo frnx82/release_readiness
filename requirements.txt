@@ -7,6 +7,7 @@ kubernetes>=28.0
 google-genai>=1.0
 google-auth>=2.0
 pyyaml>=6.0
+tzdata>=2024.1          # IANA time zones for zoneinfo (CUTOFF_TZ) on slim images
 requests>=2.31
 requests-kerberos>=0.15.0
 # NOTE: httpx and fastmcp are NOT included here — they conflict with gevent
