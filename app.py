@@ -3768,7 +3768,7 @@ def _get_prod_api_client():
     # reused by the PreProd Env tab (PreProd namespace on the prod cluster).
     # Connection timeout to prevent pod hang/OOM on unreachable clusters
     prod_config.connection_pool_maxsize = 4
-    prod_config.retries = 1
+    prod_config.retries = 0   # fail fast; _probe_cluster reports unreachable clusters
     # ── CRITICAL: Set socket-level timeouts to prevent indefinite hangs ──
     # Without these, an unreachable prod cluster will block the worker thread
     # forever, causing liveness probe failures and pod restarts (SIGTERM).
@@ -3840,6 +3840,69 @@ def _get_uat_api_client():
     return api_client_obj, None
 
 
+# ── Remote cluster reachability (fail fast, never hang a request) ────────────
+# (connect, read) seconds for every remote K8s list call. NOTE: setting
+# Configuration.connect_timeout/read_timeout does nothing in the kubernetes
+# client — only the per-call _request_timeout is honoured.
+_REMOTE_TIMEOUT = (float(os.getenv('REMOTE_CLUSTER_CONNECT_TIMEOUT', '4')),
+                   float(os.getenv('REMOTE_CLUSTER_READ_TIMEOUT', '15')))
+_UNREACHABLE_COOLDOWN = int(os.getenv('REMOTE_CLUSTER_RETRY_AFTER', '60'))  # seconds
+_unreachable_clusters = {}  # (host, namespace) -> (until_ts, message)
+
+
+class ClusterUnreachable(Exception):
+    """The cluster/namespace can't be read (network, auth, RBAC) — message is user-facing."""
+
+
+def _friendly_k8s_error(e):
+    if isinstance(e, client.exceptions.ApiException):
+        if e.status == 401:
+            return 'authentication failed (HTTP 401) — the token is invalid or expired'
+        if e.status == 403:
+            return 'access denied (HTTP 403) — the ServiceAccount has no read access to this namespace'
+        return f'API error HTTP {e.status} {e.reason or ""}'.strip()
+    text = f'{type(e).__name__}: {e}'
+    low = text.lower()
+    if 'timed out' in low or 'timeout' in low:
+        return 'connection timed out — the cluster is not reachable from this environment (firewall/network)'
+    if 'name or service not known' in low or 'nodename nor servname' in low or 'failed to resolve' in low:
+        return 'cluster hostname could not be resolved (DNS) from this environment'
+    if 'refused' in low:
+        return 'connection refused by the cluster API'
+    if 'ssl' in low or 'certificate' in low:
+        return 'SSL/certificate error — check *_CLUSTER_CA_CERT or *_CLUSTER_VERIFY_SSL'
+    return text[:200]
+
+
+def _probe_cluster(api_client, namespace, label='cluster'):
+    """One quick call to confirm the namespace is readable. Raises ClusterUnreachable
+    (fast) instead of letting 5 list calls each wait for a timeout. Failures are
+    remembered for _UNREACHABLE_COOLDOWN seconds so repeated clicks fail instantly."""
+    host = getattr(getattr(api_client, 'configuration', None), 'host', '') or 'local'
+    now = time.time()
+    # Network-level failures are cached per CLUSTER (every namespace is equally
+    # unreachable); auth/RBAC failures per NAMESPACE.
+    for key in ((host, '*'), (host, namespace)):
+        hit = _unreachable_clusters.get(key)
+        if hit and hit[0] > now:
+            raise ClusterUnreachable(f'{hit[1]} (last checked {int(_UNREACHABLE_COOLDOWN - (hit[0] - now))}s ago)')
+    try:
+        client.AppsV1Api(api_client).list_namespaced_deployment(
+            namespace, limit=1, _request_timeout=_REMOTE_TIMEOUT)
+    except Exception as e:
+        reason = _friendly_k8s_error(e)
+        network_level = not isinstance(e, client.exceptions.ApiException)
+        if network_level:
+            msg = f'Cannot reach the {label} cluster ({host}): {reason}'
+        else:
+            msg = f'Cannot read {label} namespace "{namespace}": {reason}'
+        _unreachable_clusters[(host, '*') if network_level else (host, namespace)] = (now + _UNREACHABLE_COOLDOWN, msg)
+        print(f'[remote] ❌ {msg}')
+        raise ClusterUnreachable(msg)
+    _unreachable_clusters.pop((host, namespace), None)
+    _unreachable_clusters.pop((host, '*'), None)
+
+
 def _list_services_from_api(api_client, namespace, log_prefix='[remote]'):
     """Shared helper to list Deployments/StatefulSets/DaemonSets from a K8s API client."""
     services = []
@@ -3848,11 +3911,14 @@ def _list_services_from_api(api_client, namespace, log_prefix='[remote]'):
     except Exception as e:
         print(f'{log_prefix} ❌ Failed to create AppsV1Api: {e}')
         raise
-    print(f'{log_prefix} API client ready, listing deployments in namespace={namespace}...')
+    print(f'{log_prefix} API client ready, listing workloads in namespace={namespace}...')
 
-    # Use _timeout_seconds on each K8s API call to prevent indefinite blocking.
-    # This is the server-side timeout — the K8s API server will abort after this.
-    _timeout_seconds = 15
+    # Fail fast if the cluster/namespace isn't reachable (raises ClusterUnreachable)
+    # instead of waiting for a timeout on each of the 5 list calls below.
+    _probe_cluster(api_client, namespace, log_prefix.strip('[]') or 'cluster')
+
+    # (connect, read) timeout on each K8s API call to prevent indefinite blocking.
+    _timeout_seconds = _REMOTE_TIMEOUT
 
     # Deployments
     try:
@@ -4003,7 +4069,10 @@ def list_prod_services():
     prod_api_url = os.environ.get('PROD_CLUSTER_API', '')
     print(f'[prod] Connecting to {prod_api_url}, namespace={prod_ns}')
     try:
-        services = _list_services_from_api(api_client, prod_ns, '[prod-remote]')
+        services = _list_services_from_api(api_client, prod_ns, '[prod]')
+    except ClusterUnreachable as e:
+        return jsonify({'error': str(e), 'services': [], 'namespace': prod_ns,
+                        'cluster': prod_api_url, 'connected': False})
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
@@ -4064,9 +4133,7 @@ def _build_remote_api_client(prefix, log_prefix):
     cfg = client.Configuration()
     cfg.host = api_url
     cfg.connection_pool_maxsize = 4
-    cfg.retries = 1
-    cfg.connect_timeout = 10   # never hang a worker on an unreachable cluster
-    cfg.read_timeout = 15
+    cfg.retries = 0   # fail fast; timeouts are per call (_REMOTE_TIMEOUT)
     ca_cert = os.environ.get(f'{prefix}_CLUSTER_CA_CERT', '')
     if ca_cert:
         cfg.ssl_ca_cert = ca_cert
@@ -4138,22 +4205,13 @@ def list_preprod_services():
 
     print(f'[preprod] Listing workloads on {cluster}, namespace={preprod_ns}')
     try:
-        # _list_services_from_api swallows per-kind errors, so probe access first
-        # to surface RBAC problems (403) instead of showing an empty namespace.
-        try:
-            client.AppsV1Api(api_client_obj).list_namespaced_deployment(
-                preprod_ns, limit=1, _request_timeout=15)
-        except client.exceptions.ApiException as e:
-            if e.status == 403:
-                return jsonify({'error': f'HTTP 403 Forbidden{_preprod_forbidden_hint(preprod_ns)}',
-                                'services': [], 'namespace': preprod_ns, 'cluster': cluster,
-                                'connected': False})
-            if e.status == 404:
-                return jsonify({'error': f'Namespace "{preprod_ns}" not found on {cluster}.',
-                                'services': [], 'namespace': preprod_ns, 'cluster': cluster,
-                                'connected': False})
-            raise
         services = _list_services_from_api(api_client_obj, preprod_ns, '[preprod]')
+    except ClusterUnreachable as e:
+        msg = str(e)
+        if 'HTTP 403' in msg:
+            msg += _preprod_forbidden_hint(preprod_ns)
+        return jsonify({'error': msg, 'services': [], 'namespace': preprod_ns,
+                        'cluster': cluster, 'connected': False})
     except Exception as e:
         detail = f' (HTTP {e.status})' if hasattr(e, 'status') else ''
         print(f'[preprod] ❌ Connection FAILED: {type(e).__name__}: {e}{detail}')
@@ -5284,11 +5342,10 @@ def export_apps_versions():
     if not board:
         return jsonify({'error': 'No release board found'}), 400
 
-    prod_services = _fetch_prod_services_internal()
-    if not prod_services:
+    prod_services, err = _fetch_prod_services_or_error()
+    if err:
         # Without prod data the file would silently contain only nominations.
-        return jsonify({'error': 'Could not read production services — check prod cluster connectivity '
-                                 '(PROD_CLUSTER_API / PROD_NAMESPACE).'}), 502
+        return jsonify({'error': err + _PROD_REQUIRED_HINT, 'prod_unavailable': True}), _PROD_UNAVAILABLE_STATUS
 
     apps = _build_apps_versions(board, prod_services)
     if not apps:
@@ -6508,32 +6565,52 @@ def _qa_prepare_in_progress_unlocked():
     return (datetime.datetime.utcnow() - started).total_seconds() < _QA_PREPARE_STALE_SECONDS
 
 
-def _fetch_prod_services_internal():
-    """Fetch production service list (reuses the prod cluster logic).
-    Returns a list of dicts: [{name, image, image_tag, kind, ...}]
+def _fetch_prod_services_or_error():
+    """Fetch production workloads for version.yaml generation.
+
+    Never raises and never hangs (fast-fail probe + per-call timeouts).
+    Returns (services, error_message). error_message is None on success.
     """
     prod_ns = os.environ.get('PROD_NAMESPACE', NAMESPACE)
-
     if DEPLOY_ENV == 'prod':
-        # We ARE in prod — read local cluster. Use _local_api_client (SA token
-        # injected as a default header); a bare client.ApiClient() hits the
-        # broken api_key path under gevent and gets 403 system:anonymous.
-        try:
-            return _list_services_from_api(_local_api_client or client.ApiClient(), prod_ns, '[qa-prod-local]')
-        except Exception as e:
-            print(f'[qa] Error reading local prod: {e}')
-            return []
+        api_client_obj, where = _local_api_client or client.ApiClient(), 'local production cluster'
     else:
-        # We're in UAT — connect remotely to prod
         try:
-            api_client, error = _get_prod_api_client()
-            if error:
-                print(f'[qa] Prod client error: {error}')
-                return []
-            return _list_services_from_api(api_client, prod_ns, '[qa-prod-remote]')
+            api_client_obj, err = _get_prod_api_client()
         except Exception as e:
-            print(f'[qa] Error connecting to prod: {e}')
-            return []
+            return [], f'Could not create the production cluster client: {_friendly_k8s_error(e)}'
+        if err:
+            return [], (f'Production cluster is not configured for this environment ({err}). '
+                        f'Non-nominated production versions cannot be included.')
+        where = os.environ.get('PROD_CLUSTER_API', 'production cluster')
+    try:
+        services = _list_services_from_api(api_client_obj, prod_ns, '[prod]')
+    except ClusterUnreachable as e:
+        return [], f'Production cluster is not reachable from {DEPLOY_ENV.upper()}: {e}'
+    except Exception as e:
+        return [], f'Error reading production services: {_friendly_k8s_error(e)}'
+    if not services:
+        return [], f'No workloads found in production namespace "{prod_ns}" on {where}.'
+    return services, None
+
+
+def _fetch_prod_services_internal():
+    """Fetch production service list (back-compat): [] on any error."""
+    services, err = _fetch_prod_services_or_error()
+    if err:
+        print(f'[qa] {err}')
+    return services
+
+
+_PROD_REQUIRED_HINT = (' The E2E/UAT version.yaml needs current production versions for every '
+                       'non-nominated app, so it was not generated (no partial file). Run this from an '
+                       'environment that can reach production, or use QA Step 5 "Download" for a '
+                       'nominated-only file.')
+
+# 424 Failed Dependency: a clear JSON error. Deliberately NOT 502/503/504 — ingress
+# controllers / gateways often replace those with their own HTML error page,
+# which would hide the explanation from the user.
+_PROD_UNAVAILABLE_STATUS = 424
 
 
 class _ProdUnavailable(Exception):
@@ -6548,10 +6625,9 @@ def _build_e2e_apps(board):
     silently contain only the nominations and the QA namespace would lose every
     other app).
     """
-    prod_services = _fetch_prod_services_internal()
-    if not prod_services:
-        raise _ProdUnavailable('Could not read production services — check prod cluster '
-                               'connectivity (PROD_CLUSTER_API / PROD_NAMESPACE).')
+    prod_services, err = _fetch_prod_services_or_error()
+    if err:
+        raise _ProdUnavailable(err + _PROD_REQUIRED_HINT)
     apps, details, conflicts = _build_apps_manifest(board, prod_services)
     nominated_count = sum(1 for d in details.values() if d['source'] == 'board')
     return {
@@ -6858,7 +6934,7 @@ def qa_version_yaml_download():
         try:
             content, used = _build_e2e_apps(board)['yaml'], 'fresh'
         except _ProdUnavailable as e:
-            return jsonify({'error': str(e)}), 502
+            return jsonify({'error': str(e), 'prod_unavailable': True}), _PROD_UNAVAILABLE_STATUS
 
     headers = {'X-Version-Source': used}
     if not request.args.get('inline'):
@@ -6911,7 +6987,7 @@ def qa_prepare():
     try:
         built = _build_e2e_apps(board)
     except _ProdUnavailable as e:
-        return jsonify({'error': str(e)}), 502
+        return jsonify({'error': str(e), 'prod_unavailable': True}), _PROD_UNAVAILABLE_STATUS
     except Exception as e:
         print(f'[qa] Error building version manifest: {e}')
         return jsonify({'error': f'Failed to build version manifest: {str(e)}'}), 500
@@ -7079,7 +7155,7 @@ def qa_drift_check():
         try:
             built = _build_e2e_apps(board)
         except _ProdUnavailable as e:
-            return jsonify({'error': str(e), 'drifts': []}), 502
+            return jsonify({'error': str(e), 'drifts': [], 'prod_unavailable': True}), _PROD_UNAVAILABLE_STATUS
         current_apps, details = built['apps'], built['details']
 
         # Fetch the existing e2e version.yaml from GitHub (new or legacy format)

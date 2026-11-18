@@ -21,6 +21,24 @@ app = Flask(__name__)
 app.secret_key = 'mock-secret-key-for-sessions'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
+# Set MOCK_PROD_UNREACHABLE=1 to simulate UAT without network access to the prod
+# cluster (Prod/PreProd tabs + every version.yaml generator show a clear message).
+_MOCK_PROD_ERR = ('Cannot read prod namespace "prod-namespace": connection timed out — the cluster '
+                  'is not reachable from this environment (firewall/network)')
+_MOCK_PROD_REQUIRED_HINT = (' The E2E/UAT version.yaml needs current production versions for every '
+                            'non-nominated app, so it was not generated (no partial file). Run this from an '
+                            'environment that can reach production, or use QA Step 5 "Download" for a '
+                            'nominated-only file.')
+
+
+def _mock_prod_unreachable():
+    return os.environ.get('MOCK_PROD_UNREACHABLE', '').lower() in ('1', 'true', 'yes')
+
+
+def _mock_prod_unavailable_response():
+    return jsonify({'error': f'Production cluster is not reachable from UAT: {_MOCK_PROD_ERR}.'
+                             + _MOCK_PROD_REQUIRED_HINT, 'prod_unavailable': True}), 424
+
 # ── Fake services (simulates a K8s cluster with various workload types) ───────
 MOCK_SERVICES = [
     {"name":"billing-service","kind":"Deployment","image":"registry.example.com/billing:v2.3.3","image_tag":"v2.3.3","helm_version":"billing-chart-0.5.0","replicas":3,"desired_replicas":3,"updated_replicas":3,"available_replicas":3,"unavailable_replicas":0,"available":True,"rollout_status":"running","rollout_detail":"3/3 ready"},
@@ -243,6 +261,9 @@ def list_prod_services():
     In production, this connects to PROD_CLUSTER_API using PROD_CLUSTER_TOKEN."""
     prod_api = os.environ.get('PROD_CLUSTER_API', '')
     prod_ns = os.environ.get('PROD_NAMESPACE', 'prod-namespace')
+    if _mock_prod_unreachable():
+        return jsonify({'services': [], 'namespace': prod_ns, 'cluster': prod_api or 'mock-prod-cluster',
+                        'count': 0, 'connected': False, 'error': _MOCK_PROD_ERR})
     # Simulate prod services — same set but some with older versions to show drift
     prod_services = []
     for svc in MOCK_SERVICES:
@@ -276,6 +297,11 @@ def list_preprod_services():
       • feature-flags-svc                 → only exists in PreProd (not in Prod)
     """
     preprod_ns = os.environ.get('PREPROD_NAMESPACE', 'preprod-namespace')
+    if _mock_prod_unreachable():
+        return jsonify({'services': [], 'namespace': preprod_ns, 'cluster': 'mock-prod-cluster',
+                        'count': 0, 'connected': False,
+                        'error': _MOCK_PROD_ERR.replace('prod namespace "prod-namespace"',
+                                                        f'preprod namespace "{preprod_ns}"')})
     prod = {s['name']: s for s in list_prod_services().get_json()['services']}
     staged = {'billing-service', 'notification-svc'}
     services = []
@@ -741,6 +767,8 @@ def export_apps_versions():
     Same builder (and therefore the exact same file) as QA → Prepare E2E /
     Download version.yaml: apps keyed by IMAGE name, image_version + helm_version.
     """
+    if _mock_prod_unreachable():
+        return _mock_prod_unavailable_response()
     board = _read_board()
     if not board:
         return jsonify({'error': 'No release board found'}), 400
@@ -1818,6 +1846,8 @@ def qa_version_yaml_download():
         return jsonify({'error': f'No {target} version.yaml has been pushed for this release yet.'}), 404
     if source in ('pushed', 'auto') and pushed_ok:
         content, used = _qa_state[key], 'pushed'
+    elif target == 'e2e' and _mock_prod_unreachable():
+        return _mock_prod_unavailable_response()
     elif target == 'prod':
         built = _mock_build_prod_apps(board)
         if not built['apps']:
@@ -1835,6 +1865,8 @@ def qa_version_yaml_download():
 @app.route('/api/qa/prepare', methods=['POST'])
 def qa_prepare():
     """Mock: Generate version.yaml (apps format), push to e2e and open a PR to uat."""
+    if _mock_prod_unreachable():
+        return _mock_prod_unavailable_response()
     board = _read_board()
     if not board:
         return jsonify({'error': 'No active release board'}), 400
@@ -1908,6 +1940,8 @@ def qa_prepare_status():
 @app.route('/api/qa/drift-check', methods=['POST'])
 def qa_drift_check():
     """Mock: Compare current board+prod against E2E version.yaml."""
+    if _mock_prod_unreachable():
+        return _mock_prod_unavailable_response()
     if _qa_state['status'] != 'e2e_pushed':
         return jsonify({'error': 'E2E environment not prepared yet. Run "Prepare E2E" first.'}), 400
 
