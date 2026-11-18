@@ -764,6 +764,30 @@ def test_qa():
     
     r = get('/api/qa/prepare/status')
     test('QA prepare status returns 200', r.status_code == 200)
+    st = r.json()
+    test('QA status reports a UAT pull request', st.get('uat_pr_status') in ('created', 'updated', 'up_to_date')
+         and (st.get('uat_pr_url') or st.get('uat_pr_status') == 'up_to_date'), f'status={st.get("uat_pr_status")}')
+    apps_rows = st.get('apps', [])
+    test('QA status includes apps preview', len(apps_rows) > 0, f'count={len(apps_rows)}')
+    test('Apps preview rows have image_version + helm_version',
+         all('image_version' in a and 'helm_version' in a for a in apps_rows))
+
+    # version.yaml download — minimal `apps:` format only
+    import yaml as _yaml
+    r = get('/api/qa/version-yaml')
+    test('Download version.yaml returns 200', r.status_code == 200, f'status={r.status_code}')
+    test('Download is an attachment', 'attachment' in r.headers.get('Content-Disposition', ''))
+    doc = _yaml.safe_load(r.text) if r.status_code == 200 else {}
+    test('version.yaml has ONLY the apps key', list((doc or {}).keys()) == ['apps'], f'keys={list((doc or {}).keys())}')
+    apps_doc = (doc or {}).get('apps', {})
+    test('Each app has exactly image_version + helm_version',
+         bool(apps_doc) and all(set(v) == {'image_version', 'helm_version'} for v in apps_doc.values()))
+    test('App keys are image names (billing-service image → "billing")', 'billing' in apps_doc,
+         f'keys sample={sorted(apps_doc)[:5]}')
+    test('Downloaded file is the pushed one', r.headers.get('X-Version-Source') == 'pushed')
+    r = get('/api/qa/version-yaml?source=fresh&inline=1')
+    test('Fresh inline preview returns 200 without attachment',
+         r.status_code == 200 and 'attachment' not in r.headers.get('Content-Disposition', ''))
     
     r = get('/api/qa/env/services')
     test('QA env services returns 200', r.status_code == 200)
@@ -775,6 +799,17 @@ def test_qa():
     # This may return 400 if QA state hasn't reached 'e2e_pushed' — that's valid behavior
     test('QA prepare-prod returns 200 or 400 (state check)',
          r.status_code in (200, 400), f'status={r.status_code}')
+    if r.status_code == 200:
+        board_now = get('/api/release/current').json()
+        k8s_noms = [n for n, s in board_now.get('services', {}).items() if not s.get('is_custom')]
+        test('Prod push contains only nominated apps', r.json().get('total') == len(k8s_noms),
+             f"total={r.json().get('total')}, nominated={len(k8s_noms)}")
+        r = get('/api/qa/version-yaml?target=prod')
+        doc = _yaml.safe_load(r.text) if r.status_code == 200 else {}
+        test('Prod version.yaml download returns 200', r.status_code == 200, f'status={r.status_code}')
+        test('Prod version.yaml has ONLY the apps key', list((doc or {}).keys()) == ['apps'])
+        test('Prod version.yaml has only nominated apps', len((doc or {}).get('apps', {})) == len(k8s_noms))
+        test('Prod download filename has -prod suffix', '-prod-' in r.headers.get('Content-Disposition', ''))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

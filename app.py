@@ -61,6 +61,11 @@ QA_TEST_WORKFLOWS    = {
     'e2e':        os.getenv('QA_TEST_E2E_WORKFLOW', 'e2e-tests.yml'),
     'regression': os.getenv('QA_TEST_REGRESSION_WORKFLOW', 'regression-tests.yml'),
 }
+QA_VERSION_FILE      = os.getenv('QA_VERSION_FILE', 'version.yaml')     # File path in QA_DEPLOY_REPO
+QA_E2E_BRANCH        = os.getenv('QA_E2E_BRANCH', 'e2e')                # Pushed directly (ArgoCD syncs QA ns)
+QA_UAT_BRANCH        = os.getenv('QA_UAT_BRANCH', 'uat')                # Gets a Pull Request (reviewed merge)
+QA_UAT_PR_ENABLED    = os.getenv('QA_UAT_PR_ENABLED', 'true').lower() not in ('false', '0', 'no')
+QA_UAT_PR_BRANCH_PREFIX = os.getenv('QA_UAT_PR_BRANCH_PREFIX', 'release-readiness/uat-')
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Jira Configuration
@@ -2365,16 +2370,18 @@ try:
 except ImportError:  # pragma: no cover (non-POSIX)
     _fcntl = None
 _board_mutex = threading.Lock()
+_qa_state_mutex = threading.Lock()
 
 
 @_contextlib.contextmanager
-def _board_lock(timeout=15.0):
-    with _board_mutex:
+def _interprocess_lock(mutex, lock_name, timeout=15.0):
+    """In-process mutex + cross-worker flock on BOARD_DATA_DIR/<lock_name>."""
+    with mutex:
         fh = None
         if _fcntl is not None:
             try:
                 os.makedirs(BOARD_DATA_DIR, exist_ok=True)
-                fh = open(os.path.join(BOARD_DATA_DIR, '.board.lock'), 'a+')
+                fh = open(os.path.join(BOARD_DATA_DIR, lock_name), 'a+')
                 deadline = time.time() + timeout
                 while True:
                     try:
@@ -2382,11 +2389,11 @@ def _board_lock(timeout=15.0):
                         break
                     except BlockingIOError:
                         if time.time() > deadline:
-                            print('[storage] ⚠️  Board lock timeout — proceeding without cross-worker lock')
+                            print(f'[storage] ⚠️  {lock_name} timeout — proceeding without cross-worker lock')
                             break
                         time.sleep(0.05)
             except OSError as e:
-                print(f'[storage] ⚠️  Board lock unavailable ({e}) — proceeding')
+                print(f'[storage] ⚠️  {lock_name} unavailable ({e}) — proceeding')
         try:
             yield
         finally:
@@ -2396,6 +2403,17 @@ def _board_lock(timeout=15.0):
                 except OSError:
                     pass
                 fh.close()
+
+
+def _board_lock(timeout=15.0):
+    return _interprocess_lock(_board_mutex, '.board.lock', timeout)
+
+
+def _qa_state_lock(timeout=15.0):
+    # Separate from the board lock so QA-state writes can never deadlock with
+    # code that is already holding the (non-reentrant) board lock.
+    return _interprocess_lock(_qa_state_mutex, '.qa_state.lock', timeout)
+
 
 def _board_update(mutator):
     """Re-read the CURRENT board under the lock, apply mutator(board), write it.
@@ -5017,42 +5035,111 @@ def _chart_version_only(helm_value):
     return m.group(1) if m else helm_value
 
 
-def _build_apps_versions(board, prod_services):
-    """Merge board nominations with non-nominated prod services.
+_YAML_PLAIN_KEY_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 
-    Returns {app_name: {'image_version': str, 'helm_version': str}}.
-    Board nominations win over prod. Custom (non-K8s) components are skipped
-    because they have no image/helm chart to deploy.
+
+def _image_app_name(image, fallback=''):
+    """App name = image name: last path segment of the image, without tag/digest.
+
+    registry.example.com/team/billing:v2.3.3        -> billing
+    registry:5000/payments/payment-gw@sha256:abc...  -> payment-gw
+    Falls back to `fallback` (the workload name) when there is no image.
     """
-    apps = {}
+    if not image:
+        return fallback
+    ref = str(image).strip().split('@', 1)[0]
+    last = ref.rsplit('/', 1)[-1]
+    return last.split(':', 1)[0] or fallback
+
+
+def _build_apps_manifest(board, prod_services):
+    """Merge board nominations with non-nominated prod workloads, keyed by IMAGE name.
+
+    Returns (apps, details, conflicts):
+      apps      {app_name: {'image_version': str, 'helm_version': str}}  — what goes in the YAML
+      details   {app_name: {'source': 'board'|'production', 'workloads': [...], 'kind': str}}
+      conflicts [str]  — two workloads sharing one image name with different versions
+    Board nominations win over prod. Custom (non-K8s) components are skipped
+    because they have no container image / helm chart to deploy.
+    """
+    apps, details, conflicts = {}, {}, []
     nominated = {name: svc for name, svc in (board.get('services') or {}).items()
                  if not svc.get('is_custom')}
+    nominated_apps = {_image_app_name(svc.get('image'), name) for name, svc in nominated.items()}
+
+    def _put(app_name, entry, source, workload, kind):
+        cur = details.get(app_name)
+        if cur is None or (cur['source'] == 'production' and source == 'board'):
+            apps[app_name] = entry           # new app, or a nomination overriding prod
+            details[app_name] = {'source': source, 'workloads': [workload], 'kind': kind}
+        elif cur['source'] == 'board' and source == 'production':
+            return                           # nomination already set this app
+        else:                                # same source, same image name
+            cur['workloads'].append(workload)
+            if apps[app_name] != entry:
+                conflicts.append(
+                    f"{app_name}: {cur['workloads'][0]} ({apps[app_name]['image_version']}) vs "
+                    f"{workload} ({entry['image_version']}) — kept {cur['workloads'][0]}")
 
     for svc in prod_services or []:
         name = svc.get('name')
         if not name or name in nominated:
             continue
-        apps[name] = {
+        app_name = _image_app_name(svc.get('image'), name)
+        if app_name in nominated_apps:
+            continue  # same image is being released via the board
+        _put(app_name, {
             'image_version': svc.get('image_tag') or '',
             'helm_version': _chart_version_only(svc.get('helm_version')),
-        }
+        }, 'production', name, svc.get('kind', 'Deployment'))
 
     for name, svc in nominated.items():
-        apps[name] = {
+        _put(_image_app_name(svc.get('image'), name), {
             'image_version': svc.get('image_tag') or svc.get('version') or '',
             'helm_version': _chart_version_only(svc.get('helm_version')),
-        }
-    return apps
+        }, 'board', name, svc.get('kind', 'Deployment'))
+    return apps, details, conflicts
+
+
+def _build_apps_versions(board, prod_services):
+    """Back-compat wrapper: just the `apps` dict (see _build_apps_manifest)."""
+    return _build_apps_manifest(board, prod_services)[0]
 
 
 def _format_apps_yaml(apps):
-    """Render apps dict as the minimal `apps:` YAML (sorted, values double-quoted)."""
+    """Render apps dict as the minimal `apps:` YAML (sorted, values double-quoted).
+
+    apps:
+      billing:
+        image_version: "v2.4.1"
+        helm_version: "0.6.0"
+    """
     lines = ['apps:']
     for name in sorted(apps):
-        lines.append(f'  {name}:')
+        key = name if _YAML_PLAIN_KEY_RE.match(name) else json.dumps(name)
+        lines.append(f'  {key}:')
         lines.append(f'    image_version: {json.dumps(apps[name]["image_version"])}')
         lines.append(f'    helm_version: {json.dumps(apps[name]["helm_version"])}')
     return '\n'.join(lines) + '\n'
+
+
+def _normalize_version_doc(doc):
+    """Parse a version.yaml (new `apps:` format or legacy `services:` format)
+    into {app_name: {'image_version', 'helm_version'}} for comparisons."""
+    if not isinstance(doc, dict):
+        return {}
+    if isinstance(doc.get('apps'), dict):
+        return {str(k): {'image_version': str((v or {}).get('image_version') or ''),
+                         'helm_version': str((v or {}).get('helm_version') or '')}
+                for k, v in doc['apps'].items()}
+    out = {}
+    for name, svc in (doc.get('services') or {}).items():  # legacy verbose format
+        svc = svc or {}
+        out[_image_app_name(svc.get('image'), name)] = {
+            'image_version': str(svc.get('image_tag') or ''),
+            'helm_version': _chart_version_only(svc.get('helm_version')),
+        }
+    return out
 
 
 @app.route('/api/release/export/apps')
@@ -6114,16 +6201,16 @@ def deploy_history():
 # ══════════════════════════════════════════════════════════════════════════════
 
 # In-memory state for QA flow progress
-_qa_state = {
+_QA_STATE_DEFAULTS = {
     'status': 'idle',        # idle | preparing | e2e_pushed | error
     'e2e_commit_url': None,
-    'version_manifest': None,
     'error': None,
     'nominated_count': 0,
     'prod_count': 0,
     'total_count': 0,
     'prepared_at': None,
     'prepared_by': None,
+    'release_date': None,    # release the state belongs to (reset when the cycle changes)
     # Prod/preprod tracking
     'prod_status': 'idle',   # idle | pushing | pushed | error
     'prod_commit_url': None,
@@ -6132,6 +6219,158 @@ _qa_state = {
     'prod_pushed_at': None,
     'prod_pushed_by': None,
 }
+
+
+class _SharedQAState(dict):
+    """QA workflow state shared by ALL gunicorn workers (Dockerfile runs -w 2).
+
+    It used to be a plain in-memory dict, so each worker had its own copy: the
+    background push ran in worker A while the UI's status polls could land on
+    worker B (which still said 'idle') → "taking longer than expected", and
+    downloads could miss the pushed file. Now the state lives in
+    BOARD_DATA_DIR/qa_state.json:
+      • reads reload the file whenever it changed (mtime check — cheap)
+      • every mutation does reload → apply → atomic write, under the board lock
+        file, so the two workers never clobber each other's fields.
+    Existing code keeps using it like a dict (`_qa_state['x'] = y`, `.update()`).
+    """
+
+    def __init__(self, defaults):
+        super().__init__(defaults)
+        self._defaults = dict(defaults)
+        self._mtime = None
+
+    @property
+    def _path(self):
+        return os.path.join(BOARD_DATA_DIR, 'qa_state.json')
+
+    def _reload(self, force=False):
+        try:
+            mtime = os.path.getmtime(self._path)
+        except OSError:
+            return
+        if not force and mtime == self._mtime:
+            return
+        try:
+            with open(self._path) as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                dict.clear(self)
+                dict.update(self, self._defaults)
+                dict.update(self, data)
+                self._mtime = mtime
+        except Exception as e:
+            print(f'[qa] Could not read shared QA state: {e}')
+
+    def _save(self):
+        try:
+            os.makedirs(BOARD_DATA_DIR, exist_ok=True)
+            tmp = f'{self._path}.{os.getpid()}.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(dict(self), f, default=str)
+            os.replace(tmp, self._path)  # atomic
+            self._mtime = os.path.getmtime(self._path)
+        except Exception as e:
+            print(f'[qa] Could not persist shared QA state: {e}')
+
+    def _mutate(self, fn):
+        with _qa_state_lock():
+            self._reload(force=True)
+            fn()
+            self._save()
+
+    # ── reads ──
+    def __getitem__(self, key):
+        self._reload()
+        return dict.__getitem__(self, key)
+
+    def get(self, key, default=None):
+        self._reload()
+        return dict.get(self, key, default)
+
+    def snapshot(self):
+        self._reload()
+        return dict(self)
+
+    # ── writes ──
+    def __setitem__(self, key, value):
+        self._mutate(lambda: dict.__setitem__(self, key, value))
+
+    def update(self, *args, **kwargs):
+        self._mutate(lambda: dict.update(self, *args, **kwargs))
+
+    def pop(self, key, *default):
+        out = []
+        self._mutate(lambda: out.append(dict.pop(self, key, *default)))
+        return out[0]
+
+    def clear(self):
+        self._mutate(lambda: dict.clear(self))
+
+    def reset(self, **overrides):
+        """Back to defaults (e.g. a new release cycle started)."""
+        def _do():
+            dict.clear(self)
+            dict.update(self, self._defaults)
+            dict.update(self, overrides)
+        self._mutate(_do)
+
+
+_qa_state = _SharedQAState(_QA_STATE_DEFAULTS)
+_QA_PREPARE_STALE_SECONDS = 10 * 60  # a 'preparing' job older than this is treated as dead
+
+
+def _qa_state_for_board(board):
+    """Return the shared QA state, resetting it if it belongs to an older release
+    (otherwise last week's "E2E prepared / PR opened" would show on the new board)."""
+    rd = (board or {}).get('release_date')
+    if rd and _qa_state.get('release_date') not in (None, rd) and _qa_state.get('status') != 'preparing':
+        print(f"[qa] QA state was for release {_qa_state.get('release_date')} — resetting for {rd}")
+        _qa_state.reset(release_date=rd)
+    return _qa_state
+
+
+def _qa_prepare_in_progress():
+    """True if another request (on any worker) is currently preparing."""
+    if _qa_state.get('status') != 'preparing':
+        return False
+    started = _qa_state.get('preparing_started_at') or ''
+    try:
+        age = (datetime.datetime.utcnow() - datetime.datetime.fromisoformat(started)).total_seconds()
+    except (TypeError, ValueError):
+        return False
+    return age < _QA_PREPARE_STALE_SECONDS
+
+
+def _qa_try_start_prepare(release_date, uat_pr_status):
+    """Atomically (across workers) claim the 'preparing' slot. Returns False if
+    another prepare is already running."""
+    started = []
+
+    def _do():
+        if _qa_prepare_in_progress_unlocked():
+            return
+        dict.update(_qa_state, {
+            'status': 'preparing', 'error': None,
+            'preparing_started_at': datetime.datetime.utcnow().isoformat(),
+            'release_date': release_date,
+            'uat_pr_status': uat_pr_status,
+            'uat_pr_url': None, 'uat_pr_number': None, 'uat_pr_error': None,
+        })
+        started.append(True)
+    _qa_state._mutate(_do)
+    return bool(started)
+
+
+def _qa_prepare_in_progress_unlocked():
+    """Same as _qa_prepare_in_progress but reads the dict directly (caller holds the lock)."""
+    if dict.get(_qa_state, 'status') != 'preparing':
+        return False
+    try:
+        started = datetime.datetime.fromisoformat(dict.get(_qa_state, 'preparing_started_at') or '')
+    except (TypeError, ValueError):
+        return False
+    return (datetime.datetime.utcnow() - started).total_seconds() < _QA_PREPARE_STALE_SECONDS
 
 
 def _fetch_prod_services_internal():
@@ -6162,69 +6401,69 @@ def _fetch_prod_services_internal():
             return []
 
 
-def _build_version_manifest(board, change_ticket=None):
-    """Build a version manifest dict from board nominations + prod services.
-    Returns (manifest_dict, nominated_count, prod_count).
+class _ProdUnavailable(Exception):
+    """Prod services could not be read — an E2E version.yaml would be incomplete."""
+
+
+def _build_e2e_apps(board):
+    """Build the E2E `apps:` manifest: board nominations + non-nominated prod versions.
+
+    Returns dict with apps, details, conflicts, nominated_count, prod_count, yaml.
+    Raises _ProdUnavailable if production can't be read (otherwise the file would
+    silently contain only the nominations and the QA namespace would lose every
+    other app).
     """
-    # Get nominated services from board
-    nominated = {}
-    for svc_name, svc_data in board.get('services', {}).items():
-        nominated[svc_name] = {
-            'image': svc_data.get('image', ''),
-            'image_tag': svc_data.get('image_tag', svc_data.get('version', '')),
-            'kind': svc_data.get('kind', 'Deployment'),
-            'source': 'board',
-            'nominated_by': svc_data.get('nominated_by', ''),
-        }
-
-    # Get prod services
     prod_services = _fetch_prod_services_internal()
-
-    # Merge: board nominations + non-nominated prod versions
-    version_manifest = {}
-    if change_ticket:
-        version_manifest['change_ticket'] = change_ticket
-    version_manifest['release_date'] = board.get('release_date', '')
-    version_manifest['qa_namespace'] = QA_NAMESPACE
-    version_manifest['generated_at'] = datetime.datetime.utcnow().isoformat()
-    version_manifest['services'] = {}
-
-    for svc in prod_services:
-        svc_name = svc['name']
-        if svc_name in nominated:
-            version_manifest['services'][svc_name] = nominated[svc_name]
-        else:
-            version_manifest['services'][svc_name] = {
-                'image': svc.get('image', ''),
-                'image_tag': svc.get('image_tag', ''),
-                'kind': svc.get('kind', 'Deployment'),
-                'source': 'production',
-            }
-
-    # Also add any board nominations not found in prod (new services)
-    for svc_name, svc_data in nominated.items():
-        if svc_name not in version_manifest['services']:
-            version_manifest['services'][svc_name] = svc_data
-
-    prod_count = len(version_manifest['services']) - len(nominated)
-    return version_manifest, len(nominated), max(prod_count, 0)
+    if not prod_services:
+        raise _ProdUnavailable('Could not read production services — check prod cluster '
+                               'connectivity (PROD_CLUSTER_API / PROD_NAMESPACE).')
+    apps, details, conflicts = _build_apps_manifest(board, prod_services)
+    nominated_count = sum(1 for d in details.values() if d['source'] == 'board')
+    return {
+        'apps': apps,
+        'details': details,
+        'conflicts': conflicts,
+        'nominated_count': nominated_count,
+        'prod_count': len(apps) - nominated_count,
+        'yaml': _format_apps_yaml(apps),
+    }
 
 
-def _push_version_yaml(version_yaml_content, branch, commit_message):
-    """Push version.yaml to a specific branch in QA_DEPLOY_REPO.
+def _apps_preview(apps, details):
+    """Flat list for the UI preview table (board first, then alphabetical)."""
+    rows = [{
+        'app': name,
+        'image_version': apps[name]['image_version'],
+        'helm_version': apps[name]['helm_version'],
+        'source': details.get(name, {}).get('source', 'production'),
+        'workloads': details.get(name, {}).get('workloads', []),
+        'kind': details.get(name, {}).get('kind', ''),
+    } for name in apps]
+    rows.sort(key=lambda r: (r['source'] != 'board', r['app']))
+    return rows
 
-    Creates the branch from default branch if it doesn't exist.
-    Returns dict with commit_url, or error.
+
+def _repo_owner_name():
+    if not QA_DEPLOY_REPO or '/' not in QA_DEPLOY_REPO:
+        raise ValueError(f'Invalid QA_DEPLOY_REPO format: "{QA_DEPLOY_REPO}" (expected org/repo)')
+    return QA_DEPLOY_REPO.split('/', 1)
+
+
+def _push_version_yaml(version_yaml_content, branch, commit_message, create_branch=True):
+    """Push version.yaml (QA_VERSION_FILE) to a specific branch in QA_DEPLOY_REPO.
+
+    Creates the branch from the default branch if it doesn't exist (unless
+    create_branch=False). Returns dict with commit_url, or error.
     """
     if not QA_DEPLOY_REPO:
         return {'error': 'QA_DEPLOY_REPO not configured'}
 
     try:
-        owner, repo = QA_DEPLOY_REPO.split('/', 1)
-    except ValueError:
-        return {'error': f'Invalid QA_DEPLOY_REPO format: "{QA_DEPLOY_REPO}"'}
+        owner, repo = _repo_owner_name()
+    except ValueError as e:
+        return {'error': str(e)}
 
-    file_path = 'version.yaml'
+    file_path = QA_VERSION_FILE
 
     # Pre-flight: check if the token is actually valid
     token = get_gh_token()
@@ -6232,45 +6471,47 @@ def _push_version_yaml(version_yaml_content, branch, commit_message):
         return {'error': 'GitHub token is empty — session may have expired. Please re-login.'}
 
     try:
-        # 1. Get default branch SHA
-        repo_info = _github_get(f'/repos/{owner}/{repo}')
-        default_branch = repo_info.get('default_branch', 'main')
-        main_ref = _github_get(f'/repos/{owner}/{repo}/git/ref/heads/{default_branch}')
-        main_sha = main_ref['object']['sha']
+        if create_branch:
+            # 1. Get default branch SHA
+            repo_info = _github_get(f'/repos/{owner}/{repo}')
+            default_branch = repo_info.get('default_branch', 'main')
+            main_ref = _github_get(f'/repos/{owner}/{repo}/git/ref/heads/{default_branch}')
+            main_sha = main_ref['object']['sha']
 
-        # 2. Create or update branch
-        try:
-            _github_get(f'/repos/{owner}/{repo}/git/ref/heads/{branch}')
-            # Branch exists — keep it (don't force-reset for prod/preprod)
-            print(f'[qa] Branch {branch} exists')
-        except Exception:
-            # Branch doesn't exist — create it
-            _github_post(f'/repos/{owner}/{repo}/git/refs', {
-                'ref': f'refs/heads/{branch}',
-                'sha': main_sha
-            })
-            print(f'[qa] Created {branch} branch from {default_branch} ({main_sha[:8]})')
+            # 2. Create branch if missing
+            try:
+                _github_get(f'/repos/{owner}/{repo}/git/ref/heads/{branch}')
+                # Branch exists — keep it (don't force-reset for prod/preprod)
+                print(f'[qa] Branch {branch} exists')
+            except Exception:
+                r = _github_post(f'/repos/{owner}/{repo}/git/refs', {
+                    'ref': f'refs/heads/{branch}',
+                    'sha': main_sha
+                })
+                if r.status_code not in (200, 201):
+                    return {'error': f'Could not create branch {branch}: HTTP {r.status_code} {r.text[:200]}'}
+                print(f'[qa] Created {branch} branch from {default_branch} ({main_sha[:8]})')
 
         # 3. Create/update version.yaml on the branch
         existing_sha = None
         try:
             check_resp = gh_http.get(
-                f'{GITHUB_API}/repos/{owner}/{repo}/contents/{file_path}?ref={branch}',
-                headers=_github_headers(), timeout=(5, 10)
+                f'{GITHUB_API}/repos/{owner}/{repo}/contents/{file_path}',
+                params={'ref': branch}, headers=_github_headers(), timeout=(5, 10)
             )
             if check_resp.status_code == 200:
                 ct = check_resp.headers.get('content-type', '')
                 if 'application/json' in ct or 'application/vnd.github' in ct:
                     existing_sha = check_resp.json().get('sha')
-                    print(f'[qa] Found existing version.yaml on {branch} (sha={existing_sha[:8]})')
+                    print(f'[qa] Found existing {file_path} on {branch} (sha={existing_sha[:8]})')
                 else:
-                    print(f'[qa] version.yaml check returned non-JSON (content-type: {ct}) — will create fresh')
+                    print(f'[qa] {file_path} check returned non-JSON (content-type: {ct}) — will create fresh')
             elif check_resp.status_code == 401:
                 return {'error': 'GitHub token expired or revoked. Please re-login.'}
             else:
-                print(f'[qa] version.yaml not found on {branch} branch (HTTP {check_resp.status_code}) — will create fresh')
+                print(f'[qa] {file_path} not found on {branch} branch (HTTP {check_resp.status_code}) — will create fresh')
         except Exception:
-            print(f'[qa] Could not check version.yaml on {branch} — will create fresh')
+            print(f'[qa] Could not check {file_path} on {branch} — will create fresh')
 
         payload = {
             'message': commit_message,
@@ -6287,7 +6528,7 @@ def _push_version_yaml(version_yaml_content, branch, commit_message):
         if put_resp.status_code == 401:
             return {'error': 'GitHub token expired or revoked. Please re-login.'}
         if put_resp.status_code not in (200, 201):
-            return {'error': f'Failed to push version.yaml: {put_resp.status_code} {put_resp.text[:200]}'}
+            return {'error': f'Failed to push {file_path}: {put_resp.status_code} {put_resp.text[:200]}'}
 
         # Safe JSON parse for the commit response
         ct = put_resp.headers.get('content-type', '')
@@ -6297,7 +6538,7 @@ def _push_version_yaml(version_yaml_content, branch, commit_message):
             print(f'[qa] Push succeeded (HTTP {put_resp.status_code}) but response is not JSON — commit URL unavailable')
             commit_data = {}
         commit_url = (commit_data.get('commit') or {}).get('html_url', '')
-        print(f'[qa] Pushed version.yaml to {branch} branch')
+        print(f'[qa] Pushed {file_path} to {branch} branch')
 
         return {'commit_url': commit_url, 'branch': branch}
 
@@ -6312,35 +6553,192 @@ def _push_version_yaml(version_yaml_content, branch, commit_message):
         return {'error': str(e)}
 
 
-def _fetch_version_yaml_from_branch(branch):
-    """Fetch and parse version.yaml from a branch in QA_DEPLOY_REPO.
-    Returns parsed dict or None.
-    """
+def _fetch_version_text_from_branch(branch):
+    """Return the raw text of QA_VERSION_FILE on a branch, or None."""
     if not QA_DEPLOY_REPO:
         return None
     try:
-        owner, repo = QA_DEPLOY_REPO.split('/', 1)
+        owner, repo = _repo_owner_name()
         resp = gh_http.get(
-            f'{GITHUB_API}/repos/{owner}/{repo}/contents/version.yaml?ref={branch}',
-            headers=_github_headers(), timeout=(5, 10)
+            f'{GITHUB_API}/repos/{owner}/{repo}/contents/{QA_VERSION_FILE}',
+            params={'ref': branch}, headers=_github_headers(), timeout=(5, 10)
         )
         if resp.status_code != 200:
-            print(f'[qa] version.yaml not found on {branch} (HTTP {resp.status_code})')
+            print(f'[qa] {QA_VERSION_FILE} not found on {branch} (HTTP {resp.status_code})')
             return None
-        content = base64.b64decode(resp.json().get('content', '')).decode('utf-8')
-        return yaml.safe_load(content)
+        return base64.b64decode(resp.json().get('content', '')).decode('utf-8')
     except Exception as e:
-        print(f'[qa] Could not fetch version.yaml from {branch}: {e}')
+        print(f'[qa] Could not fetch {QA_VERSION_FILE} from {branch}: {e}')
         return None
+
+
+def _fetch_version_yaml_from_branch(branch):
+    """Fetch and parse QA_VERSION_FILE from a branch in QA_DEPLOY_REPO.
+    Returns parsed dict or None.
+    """
+    text = _fetch_version_text_from_branch(branch)
+    if text is None:
+        return None
+    try:
+        return yaml.safe_load(text)
+    except Exception as e:
+        print(f'[qa] Could not parse {QA_VERSION_FILE} from {branch}: {e}')
+        return None
+
+
+def _create_or_update_uat_pr(version_yaml_content, release_date, prepared_by):
+    """Open (or update) a Pull Request that brings version.yaml into QA_UAT_BRANCH.
+
+    Unlike e2e (pushed directly so ArgoCD syncs the QA namespace immediately),
+    UAT changes go through a reviewed PR:
+      head = QA_UAT_PR_BRANCH_PREFIX + release_date   (created from the uat branch)
+      base = QA_UAT_BRANCH
+    • If an open PR already exists for the head branch, the file is updated on it.
+    • If the head branch exists but has no open PR (e.g. an old merged PR), it is
+      reset to the current uat HEAD first so the PR contains only this change.
+    • If uat already has identical content, no PR is created ('up_to_date').
+    Returns {'status': 'created'|'updated'|'up_to_date', 'pr_url', 'pr_number', 'branch'}
+    or {'error': ...}.
+    """
+    try:
+        owner, repo = _repo_owner_name()
+    except ValueError as e:
+        return {'error': str(e)}
+    base = QA_UAT_BRANCH
+    head = f'{QA_UAT_PR_BRANCH_PREFIX}{release_date or datetime.date.today().isoformat()}'
+
+    try:
+        try:
+            base_sha = _github_get(f'/repos/{owner}/{repo}/git/ref/heads/{base}')['object']['sha']
+        except requests.exceptions.HTTPError as e:
+            if getattr(e.response, 'status_code', None) == 404:
+                return {'error': f'Base branch "{base}" does not exist in {QA_DEPLOY_REPO}.'}
+            raise
+
+        # Existing open PR for this head?
+        prs = _github_get(f'/repos/{owner}/{repo}/pulls',
+                          params={'head': f'{owner}:{head}', 'base': base, 'state': 'open'}) or []
+        open_pr = prs[0] if prs else None
+
+        if not open_pr:
+            current = _fetch_version_text_from_branch(base)
+            if current is not None and current.strip() == version_yaml_content.strip():
+                print(f'[qa] {base} already has identical {QA_VERSION_FILE} — no PR needed')
+                return {'status': 'up_to_date', 'branch': head}
+
+        # Ensure head branch exists and starts from the uat HEAD
+        head_exists = True
+        try:
+            _github_get(f'/repos/{owner}/{repo}/git/ref/heads/{head}')
+        except requests.exceptions.HTTPError as e:
+            if getattr(e.response, 'status_code', None) != 404:
+                raise
+            head_exists = False
+        if not head_exists:
+            r = _github_post(f'/repos/{owner}/{repo}/git/refs', {'ref': f'refs/heads/{head}', 'sha': base_sha})
+            if r.status_code not in (200, 201):
+                return {'error': f'Could not create branch {head}: HTTP {r.status_code} {r.text[:200]}'}
+        elif not open_pr:
+            r = gh_http.patch(f'{GITHUB_API}/repos/{owner}/{repo}/git/refs/heads/{head}',
+                              headers=_github_headers(), json={'sha': base_sha, 'force': True},
+                              timeout=(5, 10))
+            if r.status_code not in (200, 201):
+                return {'error': f'Could not reset branch {head} to {base}: HTTP {r.status_code} {r.text[:200]}'}
+
+        push = _push_version_yaml(
+            version_yaml_content, branch=head, create_branch=False,
+            commit_message=f'chore: update {QA_VERSION_FILE} for UAT release {release_date}')
+        if 'error' in push:
+            return {'error': push['error']}
+
+        if open_pr:
+            return {'status': 'updated', 'pr_url': open_pr.get('html_url'),
+                    'pr_number': open_pr.get('number'), 'branch': head}
+
+        body = (f'Automated by **Release Readiness Dashboard**.\n\n'
+                f'- Release date: `{release_date}`\n'
+                f'- Prepared by: `{prepared_by}`\n'
+                f'- Contents: board nominations + current production versions for all other apps\n'
+                f'- Same file was pushed to the `{QA_E2E_BRANCH}` branch for QA testing.\n')
+        r = _github_post(f'/repos/{owner}/{repo}/pulls', {
+            'title': f'Release {release_date}: update {QA_VERSION_FILE} for UAT',
+            'head': head, 'base': base, 'body': body,
+        })
+        if r.status_code in (200, 201):
+            pr = r.json()
+            print(f'[qa] Opened UAT PR #{pr.get("number")}: {pr.get("html_url")}')
+            return {'status': 'created', 'pr_url': pr.get('html_url'),
+                    'pr_number': pr.get('number'), 'branch': head}
+        if r.status_code == 422 and 'No commits between' in r.text:
+            return {'status': 'up_to_date', 'branch': head}
+        return {'error': f'Could not open PR to {base}: HTTP {r.status_code} {r.text[:200]}'}
+
+    except requests.exceptions.HTTPError as e:
+        status = getattr(e.response, 'status_code', None)
+        if status == 401:
+            return {'error': 'GitHub token expired or revoked. Please re-login.'}
+        return {'error': f'GitHub API error (HTTP {status}): {str(e)[:200]}'}
+    except Exception as e:
+        print(f'[qa] UAT PR error: {e}')
+        return {'error': str(e)}
 
 
 # ── QA API Endpoints ──────────────────────────────────────────────────────────
 
+@app.route('/api/qa/version-yaml')
+def qa_version_yaml_download():
+    """Download a version.yaml (`apps:` format).
+
+    ?target=e2e (default) — board nominations + prod versions (e2e branch / uat PR)
+    ?target=prod          — nominated apps only (prod / preprod branches)
+    ?source=auto (default) — the file last pushed for the current release if
+                             there is one, otherwise freshly generated
+    ?source=fresh          — always generate from the board (+ production) now
+    ?source=pushed         — only the last pushed file (404 if none)
+    ?inline=1              — return as text instead of an attachment (preview)
+    """
+    source = request.args.get('source', 'auto')
+    target = request.args.get('target', 'e2e')
+    if target not in ('e2e', 'prod'):
+        return jsonify({'error': 'target must be "e2e" or "prod"'}), 400
+    board = _read_board()
+    if not board:
+        return jsonify({'error': 'No release board found'}), 404
+    release_date = board.get('release_date', 'unknown')
+    _qa_state_for_board(board)
+
+    pushed = _qa_state.get('prod_version_yaml' if target == 'prod' else 'version_yaml')
+    pushed_ok = bool(pushed) and _qa_state.get('release_date') == release_date
+    if source == 'pushed' and not pushed_ok:
+        return jsonify({'error': f'No {target} version.yaml has been pushed for this release yet.'}), 404
+
+    if source in ('pushed', 'auto') and pushed_ok:
+        content, used = pushed, 'pushed'
+    elif target == 'prod':
+        apps = _build_apps_manifest(board, [])[0]
+        if not apps:
+            return jsonify({'error': 'No nominated (Kubernetes) services on the board'}), 400
+        content, used = _format_apps_yaml(apps), 'fresh'
+    else:
+        try:
+            content, used = _build_e2e_apps(board)['yaml'], 'fresh'
+        except _ProdUnavailable as e:
+            return jsonify({'error': str(e)}), 502
+
+    headers = {'X-Version-Source': used}
+    if not request.args.get('inline'):
+        base_name = os.path.splitext(os.path.basename(QA_VERSION_FILE))[0] or 'version'
+        suffix = '-prod' if target == 'prod' else ''
+        headers['Content-Disposition'] = f'attachment; filename={base_name}{suffix}-{release_date}.yaml'
+    return app.response_class(content, mimetype='text/yaml', headers=headers)
+
+
 @app.route('/api/qa/prepare', methods=['POST'])
 def qa_prepare():
-    """Step 1: Generate version.yaml and push to e2e branch.
+    """Step 1: Generate version.yaml (`apps:` format), push it to the e2e branch
+    and open/update a PR to the uat branch.
 
-    Returns 202 immediately — the GitHub push runs in a background greenlet.
+    Returns 202 immediately — the GitHub calls run in a background greenlet.
     Frontend polls /api/qa/prepare/status for completion.
     """
     global _qa_state
@@ -6370,87 +6768,104 @@ def qa_prepare():
             'cutoff': board.get('cutoff')
         }), 400
 
-    # Prevent double-submit
-    if _qa_state.get('status') == 'preparing':
+    _qa_state_for_board(board)
+    # Prevent double-submit (checked again atomically below, across workers)
+    if _qa_prepare_in_progress():
         return jsonify({'status': 'preparing', 'message': 'Already in progress — poll /api/qa/prepare/status'}), 202
 
-    # Build version manifest (fast — no network calls)
     try:
-        version_manifest, nom_count, prod_count = _build_version_manifest(board)
+        built = _build_e2e_apps(board)
+    except _ProdUnavailable as e:
+        return jsonify({'error': str(e)}), 502
     except Exception as e:
         print(f'[qa] Error building version manifest: {e}')
         return jsonify({'error': f'Failed to build version manifest: {str(e)}'}), 500
+    if not built['apps']:
+        return jsonify({'error': 'Nothing to deploy — no apps found on the board or in production.'}), 400
+
+    version_yaml = built['yaml']
+    nom_count, prod_count = built['nominated_count'], built['prod_count']
+    preview = _apps_preview(built['apps'], built['details'])
 
     # Capture session data before spawning background (Flask session not available there)
     gh_user = session.get('github_user', {}).get('login', 'unknown')
     gh_token = get_gh_token()
     release_date = board.get('release_date', '')
 
-    # Set state to preparing
-    _qa_state['status'] = 'preparing'
-    _qa_state['error'] = None
+    # Claim the 'preparing' slot (atomic across gunicorn workers)
+    if not _qa_try_start_prepare(release_date, 'pending' if QA_UAT_PR_ENABLED else 'disabled'):
+        return jsonify({'status': 'preparing', 'message': 'Already in progress — poll /api/qa/prepare/status'}), 202
 
     # ── Background worker: push to GitHub ─────────────────────────
     def _do_push():
-        """Run the GitHub push in background (gevent greenlet)."""
+        """Run the GitHub calls in background (gevent greenlet)."""
         global _qa_state
         # Set thread-local token so _github_headers() works outside Flask request
         _token_local.github_token = gh_token
         try:
-            version_yaml = yaml.dump(version_manifest, default_flow_style=False, sort_keys=False)
-
-            # Build headers with the captured token (not from session)
-            push_headers = {
-                'Authorization': f'token {gh_token}',
-                'Accept': 'application/vnd.github.v3+json',
-                'User-Agent': 'ReleaseReadiness/1.0'
-            }
-
-            # Use _push_version_yaml (it reads token from session, which
-            # is fine because we're using the same gevent context)
             push_result = _push_version_yaml(
                 version_yaml,
-                branch='e2e',
-                commit_message=f'chore: update version.yaml for QA release {release_date}'
+                branch=QA_E2E_BRANCH,
+                commit_message=f'chore: update {QA_VERSION_FILE} for QA release {release_date}'
             )
 
             if 'error' in push_result:
                 _qa_state['status'] = 'error'
                 _qa_state['error'] = push_result['error']
+                _qa_state['uat_pr_status'] = 'skipped'
                 print(f'[qa] Background push failed: {push_result["error"]}')
                 return
 
             now = datetime.datetime.utcnow().isoformat()
-
-            # Update state
+            # NOTE: keep status 'preparing' until the UAT PR step finishes, so the
+            # UI (which stops polling on 'e2e_pushed') shows the final PR result.
             _qa_state.update({
-                'status': 'e2e_pushed',
                 'e2e_commit_url': push_result.get('commit_url'),
-                'version_manifest': version_manifest,
+                'version_yaml': version_yaml,
+                'apps_preview': preview,
+                'conflicts': built['conflicts'],
+                'release_date': release_date,
                 'nominated_count': nom_count,
                 'prod_count': prod_count,
-                'total_count': len(version_manifest.get('services', {})),
+                'total_count': len(built['apps']),
                 'prepared_at': now,
                 'prepared_by': gh_user,
                 'error': None,
             })
 
+            # UAT Pull Request (a PR failure does NOT undo the e2e push)
+            pr_result = {}
+            if QA_UAT_PR_ENABLED:
+                pr_result = _create_or_update_uat_pr(version_yaml, release_date, gh_user)
+                if 'error' in pr_result:
+                    _qa_state.update({'uat_pr_status': 'error', 'uat_pr_error': pr_result['error']})
+                    print(f'[qa] UAT PR failed: {pr_result["error"]}')
+                else:
+                    _qa_state.update({'uat_pr_status': pr_result['status'],
+                                      'uat_pr_url': pr_result.get('pr_url'),
+                                      'uat_pr_number': pr_result.get('pr_number'),
+                                      'uat_pr_branch': pr_result.get('branch')})
+            _qa_state['status'] = 'e2e_pushed'
+
             # Audit trail
             try:
                 _board_update(lambda b: b.setdefault('audit_trail', []).append({
                     'action': 'qa_e2e_prepared',
-                    'branch': 'e2e',
-                    'services_count': len(version_manifest.get('services', {})),
+                    'branch': QA_E2E_BRANCH,
+                    'services_count': len(built['apps']),
                     'nominated': nom_count,
                     'from_prod': prod_count,
                     'commit_url': push_result.get('commit_url'),
+                    'uat_pr_status': _qa_state.get('uat_pr_status'),
+                    'uat_pr_url': pr_result.get('pr_url'),
                     'by': gh_user,
                     'at': now
                 }))
             except Exception as audit_err:
                 print(f'[qa] Audit trail update failed (non-fatal): {audit_err}')
 
-            print(f'[qa] Background push completed — {len(version_manifest.get("services", {}))} services pushed to e2e branch')
+            print(f'[qa] Background push completed — {len(built["apps"])} apps pushed to {QA_E2E_BRANCH}'
+                  f', UAT PR: {_qa_state.get("uat_pr_status")}')
 
         except Exception as e:
             _qa_state['status'] = 'error'
@@ -6464,31 +6879,53 @@ def qa_prepare():
     # Return immediately — frontend polls /api/qa/prepare/status
     return jsonify({
         'status': 'preparing',
-        'message': 'Preparing E2E environment — push to GitHub in progress...',
+        'message': f'Preparing E2E environment — pushing to {QA_E2E_BRANCH}'
+                   + (f' and opening a PR to {QA_UAT_BRANCH}' if QA_UAT_PR_ENABLED else '') + '...',
         'nominated_count': nom_count,
         'prod_count': prod_count,
-        'total': len(version_manifest.get('services', {})),
+        'total': len(built['apps']),
+        'conflicts': built['conflicts'],
     }), 202
 
 
 @app.route('/api/qa/prepare/status')
 def qa_prepare_status():
-    """Get the current QA preparation status."""
+    """Get the current QA preparation status (shared across all workers)."""
+    try:
+        _qa_state_for_board(_read_board())
+    except Exception as e:
+        print(f'[qa] status: board read failed: {e}')
+    st = _qa_state.snapshot()
+    status = st.get('status', 'idle')
+    if status == 'preparing' and not _qa_prepare_in_progress():
+        status = 'error'  # worker died mid-prepare
+        st['error'] = st.get('error') or 'Previous preparation did not finish (worker restarted?) — please retry.'
     return jsonify({
-        'status': _qa_state.get('status', 'idle'),
-        'e2e_commit_url': _qa_state.get('e2e_commit_url'),
-        'nominated_count': _qa_state.get('nominated_count', 0),
-        'prod_count': _qa_state.get('prod_count', 0),
-        'total_count': _qa_state.get('total_count', 0),
-        'prepared_at': _qa_state.get('prepared_at'),
-        'prepared_by': _qa_state.get('prepared_by'),
-        'error': _qa_state.get('error'),
+        'status': status,
+        'e2e_commit_url': st.get('e2e_commit_url'),
+        'e2e_branch': QA_E2E_BRANCH,
+        'nominated_count': st.get('nominated_count', 0),
+        'prod_count': st.get('prod_count', 0),
+        'total_count': st.get('total_count', 0),
+        'apps': st.get('apps_preview', []),
+        'conflicts': st.get('conflicts', []),
+        'release_date': st.get('release_date'),
+        'prepared_at': st.get('prepared_at'),
+        'prepared_by': st.get('prepared_by'),
+        'error': st.get('error'),
+        # UAT pull request
+        'uat_branch': QA_UAT_BRANCH,
+        'uat_pr_enabled': QA_UAT_PR_ENABLED,
+        'uat_pr_status': st.get('uat_pr_status', 'idle'),
+        'uat_pr_url': st.get('uat_pr_url'),
+        'uat_pr_number': st.get('uat_pr_number'),
+        'uat_pr_error': st.get('uat_pr_error'),
         # Prod/preprod status
-        'prod_status': _qa_state.get('prod_status', 'idle'),
-        'prod_commit_url': _qa_state.get('prod_commit_url'),
-        'preprod_commit_url': _qa_state.get('preprod_commit_url'),
-        'change_ticket': _qa_state.get('change_ticket'),
-        'prod_pushed_at': _qa_state.get('prod_pushed_at'),
+        'prod_status': st.get('prod_status', 'idle'),
+        'prod_commit_url': st.get('prod_commit_url'),
+        'preprod_commit_url': st.get('preprod_commit_url'),
+        'change_ticket': st.get('change_ticket'),
+        'prod_pushed_at': st.get('prod_pushed_at'),
     })
 
 
@@ -6503,57 +6940,71 @@ def qa_drift_check():
         return jsonify({'error': 'No release board found'}), 404
 
     try:
-        # Build current version manifest from live board + prod
-        current_manifest, nom_count, prod_count = _build_version_manifest(board)
+        # Build current apps from live board + prod
+        try:
+            built = _build_e2e_apps(board)
+        except _ProdUnavailable as e:
+            return jsonify({'error': str(e), 'drifts': []}), 502
+        current_apps, details = built['apps'], built['details']
 
-        # Fetch the existing e2e version.yaml from GitHub
-        e2e_manifest = _fetch_version_yaml_from_branch('e2e')
-        if not e2e_manifest:
+        # Fetch the existing e2e version.yaml from GitHub (new or legacy format)
+        e2e_doc = _fetch_version_yaml_from_branch(QA_E2E_BRANCH)
+        if not e2e_doc:
             return jsonify({
-                'error': 'Could not fetch version.yaml from e2e branch. Run "Prepare E2E" first.',
+                'error': f'Could not fetch {QA_VERSION_FILE} from {QA_E2E_BRANCH} branch. Run "Prepare E2E" first.',
                 'drifts': [],
                 'status': 'no_e2e'
             }), 404
+        e2e_apps = _normalize_version_doc(e2e_doc)
 
-        # Compare service-by-service
+        # Compare app-by-app (image version AND helm chart version)
         drifts = []
-        e2e_services = e2e_manifest.get('services', {})
-        current_services = current_manifest.get('services', {})
+        all_apps = set(e2e_apps) | set(current_apps)
+        for app_name in sorted(all_apps):
+            e2e_app = e2e_apps.get(app_name)
+            cur_app = current_apps.get(app_name)
+            source = details.get(app_name, {}).get('source', 'unknown')
 
-        all_services = set(list(e2e_services.keys()) + list(current_services.keys()))
-        for svc_name in sorted(all_services):
-            e2e_svc = e2e_services.get(svc_name)
-            cur_svc = current_services.get(svc_name)
-
-            if not e2e_svc and cur_svc:
+            if not e2e_app and cur_app:
                 drifts.append({
-                    'service': svc_name,
+                    'service': app_name,
                     'drift_type': 'new',
-                    'message': f'New service — not in e2e branch',
-                    'current_tag': cur_svc.get('image_tag', ''),
+                    'message': f'New app — not in {QA_E2E_BRANCH} branch',
+                    'current_tag': cur_app['image_version'],
+                    'current_helm': cur_app['helm_version'],
                     'e2e_tag': None,
-                    'source': cur_svc.get('source', 'unknown'),
+                    'e2e_helm': None,
+                    'source': source,
                 })
-            elif e2e_svc and not cur_svc:
+            elif e2e_app and not cur_app:
                 drifts.append({
-                    'service': svc_name,
+                    'service': app_name,
                     'drift_type': 'removed',
-                    'message': f'Removed — was in e2e but no longer present',
+                    'message': f'Removed — was in {QA_E2E_BRANCH} but no longer present',
                     'current_tag': None,
-                    'e2e_tag': e2e_svc.get('image_tag', ''),
-                    'source': e2e_svc.get('source', 'unknown'),
+                    'current_helm': None,
+                    'e2e_tag': e2e_app['image_version'],
+                    'e2e_helm': e2e_app['helm_version'],
+                    'source': 'unknown',
                 })
-            elif e2e_svc and cur_svc:
-                e2e_tag = e2e_svc.get('image_tag', '')
-                cur_tag = cur_svc.get('image_tag', '')
-                if e2e_tag != cur_tag:
+            else:
+                image_changed = e2e_app['image_version'] != cur_app['image_version']
+                helm_changed = e2e_app['helm_version'] != cur_app['helm_version']
+                if image_changed or helm_changed:
+                    parts = []
+                    if image_changed:
+                        parts.append(f"image {e2e_app['image_version']} → {cur_app['image_version']}")
+                    if helm_changed:
+                        parts.append(f"helm {e2e_app['helm_version'] or '—'} → {cur_app['helm_version'] or '—'}")
                     drifts.append({
-                        'service': svc_name,
+                        'service': app_name,
                         'drift_type': 'version_changed',
-                        'message': f'Version drift: {e2e_tag} → {cur_tag}',
-                        'current_tag': cur_tag,
-                        'e2e_tag': e2e_tag,
-                        'source': cur_svc.get('source', 'unknown'),
+                        'message': 'Version drift: ' + ', '.join(parts),
+                        'current_tag': cur_app['image_version'],
+                        'current_helm': cur_app['helm_version'],
+                        'e2e_tag': e2e_app['image_version'],
+                        'e2e_helm': e2e_app['helm_version'],
+                        'source': source,
                     })
 
         has_drift = len(drifts) > 0
@@ -6562,7 +7013,7 @@ def qa_drift_check():
         _drift_audit = {
             'action': 'qa_drift_check',
             'drift_count': len(drifts),
-            'total_services': len(all_services),
+            'total_services': len(all_apps),
             'by': session.get('github_user', {}).get('login', 'unknown'),
             'at': datetime.datetime.utcnow().isoformat()
         }
@@ -6572,8 +7023,9 @@ def qa_drift_check():
             'status': 'drift' if has_drift else 'match',
             'drifts': drifts,
             'drift_count': len(drifts),
-            'total_services': len(all_services),
-            'e2e_generated_at': e2e_manifest.get('generated_at', ''),
+            'total_services': len(all_apps),
+            'e2e_generated_at': (e2e_doc.get('generated_at') if isinstance(e2e_doc, dict) else None)
+                                or _qa_state.get('prepared_at', ''),
         })
 
     except Exception as e:
@@ -6600,53 +7052,39 @@ def qa_prepare_prod():
     if not board:
         return jsonify({'error': 'No release board found'}), 404
 
-    _qa_state['prod_status'] = 'pushing'
-    _qa_state['change_ticket'] = change_ticket
+    _qa_state_for_board(board)
+    _qa_state.update({'prod_status': 'pushing', 'change_ticket': change_ticket,
+                      'release_date': board.get('release_date')})
 
     try:
-        # Build version manifest with ONLY nominated services (not prod versions)
-        # Production deployment should only contain services being released
-        nominated_services = {}
-        for svc_name, svc_data in board.get('services', {}).items():
-            nominated_services[svc_name] = {
-                'image': svc_data.get('image', ''),
-                'image_tag': svc_data.get('image_tag', svc_data.get('version', '')),
-                'kind': svc_data.get('kind', 'Deployment'),
-                'source': 'board',
-                'nominated_by': svc_data.get('nominated_by', ''),
-            }
+        # Production gets ONLY the nominated apps (same minimal `apps:` format as
+        # e2e/uat — keyed by image name). Non-nominated apps are already in prod.
+        # Custom (non-K8s) components have no image/helm chart and are skipped.
+        apps, details, conflicts = _build_apps_manifest(board, [])
 
-        if not nominated_services:
-            _qa_state['prod_status'] = 'error'
-            _qa_state['error'] = 'No nominated services on the board'
-            return jsonify({'error': 'No nominated services found on the release board'}), 400
+        if not apps:
+            _qa_state.update({'prod_status': 'error', 'error': 'No nominated services on the board'})
+            return jsonify({'error': 'No nominated (Kubernetes) services found on the release board'}), 400
 
-        # Build the version manifest (nominated only + change ticket)
-        version_manifest = {}
-        version_manifest['change_ticket'] = change_ticket
-        version_manifest['release_date'] = board.get('release_date', '')
-        version_manifest['generated_at'] = datetime.datetime.utcnow().isoformat()
-        version_manifest['generated_by'] = session.get('github_user', {}).get('login', 'unknown')
-        version_manifest['services'] = nominated_services
-
-        version_yaml = yaml.dump(version_manifest, default_flow_style=False, sort_keys=False)
+        version_yaml = _format_apps_yaml(apps)
+        nominated_services = apps  # kept for the audit/response below
         release_date = board.get('release_date', '')
         gh_user = session.get('github_user', {}).get('login', 'unknown')
         now = datetime.datetime.utcnow().isoformat()
-        commit_msg = f'chore: update version.yaml for release {release_date} [{change_ticket}]'
+        # The change ticket lives in the commit message + audit trail (the file
+        # itself only contains apps, as required by the deployment tooling).
+        commit_msg = f'chore: update {QA_VERSION_FILE} for release {release_date} [{change_ticket}]'
 
         # Push to prod branch
         prod_result = _push_version_yaml(version_yaml, branch='prod', commit_message=commit_msg)
         if 'error' in prod_result:
-            _qa_state['prod_status'] = 'error'
-            _qa_state['error'] = f'prod: {prod_result["error"]}'
+            _qa_state.update({'prod_status': 'error', 'error': f'prod: {prod_result["error"]}'})
             return jsonify({'error': f'Failed to push to prod: {prod_result["error"]}'}), 500
 
         # Push to preprod branch
         preprod_result = _push_version_yaml(version_yaml, branch='preprod', commit_message=commit_msg)
         if 'error' in preprod_result:
-            _qa_state['prod_status'] = 'error'
-            _qa_state['error'] = f'preprod: {preprod_result["error"]}'
+            _qa_state.update({'prod_status': 'error', 'error': f'preprod: {preprod_result["error"]}'})
             return jsonify({
                 'error': f'Pushed to prod but failed preprod: {preprod_result["error"]}',
                 'prod_commit_url': prod_result.get('commit_url'),
@@ -6655,6 +7093,7 @@ def qa_prepare_prod():
         # Update state
         _qa_state.update({
             'prod_status': 'pushed',
+            'prod_version_yaml': version_yaml,
             'prod_commit_url': prod_result.get('commit_url'),
             'preprod_commit_url': preprod_result.get('commit_url'),
             'prod_pushed_at': now,
@@ -6682,6 +7121,8 @@ def qa_prepare_prod():
             'prod_commit_url': prod_result.get('commit_url'),
             'preprod_commit_url': preprod_result.get('commit_url'),
             'services': nominated_services,
+            'apps': _apps_preview(apps, details),
+            'conflicts': conflicts,
             'total': len(nominated_services)
         })
 

@@ -985,9 +985,12 @@
                                     <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">1</span>
                                     Prepare E2E Environment
                                 </h3>
-                                <p style="font-size:12px;color:var(--text2);margin:4px 0 0 32px">Generate <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">version.yaml</code> and push to <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">e2e</code> branch — ArgoCD auto-deploys</p>
+                                <p style="font-size:12px;color:var(--text2);margin:4px 0 0 32px">Generate <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">version.yaml</code> (board nominations + prod versions), push to <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">e2e</code> branch — ArgoCD auto-deploys — and open a PR to <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">uat</code></p>
                             </div>
                             <div style="display:flex;gap:8px">
+                                <button class="btn" onclick="qaDownloadVersionYaml()" style="font-size:13px" title="Download version.yaml (the file last pushed for this release, or a freshly generated one)">
+                                    ⬇️ Download version.yaml
+                                </button>
                                 <button id="qa-prepare-btn" class="btn btn-primary" onclick="qaPrepareEnvironment()" style="font-size:13px">
                                     🧪 Prepare E2E Environment
                                 </button>
@@ -1001,6 +1004,12 @@
                                 <strong style="font-size:13px" id="qa-push-text">Pushed to e2e branch</strong>
                                 <a id="qa-push-link" href="#" target="_blank" style="font-size:12px;color:var(--accent);text-decoration:none;margin-left:auto">View Commit ↗</a>
                             </div>
+                            <div id="qa-pr-row" style="display:none;align-items:center;gap:8px;margin-top:8px">
+                                <span id="qa-pr-icon">🔀</span>
+                                <span style="font-size:13px" id="qa-pr-text">Pull request to uat</span>
+                                <a id="qa-pr-link" href="#" target="_blank" style="display:none;font-size:12px;color:var(--accent);text-decoration:none;margin-left:auto">View PR ↗</a>
+                            </div>
+                            <div id="qa-conflicts" style="display:none;margin-top:8px;font-size:11px;color:#f59e0b"></div>
                         </div>
 
                         <!-- Version Preview Table -->
@@ -1017,10 +1026,10 @@
                                 <table class="list-view-table" style="font-size:12px;margin:0;width:100%">
                                     <thead>
                                         <tr>
-                                            <th style="padding-left:12px">Service</th>
-                                            <th>Image Tag</th>
+                                            <th style="padding-left:12px">App (image)</th>
+                                            <th>image_version</th>
+                                            <th>helm_version</th>
                                             <th>Source</th>
-                                            <th>Kind</th>
                                         </tr>
                                     </thead>
                                     <tbody id="qa-version-tbody"></tbody>
@@ -1137,7 +1146,7 @@
                                 <span style="background:#10b981;color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">5</span>
                                 Prepare Prod / PreProd
                             </h3>
-                            <p style="font-size:12px;color:var(--text2);margin:4px 0 0 32px">Generate final <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">version.yaml</code> with change ticket and push to <code style="background:rgba(16,185,129,.15);padding:1px 5px;border-radius:4px;font-size:11px;color:#10b981">prod</code> + <code style="background:rgba(16,185,129,.15);padding:1px 5px;border-radius:4px;font-size:11px;color:#10b981">preprod</code> branches</p>
+                            <p style="font-size:12px;color:var(--text2);margin:4px 0 0 32px">Generate final <code style="background:rgba(99,102,241,.15);padding:1px 5px;border-radius:4px;font-size:11px">version.yaml</code> (nominated apps only) and push to <code style="background:rgba(16,185,129,.15);padding:1px 5px;border-radius:4px;font-size:11px;color:#10b981">prod</code> + <code style="background:rgba(16,185,129,.15);padding:1px 5px;border-radius:4px;font-size:11px;color:#10b981">preprod</code> branches</p>
                         </div>
 
                         <!-- Change Ticket Input -->
@@ -1149,7 +1158,11 @@
                             <button id="qa-prod-btn" class="btn" onclick="qaPrepareProduction()" style="font-size:13px;background:#10b981;border-color:#10b981;color:#fff;white-space:nowrap">
                                 🏭 Prepare & Push to Prod/PreProd
                             </button>
+                            <button class="btn" onclick="qaDownloadVersionYaml('prod')" style="font-size:13px;white-space:nowrap" title="Download the prod/preprod version.yaml (nominated apps only)">
+                                ⬇️ Download
+                            </button>
                         </div>
+                        <p style="font-size:11px;color:var(--text2);margin:-6px 0 12px">The change ticket is recorded in the commit message and the audit trail.</p>
 
                         <!-- Prod Push Status -->
                         <div id="qa-prod-status" style="display:none">
@@ -5397,16 +5410,7 @@
                 const r = await fetch('/api/qa/prepare/status');
                 const data = await r.json();
                 if (data.status === 'e2e_pushed') {
-                    // Show push status
-                    if (data.e2e_commit_url) {
-                        document.getElementById('qa-push-status').style.display = 'block';
-                        document.getElementById('qa-push-link').href = data.e2e_commit_url;
-                        document.getElementById('qa-push-text').textContent = 'Pushed to e2e branch';
-                    }
-                    // Show counts
-                    document.getElementById('qa-count-nominated').textContent = data.nominated_count || 0;
-                    document.getElementById('qa-count-prod').textContent = data.prod_count || 0;
-                    document.getElementById('qa-count-total').textContent = data.total_count || 0;
+                    _qaShowPrepareResult(data);
                 }
                 // Restore prod/preprod status
                 if (data.prod_status === 'pushed') {
@@ -5482,18 +5486,15 @@
                             // ✅ Success!
                             clearInterval(pollTimer);
 
-                            document.getElementById('qa-push-status').style.display = 'block';
-                            document.getElementById('qa-push-link').href = statusData.e2e_commit_url || '#';
-                            document.getElementById('qa-push-text').textContent = 'Pushed to e2e branch';
-
-                            document.getElementById('qa-version-preview').style.display = 'block';
-                            document.getElementById('qa-count-nominated').textContent = statusData.nominated_count || 0;
-                            document.getElementById('qa-count-prod').textContent = statusData.prod_count || 0;
-                            document.getElementById('qa-count-total').textContent = statusData.total_count || 0;
+                            _qaShowPrepareResult(statusData);
 
                             btn.innerHTML = '✅ E2E Prepared';
                             btn.style.background = 'var(--green)';
-                            showToast(`E2E environment prepared — ${statusData.total_count} services pushed to e2e branch`, 'success');
+                            btn.disabled = false;  // allow re-running (e.g. after drift)
+                            showToast(`E2E environment prepared — ${statusData.total_count} apps pushed to ${statusData.e2e_branch || 'e2e'} branch`, 'success');
+                            if (statusData.uat_pr_status === 'error') {
+                                showToast(`UAT pull request failed: ${statusData.uat_pr_error || 'unknown error'}`, 'error');
+                            }
 
                         } else if (statusData.status === 'error') {
                             // ❌ Failed
@@ -5529,22 +5530,102 @@
             }
         }
 
-        function _qaRenderVersionTable(services, tbody) {
-            /** Render services into a version manifest preview table. */
-            const sorted = Object.entries(services).sort((a, b) => {
-                if (a[1].source !== b[1].source) return a[1].source === 'board' ? -1 : 1;
-                return a[0].localeCompare(b[0]);
-            });
-            for (const [name, svc] of sorted) {
+        function _qaEsc(v) {
+            return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+
+        function _qaShowPrepareResult(data) {
+            /** Render e2e push status, UAT PR status, conflicts and the apps preview table. */
+            const e2eBranch = data.e2e_branch || 'e2e';
+            const uatBranch = data.uat_branch || 'uat';
+            document.getElementById('qa-push-status').style.display = 'block';
+            document.getElementById('qa-push-text').textContent = `Pushed to ${e2eBranch} branch`;
+            const pushLink = document.getElementById('qa-push-link');
+            pushLink.href = data.e2e_commit_url || '#';
+            pushLink.style.display = data.e2e_commit_url ? '' : 'none';
+
+            // UAT pull request
+            const prRow = document.getElementById('qa-pr-row');
+            const prLink = document.getElementById('qa-pr-link');
+            const prStatus = data.uat_pr_status;
+            prLink.style.display = 'none';
+            if (prStatus && prStatus !== 'idle' && prStatus !== 'disabled') {
+                prRow.style.display = 'flex';
+                const map = {
+                    created:    ['🔀', `Pull request #${data.uat_pr_number} opened to ${uatBranch}`],
+                    updated:    ['🔀', `Pull request #${data.uat_pr_number} to ${uatBranch} updated`],
+                    up_to_date: ['✅', `${uatBranch} already has this version.yaml — no PR needed`],
+                    pending:    ['⏳', `Opening pull request to ${uatBranch}...`],
+                    skipped:    ['⏭️', `Pull request to ${uatBranch} skipped (e2e push failed)`],
+                    error:      ['❌', `Pull request to ${uatBranch} failed: ${data.uat_pr_error || 'unknown error'}`],
+                };
+                const [icon, text] = map[prStatus] || ['ℹ️', `Pull request: ${prStatus}`];
+                document.getElementById('qa-pr-icon').textContent = icon;
+                document.getElementById('qa-pr-text').textContent = text;
+                document.getElementById('qa-pr-text').style.color = prStatus === 'error' ? 'var(--red)' : '';
+                if (data.uat_pr_url) { prLink.href = data.uat_pr_url; prLink.style.display = ''; }
+            } else {
+                prRow.style.display = 'none';
+            }
+
+            // Same image used by several workloads with different versions
+            const conflictsEl = document.getElementById('qa-conflicts');
+            if (data.conflicts && data.conflicts.length) {
+                conflictsEl.style.display = 'block';
+                conflictsEl.innerHTML = '⚠️ Image name conflicts:<br>' + data.conflicts.map(_qaEsc).join('<br>');
+            } else {
+                conflictsEl.style.display = 'none';
+            }
+
+            document.getElementById('qa-count-nominated').textContent = data.nominated_count || 0;
+            document.getElementById('qa-count-prod').textContent = data.prod_count || 0;
+            document.getElementById('qa-count-total').textContent = data.total_count || 0;
+            if (data.apps && data.apps.length) {
+                const tbody = document.getElementById('qa-version-tbody');
+                tbody.innerHTML = '';
+                _qaRenderVersionTable(data.apps, tbody);
+                document.getElementById('qa-version-preview').style.display = 'block';
+            }
+        }
+
+        async function qaDownloadVersionYaml(target = 'e2e') {
+            /** Download version.yaml (target: 'e2e' = nominations + prod, 'prod' = nominations only)
+             *  — last pushed file for this release, else freshly generated. */
+            try {
+                const r = await fetch(`/api/qa/version-yaml?source=auto&target=${encodeURIComponent(target)}`);
+                if (!r.ok) {
+                    let msg = `HTTP ${r.status}`;
+                    try { msg = (await r.json()).error || msg; } catch (_) {}
+                    showToast('Download failed: ' + msg, 'error');
+                    return;
+                }
+                const text = await r.text();
+                const cd = r.headers.get('Content-Disposition') || '';
+                const m = cd.match(/filename=([^;]+)/);
+                const filename = m ? m[1].trim() : 'version.yaml';
+                const url = URL.createObjectURL(new Blob([text], { type: 'text/yaml' }));
+                const a = document.createElement('a');
+                a.href = url; a.download = filename;
+                document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+                const src = r.headers.get('X-Version-Source') === 'pushed' ? 'last pushed' : 'freshly generated';
+                showToast(`Downloaded ${filename} (${src})`, 'success');
+            } catch (e) { showToast('Download failed: ' + e.message, 'error'); }
+        }
+
+        function _qaRenderVersionTable(apps, tbody) {
+            /** Render the apps list ({app, image_version, helm_version, source, workloads}) into the preview table. */
+            for (const svc of apps) {
                 const isBoard = svc.source === 'board';
                 const sourceHtml = isBoard
                     ? '<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;background:rgba(99,102,241,.12);color:var(--accent2);border:1px solid rgba(99,102,241,.25)">📋 Board</span>'
                     : '<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;background:rgba(16,185,129,.1);color:var(--green);border:1px solid rgba(16,185,129,.2)">🏭 Prod</span>';
+                const wl = (svc.workloads || []).filter(w => w !== svc.app);
                 tbody.innerHTML += `<tr style="${isBoard ? 'background:rgba(99,102,241,.04)' : ''}">
-                    <td style="padding-left:12px;font-weight:${isBoard ? '600' : '400'}">${name}</td>
-                    <td><code style="font-size:11px;background:rgba(99,102,241,.1);padding:1px 5px;border-radius:4px">${svc.image_tag || 'latest'}</code></td>
+                    <td style="padding-left:12px;font-weight:${isBoard ? '600' : '400'}" title="${_qaEsc((svc.workloads || []).join(', '))}">${_qaEsc(svc.app)}${wl.length ? `<div style="font-size:10px;color:var(--text2);font-weight:400">${_qaEsc(wl.join(', '))}</div>` : ''}</td>
+                    <td><code style="font-size:11px;background:rgba(99,102,241,.1);padding:1px 5px;border-radius:4px">${_qaEsc(svc.image_version || '—')}</code></td>
+                    <td><code style="font-size:11px;background:rgba(139,92,246,.1);padding:1px 5px;border-radius:4px">${_qaEsc(svc.helm_version || '—')}</code></td>
                     <td>${sourceHtml}</td>
-                    <td style="color:var(--text2);font-size:11px">${svc.kind || 'Deployment'}</td>
                 </tr>`;
             }
         }
@@ -5599,8 +5680,8 @@
                         const typeLabel = d.drift_type === 'version_changed' ? '🔄 Changed' : d.drift_type === 'new' ? '🆕 New' : '🗑️ Removed';
                         tbody.innerHTML += `<tr>
                             <td style="padding-left:12px;font-weight:500">${d.service}</td>
-                            <td><code style="font-size:11px;background:rgba(239,68,68,.1);padding:1px 5px;border-radius:4px">${d.e2e_tag || '—'}</code></td>
-                            <td><code style="font-size:11px;background:rgba(99,102,241,.1);padding:1px 5px;border-radius:4px">${d.current_tag || '—'}</code></td>
+                            <td><code style="font-size:11px;background:rgba(239,68,68,.1);padding:1px 5px;border-radius:4px">${d.e2e_tag || '—'}</code>${d.e2e_helm && d.e2e_helm !== d.current_helm ? `<div style="font-size:10px;color:var(--text2)">helm ${d.e2e_helm}</div>` : ''}</td>
+                            <td><code style="font-size:11px;background:rgba(99,102,241,.1);padding:1px 5px;border-radius:4px">${d.current_tag || '—'}</code>${d.current_helm && d.e2e_helm !== d.current_helm ? `<div style="font-size:10px;color:var(--text2)">helm ${d.current_helm}</div>` : ''}</td>
                             <td style="color:${typeColor};font-weight:600;font-size:11px">${typeLabel}</td>
                         </tr>`;
                     }
@@ -5683,7 +5764,10 @@
 
                 btn.innerHTML = '✅ Pushed to Prod & PreProd';
                 btn.style.background = 'var(--green)';
-                showToast(`version.yaml pushed to prod + preprod (${data.total} services, ticket: ${changeTicket})`, 'success');
+                showToast(`version.yaml pushed to prod + preprod (${data.total} apps, ticket: ${changeTicket})`, 'success');
+                if (data.conflicts && data.conflicts.length) {
+                    showToast('⚠️ Image name conflicts: ' + data.conflicts.join('; '), 'warn');
+                }
 
             } catch (e) {
                 showToast('Error: ' + e.message, 'error');

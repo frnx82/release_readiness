@@ -704,26 +704,18 @@ def _mock_chart_version_only(helm_value):
 
 @app.route('/api/release/export/apps')
 def export_apps_versions():
-    """Mock: board nominations + non-nominated prod versions as minimal `apps:` YAML."""
+    """Mock: board nominations + non-nominated prod versions as minimal `apps:` YAML.
+
+    Same builder (and therefore the exact same file) as QA → Prepare E2E /
+    Download version.yaml: apps keyed by IMAGE name, image_version + helm_version.
+    """
     board = _read_board()
     if not board:
         return jsonify({'error': 'No release board found'}), 400
-    prod_services = list_prod_services().get_json().get('services', [])
-    nominated = {n: s for n, s in (board.get('services') or {}).items() if not s.get('is_custom')}
-
-    apps = {}
-    for svc in prod_services:
-        if svc.get('name') and svc['name'] not in nominated:
-            apps[svc['name']] = (svc.get('image_tag') or '', _mock_chart_version_only(svc.get('helm_version')))
-    for name, svc in nominated.items():
-        apps[name] = (svc.get('image_tag') or svc.get('version') or '', _mock_chart_version_only(svc.get('helm_version')))
-
-    lines = ['apps:']
-    for name in sorted(apps):
-        lines += [f'  {name}:',
-                  f'    image_version: {json.dumps(apps[name][0])}',
-                  f'    helm_version: {json.dumps(apps[name][1])}']
-    return app.response_class('\n'.join(lines) + '\n', mimetype='text/yaml',
+    built = _mock_build_e2e_apps(board)
+    if not built['apps']:
+        return jsonify({'error': 'No apps to export'}), 400
+    return app.response_class(built['yaml'], mimetype='text/yaml',
                               headers={'Content-Disposition':
                                        f'attachment; filename=apps-version-{board.get("release_date", "unknown")}.yaml'})
 
@@ -1727,9 +1719,90 @@ _qa_state = {
 }
 
 
+def _mock_image_app_name(image, fallback=''):
+    """App name = image name (last path segment, no tag/digest)."""
+    if not image:
+        return fallback
+    last = str(image).split('@', 1)[0].rsplit('/', 1)[-1]
+    return last.split(':', 1)[0] or fallback
+
+
+def _mock_build_e2e_apps(board):
+    """apps keyed by image name: board nominations + non-nominated prod versions."""
+    nominated = {n: s for n, s in (board.get('services') or {}).items() if not s.get('is_custom')}
+    nominated_apps = {_mock_image_app_name(s.get('image'), n) for n, s in nominated.items()}
+    apps, details = {}, {}
+    for svc in MOCK_SERVICES:
+        name = svc['name']
+        app_name = _mock_image_app_name(svc.get('image'), name)
+        if name in nominated or app_name in nominated_apps or app_name in apps:
+            continue
+        apps[app_name] = {'image_version': svc.get('image_tag') or '',
+                          'helm_version': _mock_chart_version_only(svc.get('helm_version'))}
+        details[app_name] = {'source': 'production', 'workloads': [name], 'kind': svc.get('kind', '')}
+    for name, svc in nominated.items():
+        app_name = _mock_image_app_name(svc.get('image'), name)
+        apps[app_name] = {'image_version': svc.get('image_tag') or '',
+                          'helm_version': _mock_chart_version_only(svc.get('helm_version'))}
+        details[app_name] = {'source': 'board', 'workloads': [name], 'kind': svc.get('kind', '')}
+    lines = ['apps:']
+    for n in sorted(apps):
+        lines += [f'  {n}:', f'    image_version: {json.dumps(apps[n]["image_version"])}',
+                  f'    helm_version: {json.dumps(apps[n]["helm_version"])}']
+    preview = sorted(({'app': n, **apps[n], **{k: details[n][k] for k in ('source', 'workloads', 'kind')}}
+                      for n in apps), key=lambda r: (r['source'] != 'board', r['app']))
+    nom = sum(1 for d in details.values() if d['source'] == 'board')
+    return {'apps': apps, 'yaml': '\n'.join(lines) + '\n', 'preview': preview,
+            'nominated_count': nom, 'prod_count': len(apps) - nom}
+
+
+def _mock_build_prod_apps(board):
+    """Nominated (non-custom) apps only, keyed by image name."""
+    full = _mock_build_e2e_apps(board)
+    apps = {r['app']: {'image_version': r['image_version'], 'helm_version': r['helm_version']}
+            for r in full['preview'] if r['source'] == 'board'}
+    lines = ['apps:']
+    for n in sorted(apps):
+        lines += [f'  {n}:', f'    image_version: {json.dumps(apps[n]["image_version"])}',
+                  f'    helm_version: {json.dumps(apps[n]["helm_version"])}']
+    return {'apps': apps, 'yaml': '\n'.join(lines) + '\n',
+            'preview': [r for r in full['preview'] if r['source'] == 'board']}
+
+
+@app.route('/api/qa/version-yaml')
+def qa_version_yaml_download():
+    """Mock: download version.yaml (?source=auto|fresh|pushed, ?inline=1)."""
+    board = _read_board()
+    if not board:
+        return jsonify({'error': 'No release board found'}), 404
+    source = request.args.get('source', 'auto')
+    target = request.args.get('target', 'e2e')
+    if target not in ('e2e', 'prod'):
+        return jsonify({'error': 'target must be "e2e" or "prod"'}), 400
+    rd = board.get('release_date', 'unknown')
+    key = 'prod_version_yaml' if target == 'prod' else 'version_yaml'
+    pushed_ok = bool(_qa_state.get(key)) and _qa_state.get('release_date') == rd
+    if source == 'pushed' and not pushed_ok:
+        return jsonify({'error': f'No {target} version.yaml has been pushed for this release yet.'}), 404
+    if source in ('pushed', 'auto') and pushed_ok:
+        content, used = _qa_state[key], 'pushed'
+    elif target == 'prod':
+        built = _mock_build_prod_apps(board)
+        if not built['apps']:
+            return jsonify({'error': 'No nominated (Kubernetes) services on the board'}), 400
+        content, used = built['yaml'], 'fresh'
+    else:
+        content, used = _mock_build_e2e_apps(board)['yaml'], 'fresh'
+    headers = {'X-Version-Source': used}
+    if not request.args.get('inline'):
+        suffix = '-prod' if target == 'prod' else ''
+        headers['Content-Disposition'] = f'attachment; filename=version{suffix}-{rd}.yaml'
+    return app.response_class(content, mimetype='text/yaml', headers=headers)
+
+
 @app.route('/api/qa/prepare', methods=['POST'])
 def qa_prepare():
-    """Mock: Generate version.yaml and push to e2e branch."""
+    """Mock: Generate version.yaml (apps format), push to e2e and open a PR to uat."""
     board = _read_board()
     if not board:
         return jsonify({'error': 'No active release board'}), 400
@@ -1738,59 +1811,57 @@ def qa_prepare():
     if not nominated:
         return jsonify({'error': 'No services nominated on the board'}), 400
 
-    # Build version manifest: nominated services + remaining prod services
-    services = {}
-    for name, svc in nominated.items():
-        services[name] = {
-            'image': svc.get('image', f'registry.example.com/{name}:{svc.get("image_tag", "latest")}'),
-            'image_tag': svc.get('image_tag', 'latest'),
-            'kind': svc.get('kind', 'Deployment'),
-            'helm_version': svc.get('helm_chart_version', svc.get('helm_version', '')),
-            'source': 'board',
-        }
-
-    # Add prod services not on the board
-    prod_count = 0
-    for svc in MOCK_SERVICES:
-        if svc['name'] not in services:
-            services[svc['name']] = {
-                'image': svc.get('image', ''),
-                'image_tag': svc.get('image_tag', 'latest'),
-                'kind': svc.get('kind', 'Deployment'),
-                'helm_version': svc.get('helm_version', ''),
-                'source': 'prod',
-            }
-            prod_count += 1
-
+    built = _mock_build_e2e_apps(board)
     now = datetime.datetime.utcnow().isoformat()
     commit_hash = uuid.uuid4().hex[:7]
     commit_url = f'https://github.com/org/app-deployment/commit/{commit_hash}'
+    rd = board.get('release_date', '')
 
-    # Save QA state
-    _qa_state['status'] = 'e2e_pushed'
-    _qa_state['e2e_commit_url'] = commit_url
-    _qa_state['nominated_count'] = len(nominated)
-    _qa_state['prod_count'] = prod_count
-    _qa_state['total_count'] = len(services)
-    _qa_state['services'] = services
-    _qa_state['generated_at'] = now
+    # Simulated UAT PR: same release → update the existing PR, otherwise open a new one
+    if _qa_state.get('uat_pr_number') and _qa_state.get('release_date') == rd:
+        pr_status, pr_number = 'updated', _qa_state['uat_pr_number']
+    else:
+        pr_status, pr_number = 'created', random.randint(100, 999)
 
-    # Audit trail
+    _qa_state.update({
+        'status': 'e2e_pushed',
+        'e2e_commit_url': commit_url,
+        'e2e_branch': 'e2e',
+        'nominated_count': built['nominated_count'],
+        'prod_count': built['prod_count'],
+        'total_count': len(built['apps']),
+        'apps': built['preview'],
+        'apps_map': built['apps'],
+        'version_yaml': built['yaml'],
+        'release_date': rd,
+        'conflicts': [],
+        'generated_at': now,
+        'prepared_at': now,
+        'uat_branch': 'uat',
+        'uat_pr_enabled': True,
+        'uat_pr_status': pr_status,
+        'uat_pr_number': pr_number,
+        'uat_pr_url': f'https://github.com/org/app-deployment/pull/{pr_number}',
+        'uat_pr_error': None,
+    })
+
     board.setdefault('audit_trail', []).append({
         'action': 'qa_e2e_prepared',
         'by': session.get('github_user', {}).get('login', 'mock-user'),
         'at': now,
-        'service': f'{len(services)} services',
+        'service': f'{len(built["apps"])} apps',
+        'uat_pr_url': _qa_state['uat_pr_url'],
     })
     _write_board(board)
 
     return jsonify({
         'status': 'ok',
         'commit_url': commit_url,
-        'nominated_count': len(nominated),
-        'prod_count': prod_count,
-        'total': len(services),
-        'services': services,
+        'uat_pr_url': _qa_state['uat_pr_url'],
+        'nominated_count': built['nominated_count'],
+        'prod_count': built['prod_count'],
+        'total': len(built['apps']),
+        'apps': built['preview'],
         'generated_at': now,
     })
 
@@ -1798,7 +1869,8 @@ def qa_prepare():
 @app.route('/api/qa/prepare/status')
 def qa_prepare_status():
     """Mock: Check if QA prepare has already been run."""
-    return jsonify(_qa_state)
+    return jsonify({k: v for k, v in _qa_state.items()
+                    if k not in ('version_yaml', 'prod_version_yaml', 'apps_map')})
 
 
 @app.route('/api/qa/drift-check', methods=['POST'])
@@ -1807,34 +1879,28 @@ def qa_drift_check():
     if _qa_state['status'] != 'e2e_pushed':
         return jsonify({'error': 'E2E environment not prepared yet. Run "Prepare E2E" first.'}), 400
 
-    e2e_services = _qa_state.get('services', {})
+    e2e_apps = _qa_state.get('apps_map', {})
     board = _read_board() or _new_board()
-    nominated = board.get('services', {})
+    current = _mock_build_e2e_apps(board)['apps']
 
     drifts = []
-    # Simulate some drifts randomly
-    for name, e2e_svc in e2e_services.items():
-        if name in nominated:
-            board_tag = nominated[name].get('image_tag', 'latest')
-            e2e_tag = e2e_svc.get('image_tag', 'latest')
-            # 15% chance of drift
-            if random.random() < 0.15:
-                new_tag = e2e_tag.rsplit('.', 1)
-                if len(new_tag) == 2 and new_tag[1].isdigit():
-                    drifted_tag = f"{new_tag[0]}.{int(new_tag[1]) + 1}"
-                else:
-                    drifted_tag = e2e_tag + '-hotfix'
-                drifts.append({
-                    'service': name,
-                    'e2e_tag': e2e_tag,
-                    'current_tag': drifted_tag,
-                    'drift_type': 'version_changed',
-                })
+    for name in sorted(set(e2e_apps) | set(current)):
+        e, c = e2e_apps.get(name), current.get(name)
+        if e and c and e != c:
+            drifts.append({'service': name, 'drift_type': 'version_changed',
+                           'e2e_tag': e['image_version'], 'current_tag': c['image_version'],
+                           'e2e_helm': e['helm_version'], 'current_helm': c['helm_version']})
+        elif c and not e:
+            drifts.append({'service': name, 'drift_type': 'new', 'e2e_tag': None,
+                           'current_tag': c['image_version']})
+        elif e and not c:
+            drifts.append({'service': name, 'drift_type': 'removed', 'e2e_tag': e['image_version'],
+                           'current_tag': None})
 
     return jsonify({
         'status': 'drift' if drifts else 'match',
         'drift_count': len(drifts),
-        'total_services': len(e2e_services),
+        'total_services': len(set(e2e_apps) | set(current)),
         'drifts': drifts,
         'e2e_generated_at': _qa_state.get('generated_at'),
     })
@@ -1856,16 +1922,24 @@ def qa_prepare_prod():
     prod_url = f'https://github.com/org/app-deployment/commit/{prod_hash}'
     preprod_url = f'https://github.com/org/app-deployment/commit/{preprod_hash}'
 
+    # Prod/preprod get ONLY the nominated apps, same minimal `apps:` format
+    board = _read_board() or _new_board()
+    prod_built = _mock_build_prod_apps(board)
+    if not prod_built['apps']:
+        return jsonify({'error': 'No nominated (Kubernetes) services found on the release board'}), 400
+
     _qa_state['prod_status'] = 'pushed'
     _qa_state['prod_commit_url'] = prod_url
     _qa_state['preprod_commit_url'] = preprod_url
     _qa_state['change_ticket'] = change_ticket
+    _qa_state['prod_version_yaml'] = prod_built['yaml']
 
     return jsonify({
         'status': 'ok',
         'prod_commit_url': prod_url,
         'preprod_commit_url': preprod_url,
-        'total': _qa_state['total_count'],
+        'total': len(prod_built['apps']),
+        'apps': prod_built['preview'],
         'change_ticket': change_ticket,
     })
 
