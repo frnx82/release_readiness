@@ -824,7 +824,7 @@ def update_fix_version():
     date_changed = False
     date_warning = None
     if new_release_date and new_release_date != old_release_date:
-        if new_release_date < datetime.date.today().isoformat():
+        if new_release_date < datetime.datetime.now(datetime.timezone.utc).astimezone(_release_tz()).date().isoformat():
             date_warning = (f'Fix version date {new_release_date} is in the past — release date '
                             f'kept at {old_release_date}.')
         else:

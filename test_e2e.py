@@ -296,13 +296,28 @@ def test_lifecycle():
     test('Lock board returns 200', r.status_code == 200,
          f'status={r.status_code}, body={r.text[:100]}')
 
-    # Move the release date to TODAY so the cutoff is in the past (but the
-    # release day hasn't ended) — needed for exception-required tests after unlock.
-    _today_fv = f"P{_dt.date.today().strftime('%y.%m.%d')}"
+    # Move the release date so the cutoff is in the PAST but the release day is NOT
+    # over yet (it ends 6 PM ET) — needed for exception-required tests after unlock.
+    # "today" only works between the cutoff and 6 PM, so pick a date that fits now.
+    from zoneinfo import ZoneInfo
+    _et = ZoneInfo(os.environ.get('CUTOFF_TZ', 'America/New_York'))
+    _now_et = datetime.datetime.now(_et)
+    _cut_day, _cut_hour = int(os.environ.get('CUTOFF_DAY', '2')), int(os.environ.get('CUTOFF_HOUR', '14'))
+    _pick = None
+    for _offset in range(0, 8):
+        _cand = _now_et.date() + _dt.timedelta(days=_offset)
+        _cut_date = _cand - _dt.timedelta(days=(_cand.weekday() - _cut_day) % 7)
+        _cut = datetime.datetime.combine(_cut_date, datetime.time(_cut_hour), tzinfo=_et)
+        _day_over = datetime.datetime.combine(_cand, datetime.time(18), tzinfo=_et)
+        if _cut < _now_et < _day_over:
+            _pick = _cand
+            break
+    _pick = _pick or _now_et.date()
+    _today_fv = f"P{_pick.strftime('%y.%m.%d')}"
     r = post('/api/release/fix_version', {'fix_version': _today_fv, 'updated_by': 'e2e-setup'})
     d = r.json()
     cutoff_passed = _dt.datetime.utcnow().isoformat() > (d.get('cutoff') or '')
-    test('Fix version for today syncs release date', d.get('release_date') == _dt.date.today().isoformat(),
+    test('Fix version syncs release date', d.get('release_date') == _pick.isoformat(),
          f'resp={d}')
 
     r = get('/api/release/current')
@@ -866,8 +881,11 @@ def test_artifactory():
     data = r.json()
     test('Versions response has versions list', 'versions' in data,
          f'keys: {list(data.keys())}')
-    test('At least one version returned', len(data.get('versions', [])) > 0,
-         f'count: {len(data.get("versions", []))}')
+    if data.get('artifactory_configured') is False:
+        warn('Artifactory not configured — skipping version-count check (UI falls back to manual entry)')
+    else:
+        test('At least one version returned', len(data.get('versions', [])) > 0,
+             f'count: {len(data.get("versions", []))}')
     
     # Unknown component should 404
     r = get('/api/artifactory/versions/unknown-component')

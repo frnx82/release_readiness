@@ -3454,7 +3454,7 @@ def _version_freshness(date_str):
     except (ValueError, TypeError):
         return 'unknown'
 
-    today = datetime.date.today()
+    today = _now_local().date()  # release time zone, not the (UTC) server date
     # Current release week: Monday of this week through Friday
     monday = today - datetime.timedelta(days=today.weekday())
     prev_monday = monday - datetime.timedelta(days=7)
@@ -4225,69 +4225,92 @@ def list_preprod_services():
 
 
 # ── Release Board CRUD ────────────────────────────────────────────────────────
+def _release_day_over(release_date_str):
+    """True once the release day has ended: RELEASE_ROLLOVER_HOUR (6 PM) local time
+    on the release date — the same moment _get_current_release_date() rolls over to
+    the next cycle. (Previously this used midnight UTC = 7/8 PM Eastern, which was
+    out of step with the rollover.)"""
+    try:
+        rd = datetime.date.fromisoformat(release_date_str)
+    except (ValueError, TypeError):
+        return False
+    return datetime.datetime.utcnow().isoformat() >= _local_to_utc_iso(rd, RELEASE_ROLLOVER_HOUR)
+
+
+def _auto_archive_board(board, storage_key=None):
+    """Auto-release (if never released) and archive a finished board to history.
+    Idempotent: won't duplicate a board already in history. Returns True if archived."""
+    now = datetime.datetime.utcnow().isoformat()
+    if board.get('status', 'open') in ('open', 'locked'):
+        print(f"[release] Auto-releasing board for {board.get('release_date')} "
+              f"(was '{board.get('status')}', release day is over)")
+        board['status'] = 'released'
+        board['released_at'] = now
+        board['released_by'] = 'system (auto-released)'
+        board.setdefault('audit_trail', []).append({
+            'action': 'auto_release', 'by': 'system', 'at': now,
+            'note': f"Board auto-released — release date {board.get('release_date')} passed without manual release"
+        })
+    already_in_history = any(
+        h.get('release_date') == board.get('release_date') and h.get('fix_version') == board.get('fix_version')
+        for h in _release_history
+    )
+    if not board.get('archived_at'):
+        board['archived_at'] = now
+        board.setdefault('audit_trail', []).append({
+            'action': 'auto_archive', 'by': 'system', 'at': now,
+            'note': f"Board auto-archived after release date {board.get('release_date')}"
+        })
+    if not already_in_history:
+        print(f"[release] Archiving board for {board.get('release_date')} to release history")
+        _release_history.append(copy.deepcopy(board))
+        _write_history_file()  # Persist to PVC
+    _write_board(board, storage_key)
+    return True
+
+
+def _archive_orphaned_previous_board():
+    """When the weekly key rolls over (Fri 6 PM local), last week's board is no
+    longer read — so a board that was never "Mark Released" used to be silently
+    dropped and never reached History. Archive it here."""
+    try:
+        current_key = _get_current_release_date()
+        prev_key = (datetime.date.fromisoformat(current_key) - datetime.timedelta(days=7)).isoformat()
+        prev = _read_board_raw(prev_key)
+        if not prev or prev.get('archived_at'):
+            return
+        if (prev.get('release_date') or '') >= current_key:
+            return  # carried over by _read_board (release pushed later)
+        if prev.get('status') != 'released' or not any(
+                h.get('release_date') == prev.get('release_date') for h in _release_history):
+            _auto_archive_board(prev, prev_key)
+    except Exception as e:
+        print(f"[release] Orphaned-board archive check failed: {e}")
+
+
 @app.route('/api/release/current')
 def get_current_release():
     """Get the current release board."""
     board = _read_board()
     if not board:
+        _archive_orphaned_previous_board()
         board = _new_board()
         try:
             _write_board(board)
         except Exception as e:
             print(f"[release] Could not create board: {e}")
 
-    # Auto-lifecycle: when the release date has passed, archive the board and start a new cycle.
-    # This handles two scenarios:
-    #   1. Board was manually "Mark Released" → status='released' → archive + new board
+    # Auto-lifecycle: when the release day is over (6 PM local on the release date),
+    # archive the board and start a new cycle. Handles both:
+    #   1. Board was "Mark Released" → archive + new board
     #   2. Board was NEVER released (still 'open'/'locked') → auto-release + archive + new board
-    if board.get('release_date'):
+    if board.get('release_date') and _release_day_over(board['release_date']):
         try:
-            release_date = datetime.date.fromisoformat(board['release_date'])
-            # Archive after 11:59 PM on release day (i.e. the next calendar day)
-            archive_threshold = datetime.datetime.combine(
-                release_date + datetime.timedelta(days=1),
-                datetime.time(0, 0)
-            )
-            now = datetime.datetime.utcnow()
-
-            if now >= archive_threshold:
-                board_status = board.get('status', 'open')
-
-                # If board was never released, auto-mark it as released first
-                if board_status in ('open', 'locked'):
-                    print(f"[release] Auto-releasing board for {board['release_date']} (was '{board_status}', release date has passed)")
-                    board['status'] = 'released'
-                    board['released_at'] = now.isoformat()
-                    board['released_by'] = 'system (auto-released)'
-                    board['audit_trail'].append({
-                        'action': 'auto_release',
-                        'by': 'system',
-                        'at': now.isoformat(),
-                        'note': f"Board auto-released — release date {board['release_date']} has passed without manual release"
-                    })
-
-                # Archive to history (only if not already added by complete_release)
-                if board_status == 'released' or board.get('status') == 'released':
-                    # Avoid duplicate: complete_release() already appends to _release_history
-                    already_in_history = any(
-                        h.get('release_date') == board.get('release_date') and h.get('fix_version') == board.get('fix_version')
-                        for h in _release_history
-                    )
-                    print(f"[release] Auto-archiving board for {board['release_date']}, starting new cycle")
-                    board['audit_trail'].append({
-                        'action': 'auto_archive',
-                        'by': 'system',
-                        'at': now.isoformat(),
-                        'note': f"Board auto-archived after release date {board['release_date']}"
-                    })
-                    if not already_in_history:
-                        _release_history.append(copy.deepcopy(board))
-                        _write_history_file()  # Persist to PVC
-                    _write_board(board)  # Save the audit entry to the old board
-                    board = _new_board()
-                    _write_board(board)
-        except (ValueError, TypeError) as e:
-            print(f"[release] Auto-archive date parse error: {e}")
+            _auto_archive_board(board)
+            board = _new_board()
+            _write_board(board)
+        except Exception as e:
+            print(f"[release] Auto-archive error: {e}")
 
     # Enrich with live metadata
     # ── ALWAYS recalculate the cutoff, never trust the stored value blindly.
@@ -4662,7 +4685,7 @@ def update_fix_version():
     date_changed = False
     date_warning = None
     if new_release_date and new_release_date != old_release_date:
-        if new_release_date < datetime.date.today().isoformat():
+        if new_release_date < _now_local().date().isoformat():  # 'today' in the release time zone
             date_warning = (f'Fix version date {new_release_date} is in the past — release date '
                             f'kept at {old_release_date}.')
             print(f"[release] ⚠️  {date_warning}")
@@ -5102,7 +5125,8 @@ def ai_release_readiness():
                 'summary': 'AI unavailable — manual review recommended',
                 'risks': []
             }
-        result = {'overall': 'yellow', 'services': checks, 'gemini_powered': False}
+        result = {'overall': 'yellow', 'services': checks, 'gemini_powered': False,
+                  'summary': 'AI readiness is unavailable (Gemini not configured) — manual review recommended.'}
         return jsonify(result)
 
     prompt = f"""You are a release engineer validating services for a production release.
@@ -5164,7 +5188,8 @@ Return ONLY valid JSON. No markdown fences.
         return jsonify(result)
     except Exception as e:
         print(f"[readiness] Error: {e}")
-        return jsonify({'overall': 'yellow', 'services': {}, 'error': str(e), 'gemini_powered': False}), 500
+        return jsonify({'overall': 'yellow', 'services': {}, 'error': str(e), 'gemini_powered': False,
+                        'summary': f'AI readiness check failed: {str(e)[:200]}'}), 500
 
 
 # ── Release Export ────────────────────────────────────────────────────────────
@@ -6816,7 +6841,7 @@ def _create_or_update_uat_pr(version_yaml_content, release_date, prepared_by):
     except ValueError as e:
         return {'error': str(e)}
     base = QA_UAT_BRANCH
-    head = f'{QA_UAT_PR_BRANCH_PREFIX}{release_date or datetime.date.today().isoformat()}'
+    head = f'{QA_UAT_PR_BRANCH_PREFIX}{release_date or _now_local().date().isoformat()}'
 
     try:
         try:
