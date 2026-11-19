@@ -1,0 +1,47 @@
+---
+# ──────────────────────────────────────────────────────────────────
+# Release Readiness — PreProd Namespace Viewer (PreProd Env tab)
+# ──────────────────────────────────────────────────────────────────
+#
+# PreProd runs on the PRODUCTION cluster in its own namespace. The
+# Release Readiness app reads it with the SAME identity it uses for
+# the Prod Env tab, so that identity needs read-only ('view') access
+# to the PreProd namespace as well (RoleBindings are per-namespace).
+#
+# Before applying, replace the placeholders:
+#   PREPROD_NAMESPACE        → your PreProd namespace          (e.g. preprod)
+#   VIEWER_SERVICE_ACCOUNT   → the ServiceAccount used for prod (e.g. release-readiness-viewer)
+#   VIEWER_SA_NAMESPACE      → the namespace that ServiceAccount lives in
+#
+#   • App deployed in UAT  (DEPLOY_ENV=uat):  the ServiceAccount whose token
+#     is in PROD_CLUSTER_TOKEN (secret release-readiness-prod).
+#   • App deployed in Prod (DEPLOY_ENV=prod): the app's own ServiceAccount.
+#
+# Apply on the PRODUCTION cluster:
+#   kubectl apply -f preprod-viewer-rolebinding.yaml
+#
+# Verify:
+#   kubectl auth can-i list deployments -n PREPROD_NAMESPACE \
+#     --as=system:serviceaccount:VIEWER_SA_NAMESPACE:VIEWER_SERVICE_ACCOUNT
+#
+# Then set the namespace for the app (add to the prod secret):
+#   kubectl create secret generic release-readiness-prod ... \
+#     --from-literal=preprod-namespace=PREPROD_NAMESPACE
+# ──────────────────────────────────────────────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-readiness-viewer
+  namespace: PREPROD_NAMESPACE
+  labels:
+    app: release-readiness
+    purpose: remote-cluster-viewer
+    managed-by: release-readiness
+subjects:
+  - kind: ServiceAccount
+    name: VIEWER_SERVICE_ACCOUNT
+    namespace: VIEWER_SA_NAMESPACE
+roleRef:
+  kind: ClusterRole
+  name: view                    # Built-in read-only role (no create/update/delete/exec)
+  apiGroup: rbac.authorization.k8s.io
